@@ -1,0 +1,16 @@
+# Runtime
+.server.pid
+
+# OMC state
+.omc/
+
+# Playwright cache
+.playwright-mcp/
+
+# Claude Code local state (not CLAUDE.md which is tracked)
+.claude/
+
+# Working docs
+task_plan.md
+progress.md
+findings.md
