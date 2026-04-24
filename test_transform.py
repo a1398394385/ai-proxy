@@ -192,5 +192,80 @@ class TestChatToResponses(unittest.TestCase):
         self.assertEqual(result["usage"]["output_tokens_details"]["reasoning_tokens"], 0)
 
 
+class TestSSEParser(unittest.TestCase):
+    def test_parse_simple_event(self):
+        from transform import _parse_sse_event
+        result = _parse_sse_event("event: response.created\ndata: {\"id\":\"resp-1\"}")
+        self.assertEqual(result["event"], "response.created")
+        self.assertEqual(result["data"]["id"], "resp-1")
+
+    def test_parse_default_event(self):
+        from transform import _parse_sse_event
+        result = _parse_sse_event("data: {\"key\":\"value\"}")
+        self.assertEqual(result["event"], "message")
+        self.assertEqual(result["data"]["key"], "value")
+
+    def test_parse_done(self):
+        from transform import _parse_sse_event
+        result = _parse_sse_event("data: [DONE]")
+        self.assertEqual(result["event"], "[DONE]")
+        self.assertIsNone(result["data"])
+
+    def test_parse_empty_returns_none(self):
+        from transform import _parse_sse_event
+        self.assertIsNone(_parse_sse_event(""))
+        self.assertIsNone(_parse_sse_event(": keepalive"))
+
+    def test_parse_invalid_json_returns_none(self):
+        from transform import _parse_sse_event
+        self.assertIsNone(_parse_sse_event("data: not-json"))
+
+    def test_parse_multiple_data_lines(self):
+        from transform import _parse_sse_event
+        result = _parse_sse_event("data: {\"a\":1,\n data: \"b\":2}")
+        self.assertEqual(result["data"]["a"], 1)
+        self.assertEqual(result["data"]["b"], 2)
+
+
+class TestIterSSEEvents(unittest.TestCase):
+    def test_iter_multiple_events(self):
+        from transform import iter_sse_events
+
+        class MockStream:
+            def __init__(self, data):
+                self.data = data
+                self.pos = 0
+
+            def read(self, size):
+                chunk = self.data[self.pos:self.pos + size]
+                self.pos += size
+                return chunk
+
+        raw = b'event: response.created\ndata: {"id":"resp-1"}\n\nevent: response.completed\ndata: {"id":"resp-1"}\n\n'
+        stream = MockStream(raw)
+        events = list(iter_sse_events(stream))
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]["event"], "response.created")
+        self.assertEqual(events[1]["event"], "response.completed")
+
+    def test_iter_with_done(self):
+        from transform import iter_sse_events
+
+        class MockStream:
+            def __init__(self, data):
+                self.data = data
+                self.pos = 0
+
+            def read(self, size):
+                chunk = self.data[self.pos:self.pos + size]
+                self.pos += size
+                return chunk
+
+        raw = b'event: response.created\ndata: {"id":"resp-1"}\n\ndata: [DONE]\n\n'
+        stream = MockStream(raw)
+        events = list(iter_sse_events(stream))
+        self.assertEqual(events[-1]["event"], "[DONE]")
+
+
 if __name__ == "__main__":
     unittest.main()
