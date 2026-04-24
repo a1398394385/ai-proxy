@@ -267,5 +267,165 @@ class TestIterSSEEvents(unittest.TestCase):
         self.assertEqual(events[-1]["event"], "[DONE]")
 
 
+class TestStreamState(unittest.TestCase):
+    def test_message_output_index_no_reasoning(self):
+        from transform import StreamState
+        state = StreamState()
+        state.has_text = True
+        self.assertEqual(state.message_output_index, 0)
+
+    def test_message_output_index_with_reasoning(self):
+        from transform import StreamState
+        state = StreamState()
+        state.has_reasoning = True
+        state.has_text = True
+        self.assertEqual(state.message_output_index, 1)
+
+
+class TestSSEStreamIntegration(unittest.TestCase):
+    """使用 mock 上游 SSE 数据，验证 create_codex_sse_stream 的完整事件序列。"""
+
+    def test_text_only_stream(self):
+        """纯文本流：created + metadata + output_item.added(message) + text deltas + text done + item done + completed。"""
+        from transform import create_codex_sse_stream
+
+        class MockStream:
+            def __init__(self):
+                chunks = [
+                    b'event: message\ndata: {"id":"chatcmpl-1","model":"test","choices":[{"delta":{"content":"Hello"},"index":0}]}\n\n',
+                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{"content":" World"},"index":0}]}\n\n',
+                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}\n\n',
+                    b'data: [DONE]\n\n',
+                ]
+                self.data = b"".join(chunks)
+                self.pos = 0
+
+            def read(self, size):
+                chunk = self.data[self.pos:self.pos + size]
+                self.pos += size
+                return chunk
+
+        stream = MockStream()
+        events_text = ""
+        for event in create_codex_sse_stream(stream):
+            events_text += event
+
+        # 验证关键事件存在
+        self.assertIn("event: response.created", events_text)
+        self.assertIn("event: response.metadata", events_text)
+        self.assertIn("event: response.output_item.added", events_text)
+        self.assertIn("event: response.output_text.delta", events_text)
+        self.assertIn("event: response.output_text.done", events_text)
+        self.assertIn("event: response.output_item.done", events_text)
+        self.assertIn("event: response.completed", events_text)
+        # 不应该有推理事件
+        self.assertNotIn("response.reasoning_summary_text", events_text)
+
+    def test_reasoning_plus_text_stream(self):
+        """推理+文本流：验证 reasoning output_index=0, message output_index=1。"""
+        from transform import create_codex_sse_stream
+
+        class MockStream:
+            def __init__(self):
+                chunks = [
+                    # 推理 delta
+                    b'event: message\ndata: {"id":"chatcmpl-1","model":"test","choices":[{"delta":{"reasoning_content":"Let me think..."},"index":0}]}\n\n',
+                    # 文本 delta
+                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Answer"},"index":0}]}\n\n',
+                    # 完成
+                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}\n\n',
+                    b'data: [DONE]\n\n',
+                ]
+                self.data = b"".join(chunks)
+                self.pos = 0
+
+            def read(self, size):
+                chunk = self.data[self.pos:self.pos + size]
+                self.pos += size
+                return chunk
+
+        stream = MockStream()
+        events_text = ""
+        for event in create_codex_sse_stream(stream):
+            events_text += event
+
+        self.assertIn("event: response.created", events_text)
+        self.assertIn("event: response.metadata", events_text)
+        self.assertIn("event: response.output_item.added", events_text)
+        self.assertIn("event: response.reasoning_summary_text.delta", events_text)
+        self.assertIn("event: response.reasoning_summary_text.done", events_text)
+        self.assertIn("event: response.output_text.delta", events_text)
+        self.assertIn("event: response.output_text.done", events_text)
+        self.assertIn("event: response.completed", events_text)
+        # 验证 reasoning 在 output_index=0
+        self.assertIn('"output_index":0', events_text)
+        # 验证 message 在 output_index=1
+        self.assertIn('"output_index":1', events_text)
+
+    def test_tool_calls_accumulation(self):
+        """工具调用积累：验证 tool_calls 积累后一次性发送。"""
+        from transform import create_codex_sse_stream
+
+        class MockStream:
+            def __init__(self):
+                # 工具调用分多个 delta 到达
+                chunks = [
+                    b'event: message\ndata: {"id":"chatcmpl-1","model":"test","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"bash","arguments":"{\\"cmd\\":"}}]},"index":0}]}\n\n',
+                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"ls\\"}"}}]},"index":0}]}\n\n',
+                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{},"index":0,"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}\n\n',
+                    b'data: [DONE]\n\n',
+                ]
+                self.data = b"".join(chunks)
+                self.pos = 0
+
+            def read(self, size):
+                chunk = self.data[self.pos:self.pos + size]
+                self.pos += size
+                return chunk
+
+        stream = MockStream()
+        events_text = ""
+        for event in create_codex_sse_stream(stream):
+            events_text += event
+
+        # 工具调用在完成时发送
+        self.assertIn("event: response.output_item.done", events_text)
+        self.assertIn('"type":"function_call"', events_text)
+        self.assertIn('"name":"bash"', events_text)
+        # 验证 arguments 被完整拼接（JSON 转义后）
+        self.assertIn('"arguments":"{\\"cmd\\":\\"ls\\"}"', events_text)
+
+    def test_multiple_tool_calls_out_of_order(self):
+        """Risk #10：多 tool_calls 乱序到达，按 index 排序后发送。"""
+        from transform import create_codex_sse_stream
+
+        class MockStream:
+            def __init__(self):
+                # tool_calls 分两个 delta 到达，index 0 和 index 1
+                chunks = [
+                    b'event: message\ndata: {"id":"chatcmpl-1","model":"test","choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"read_file","arguments":"{}"}}]},"index":0}]}\n\n',
+                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"bash","arguments":"{\\"cmd\\":\\"ls\\"}"}}]},"index":0}]}\n\n',
+                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{},"index":0,"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}\n\n',
+                    b'data: [DONE]\n\n',
+                ]
+                self.data = b"".join(chunks)
+                self.pos = 0
+
+            def read(self, size):
+                chunk = self.data[self.pos:self.pos + size]
+                self.pos += size
+                return chunk
+
+        stream = MockStream()
+        events_text = ""
+        for event in create_codex_sse_stream(stream):
+            events_text += event
+
+        # 验证 bash (index=0) 在 read_file (index=1) 之前发送
+        bash_pos = events_text.index('"name":"bash"')
+        read_file_pos = events_text.index('"name":"read_file"')
+        self.assertLess(bash_pos, read_file_pos)
+
+
 if __name__ == "__main__":
     unittest.main()
