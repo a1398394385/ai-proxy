@@ -523,14 +523,18 @@ def _emit_completion(state: StreamState) -> list:
     # 工具调用完成（按 index 排序）
     sorted_tc = sorted(state.tool_calls.items(), key=lambda x: x[0])
     for i, (idx, tc) in enumerate(sorted_tc):
+        tc_id = tc["id"] or f"call_{uuid.uuid4().hex[:8]}"
+        if state.has_text:
+            output_idx = state.message_output_index + i + 1
+        else:
+            output_idx = i + (1 if state.has_reasoning else 0)
         tc_item = {
             "type": "function_call",
-            "id": tc["id"] or f"call_{uuid.uuid4().hex[:8]}",
-            "call_id": tc["id"] or f"call_{uuid.uuid4().hex[:8]}",
+            "id": tc_id,
+            "call_id": tc_id,
             "name": tc["name"],
             "arguments": tc["arguments_buffer"],
         }
-        output_idx = state.message_output_index + i + 1 if state.has_text else i + (1 if state.has_reasoning else 0)
         events.append(
             f'event: response.output_item.done\n'
             f'data: {{"output_index":{output_idx},"item":{json.dumps(tc_item, ensure_ascii=False, separators=(",", ":"))}}}\n\n'
