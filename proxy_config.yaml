@@ -1,0 +1,26 @@
+proxy:
+  host: "127.0.0.1"
+  port: 48743
+  log_level: "INFO"          # DEBUG / INFO / WARNING
+
+upstream:
+  base_url: "https://llm-open-api.cargoware.com/v1"
+  api_key: "sk-xxx"
+  timeout: 120               # SSE 流总超时（秒）
+  connect_timeout: 10
+  ssl_verify: true           # 内网自签证书时可设为 false
+  retry: 1                   # 上游 5xx/超时时自动重试次数（0 = 不重试）
+
+model_map:
+  "codex-mini-latest":
+    target: "claude-sonnet-4-6"
+    multimodal: false
+  "o4-mini":
+    target: "claude-sonnet-4-6"
+    multimodal: false
+  "gpt-4o":
+    target: "claude-sonnet-4-6"
+    multimodal: false
+  "*":
+    target: "claude-sonnet-4-6"
+    multimodal: false
