@@ -79,9 +79,9 @@ def _map_input_item(item: dict, model_cfg: dict) -> list:
     elif item_type == "function_call":
         return [_map_function_call(item)]
     elif item_type == "function_call_output":
-        return [_map_function_call_output(item)]
+        return [_map_tool_output(item)]
     elif item_type == "computer_call_output":
-        return [_map_computer_call_output(item)]
+        return [_map_tool_output(item)]
     elif item_type == "reasoning":
         return []
     elif item_type in ("web_search_call", "code_interpreter_call", "mcp_call"):
@@ -155,17 +155,8 @@ def _map_function_call(item: dict) -> dict:
     }
 
 
-def _map_function_call_output(item: dict) -> dict:
-    """映射 function_call_output → tool message。"""
-    return {
-        "role": "tool",
-        "tool_call_id": item.get("tool_call_id", ""),
-        "content": item.get("output", ""),
-    }
-
-
-def _map_computer_call_output(item: dict) -> dict:
-    """映射 computer_call_output → tool message。"""
+def _map_tool_output(item: dict) -> dict:
+    """映射 tool output 条目（function_call_output / computer_call_output）→ tool message。"""
     return {
         "role": "tool",
         "tool_call_id": item.get("tool_call_id", ""),
