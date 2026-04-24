@@ -188,3 +188,92 @@ def _map_response_format(text_format: dict) -> dict:
         }
     else:
         return {"type": fmt_type}
+
+
+FINISH_REASON_MAP = {
+    "stop": "completed",
+    "length": "incomplete",
+    "tool_calls": "completed",
+    "content_filter": "incomplete",
+}
+
+INCOMPLETE_REASON_MAP = {
+    "length": "max_tokens",
+    "content_filter": "content_filter",
+}
+
+
+def chat_to_responses(response: dict) -> dict:
+    """Chat Completions → Responses API 非流式响应转换。"""
+    chat_id = response.get("id", "")
+    if chat_id.startswith("chatcmpl-"):
+        resp_id = "resp-" + chat_id[len("chatcmpl-"):]
+    else:
+        resp_id = f"resp-{uuid.uuid4().hex[:8]}"
+
+    choice = response.get("choices", [{}])[0]
+    message = choice.get("message", {})
+    finish_reason = choice.get("finish_reason", "stop")
+
+    output = []
+
+    # 文本内容
+    content = message.get("content")
+    if content:
+        output.append({
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": content}],
+            "status": FINISH_REASON_MAP.get(finish_reason, "completed"),
+        })
+
+    # 拒绝内容
+    refusal = message.get("refusal")
+    if refusal:
+        output.append({
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "refusal", "refusal": refusal}],
+            "status": FINISH_REASON_MAP.get(finish_reason, "completed"),
+        })
+
+    # 工具调用
+    tool_calls = message.get("tool_calls", [])
+    for tc in tool_calls:
+        func = tc.get("function", {})
+        output.append({
+            "type": "function_call",
+            "id": tc.get("id", ""),
+            "call_id": tc.get("id", ""),
+            "name": func.get("name", ""),
+            "arguments": func.get("arguments", ""),
+        })
+
+    result = {
+        "id": resp_id,
+        "model": response.get("model", ""),
+        "status": FINISH_REASON_MAP.get(finish_reason, "completed"),
+        "output": output,
+    }
+
+    # incomplete_details
+    if finish_reason in INCOMPLETE_REASON_MAP:
+        result["incomplete_details"] = {
+            "reason": INCOMPLETE_REASON_MAP[finish_reason],
+        }
+
+    # usage 映射
+    usage = response.get("usage", {})
+    result["usage"] = {
+        "input_tokens": usage.get("prompt_tokens", 0),
+        "output_tokens": usage.get("completion_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+        "input_tokens_details": {
+            "cached_tokens": usage.get("prompt_tokens_details", {}).get("cached_tokens", 0),
+        },
+        "output_tokens_details": {
+            "reasoning_tokens": usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0),
+        },
+    }
+
+    return result
