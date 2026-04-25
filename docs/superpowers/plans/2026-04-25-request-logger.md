@@ -52,16 +52,21 @@ TDD 循环：写测试 → 验证失败 → 实现 → 验证通过 → Commit
 
 ### Task 4: 集成冒烟测试
 
-- [ ] Step 1: 创建 `test_proxy_logger_integration.py`（使用 importlib 动态加载 proxy 模块）
+- [ ] Step 1: 创建 `test_proxy_logger_integration.py`（使用 mock 方式模拟 proxy handler，注入临时 DB logger）
 - [ ] Step 2: 模拟完整请求流程 → 检查 DB 中有 4 条 debug_log + 1 条 token_stats
 - [ ] Step 3: JSON 解析失败场景 → 仍有一条 raw_request 错误记录
 - [ ] Step 4: 上游 500 错误场景 → 有 raw_request + converted_request + upstream_response，无 converted_response
-- [ ] Step 5: 运行所有测试验证通过
-- [ ] Step 6: Commit
+- [ ] Step 5: 流式客户端断开场景（SSE 中断）→ finally 块仍记录 upstream_response
+- [ ] Step 6: chat_to_responses 转换异常场景 → 有 converted_response 错误补录
+- [ ] Step 7: 日志写入失败时 proxy 不崩溃（mock _get_conn 抛异常）
+- [ ] Step 8: 运行所有测试验证通过
+- [ ] Step 9: Commit
 
 ### Task 5: proxy_config.yaml 配置更新 + 端对端验证
 
 - [ ] Step 1: 更新 `proxy_config.yaml` 添加 `logging` 块
-- [ ] Step 2: 端对端冒烟测试（启动 proxy → 发请求 → 检查 access_log.db 中有记录）
+- [ ] Step 2: 端对端冒烟测试 — 启动真实 proxy 进程 → curl 发请求 → 检查 access_log.db 中记录存在
+  - 使用独立临时端口，避免与生产端口冲突
+  - 测试结束后自动停止进程
 - [ ] Step 3: 验证旧配置向后兼容（无 logging 块也能启动）
 - [ ] Step 4: Commit

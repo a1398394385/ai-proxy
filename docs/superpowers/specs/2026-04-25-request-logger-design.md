@@ -201,7 +201,7 @@ def _handle_responses(self):
     try:
         body = json.loads(body_raw)
     except json.JSONDecodeError as e:
-        # JSON 解析失败：仍然记录 raw_request（含错误信息）
+        # JSON 解析失败：记录 raw_request（含错误信息），不额外补录
         logger.log_raw_request(request_id, model_name, target, {"raw_error": str(e), "raw_body": body_raw.decode("utf-8", errors="replace")})
         self._send_json(400, ...)
         return
@@ -249,20 +249,28 @@ def _forward_non_streaming(self, chat_body: dict, request_id: str, model: str, t
     # 阶段 3：记录上游响应
     try:
         chat_response = json.loads(resp_body)
-    except json.JSONDecodeError:
-        chat_response = {"error": "non-JSON response", "raw": resp_body.decode("utf-8", errors="replace")[:5000]}
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        chat_response = {"error": str(e), "raw": resp_body.decode("utf-8", errors="replace")[:5000]}
     
     logger.log_upstream_response(request_id, resp.status, chat_response, duration_ms)
     
-    # 转换响应
-    responses_response = chat_to_responses(chat_response)
-    
-    # 阶段 4：记录转换后的响应
-    logger.log_converted_response(request_id, model, target, responses_response)
-    
-    # 阶段 5：记录 Token 统计（duration_ms 复用上面的值）
-    agent = _extract_agent(self.headers.get("User-Agent", ""))
-    _log_token_stats_from_chat_response(request_id, agent, model, target, request_ts, duration_ms, chat_response)
+    # 转换响应 + 记录（用 try/except 确保任何阶段出错都补记录）
+    try:
+        responses_response = chat_to_responses(chat_response)
+        # 阶段 4：记录转换后的响应
+        logger.log_converted_response(request_id, model, target, responses_response)
+        
+        # 阶段 5：记录 Token 统计（从 chat_response 提取 usage）
+        agent = _extract_agent(self.headers.get("User-Agent", ""))
+        usage = chat_response.get("usage", {})
+        logger.log_token_stats(request_id, agent, model, target, request_ts, duration_ms,
+                              usage.get("prompt_tokens", 0),
+                              usage.get("completion_tokens", 0),
+                              usage.get("prompt_tokens_details", {}).get("cached_tokens", 0),
+                              0, "completed")
+    except Exception as e:
+        # 转换失败：补一条 converted_response 错误记录
+        logger.log_converted_response(request_id, model, target, {"error": str(e)})
     
     self._send_json(200, responses_response)
 ```
@@ -286,42 +294,58 @@ def _forward_streaming(self, chat_body: dict, model_cfg: dict, request_id: str, 
         return
     
     start = time.time()
-    
-    # 收集完整 SSE 流
     sse_buffer = []
     final_usage = None
-    for sse_event in create_codex_sse_stream(resp):
-        self.wfile.write(sse_event.encode("utf-8"))
-        self.wfile.flush()
-        sse_buffer.append(sse_event)
-        # 从 completed 事件中提取 usage
-        if "response.completed" in sse_event:
-            try:
-                data = json.loads(sse_event.split("data: ", 1)[1])
-                final_usage = data.get("usage")
-            except (json.JSONDecodeError, IndexError):
-                pass
+    upstream_status = resp.status
     
-    duration_ms = int((time.time() - start) * 1000)
-    full_sse = "".join(sse_buffer)
-    
-    # 阶段 3：记录上游 SSE（完整，不截断）
-    logger.log_upstream_response(request_id, resp.status, full_sse, duration_ms)
-    
-    # 阶段 4：流式无 converted_response，跳过（写入跳过标记）
-    logger.log_converted_response(request_id, model, target, {"streaming": True, "note": "SSE 流式响应，无 converted_response"})
-    
-    # 阶段 5：记录 Token 统计（从 final_usage 提取）
-    agent = _extract_agent(self.headers.get("User-Agent", ""))
-    if final_usage:
-        logger.log_token_stats(request_id, agent, model, target, request_ts, duration_ms,
-                              final_usage.get("prompt_tokens", 0),
-                              final_usage.get("completion_tokens", 0),
-                              final_usage.get("prompt_tokens_details", {}).get("cached_tokens", 0),
-                              0, "completed")
-    else:
-        logger.log_token_stats(request_id, agent, model, target, request_ts, duration_ms,
-                              0, 0, 0, 0, "incomplete")
+    try:
+        # 收集完整 SSE 流
+        for sse_event in create_codex_sse_stream(resp):
+            self.wfile.write(sse_event.encode("utf-8"))
+            self.wfile.flush()
+            sse_buffer.append(sse_event)
+            # 从 completed 事件中提取 usage
+            if "response.completed" in sse_event:
+                try:
+                    data = json.loads(sse_event.split("data: ", 1)[1])
+                    final_usage = data.get("usage")
+                except (json.JSONDecodeError, IndexError):
+                    pass
+    except Exception as e:
+        logging.exception("流式转发异常")
+        try:
+            error_event = f'event: response.failed\ndata: ...'
+            self.wfile.write(error_event.encode("utf-8"))
+            self.wfile.flush()
+        except Exception:
+            pass
+    finally:
+        # 无论成功、失败、客户端断开，都记录日志
+        duration_ms = int((time.time() - start) * 1000)
+        full_sse = "".join(sse_buffer)
+        
+        # 阶段 3：记录上游 SSE（完整，不截断）
+        logger.log_upstream_response(request_id, upstream_status, full_sse, duration_ms)
+        
+        # 阶段 4：流式无 converted_response，跳过标记
+        logger.log_converted_response(request_id, model, target, {"streaming": True, "note": "SSE 流式响应，无 converted_response"})
+        
+        # 阶段 5：记录 Token 统计
+        agent = _extract_agent(self.headers.get("User-Agent", ""))
+        if final_usage:
+            logger.log_token_stats(request_id, agent, model, target, request_ts, duration_ms,
+                                  final_usage.get("prompt_tokens", 0),
+                                  final_usage.get("completion_tokens", 0),
+                                  final_usage.get("prompt_tokens_details", {}).get("cached_tokens", 0),
+                                  0, "completed")
+        else:
+            logger.log_token_stats(request_id, agent, model, target, request_ts, duration_ms,
+                                  0, 0, 0, 0, "incomplete")
+        
+        try:
+            conn.close()
+        except Exception:
+            pass
 ```
 
 流式场景下 debug_log 也会有 4 条记录：
