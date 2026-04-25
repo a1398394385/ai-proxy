@@ -427,5 +427,334 @@ class TestSSEStreamIntegration(unittest.TestCase):
         self.assertLess(bash_pos, read_file_pos)
 
 
+class TestResponsesToChatAllInputTypes(unittest.TestCase):
+    def test_image_multimodal_true(self):
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_image",
+                    "image_url": "https://example.com/img.png",
+                    "detail": "high",
+                }],
+            }],
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": True}
+        result = responses_to_chat(body, model_cfg)
+        content = result["messages"][0]["content"]
+        self.assertEqual(content[0]["type"], "image_url")
+        self.assertEqual(content[0]["image_url"]["url"], "https://example.com/img.png")
+        self.assertEqual(content[0]["image_url"]["detail"], "high")
+
+    def test_image_multimodal_false(self):
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_image", "image_url": "https://example.com/img.png"}],
+            }],
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        content = result["messages"][0]["content"]
+        self.assertEqual(content[0]["text"], "[image: unsupported]")
+
+    def test_file_placeholder(self):
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_file", "file_id": "file-123", "filename": "doc.pdf"}],
+            }],
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        content = result["messages"][0]["content"]
+        self.assertEqual(content[0]["text"], "[file: doc.pdf]")
+
+    def test_reasoning_dropped(self):
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{"type": "reasoning", "id": "rs_123"}],
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        self.assertEqual(len(result["messages"]), 0)
+
+    def test_web_search_call_dropped(self):
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{"type": "web_search_call"}],
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        self.assertEqual(len(result["messages"]), 0)
+
+    def test_code_interpreter_call_dropped(self):
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{"type": "code_interpreter_call"}],
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        self.assertEqual(len(result["messages"]), 0)
+
+    def test_mcp_call_dropped(self):
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{"type": "mcp_call"}],
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        self.assertEqual(len(result["messages"]), 0)
+
+    def test_computer_call_mapped(self):
+        """验证 computer_call 与 function_call 一样被转换为 tool_calls 格式。"""
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{
+                "type": "computer_call",
+                "id": "call_comp",
+                "name": "screenshot",
+                "arguments": '{"action":"screenshot"}',
+            }],
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        self.assertEqual(result["messages"][0]["role"], "assistant")
+        self.assertEqual(result["messages"][0]["tool_calls"][0]["function"]["name"], "screenshot")
+
+
+class TestAdvancedFeatures(unittest.TestCase):
+    def test_json_schema_format(self):
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{"type": "message", "role": "user", "content": "extract"}],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "Person",
+                    "schema": {"type": "object", "properties": {"name": {"type": "string"}}},
+                    "strict": True,
+                }
+            },
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        fmt = result["response_format"]
+        self.assertEqual(fmt["type"], "json_schema")
+        self.assertEqual(fmt["json_schema"]["name"], "Person")
+        self.assertTrue(fmt["json_schema"]["strict"])
+
+    def test_tools_passthrough(self):
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{"type": "message", "role": "user", "content": "search"}],
+            "tools": [{"type": "function", "function": {"name": "bash", "parameters": {}}}],
+            "tool_choice": "required",
+            "parallel_tool_calls": True,
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        self.assertEqual(len(result["tools"]), 1)
+        self.assertEqual(result["tool_choice"], "required")
+        self.assertTrue(result["parallel_tool_calls"])
+
+    def test_reasoning_effort_passthrough(self):
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{"type": "message", "role": "user", "content": "think"}],
+            "reasoning": {"effort": "high"},
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        self.assertEqual(result["reasoning"]["effort"], "high")
+
+    def test_discarded_fields(self):
+        """验证 previous_response_id, include, store, client_metadata, service_tier 全部丢弃。"""
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{"type": "message", "role": "user", "content": "hi"}],
+            "previous_response_id": "resp-prev",
+            "include": ["reasoning"],
+            "store": True,
+            "client_metadata": {"key": "val"},
+            "service_tier": "default",
+            "text": {},
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        self.assertNotIn("previous_response_id", result)
+        self.assertNotIn("include", result)
+        self.assertNotIn("store", result)
+        self.assertNotIn("client_metadata", result)
+        self.assertNotIn("service_tier", result)
+
+    def test_function_call_output_to_tool_role(self):
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{
+                "type": "function_call_output",
+                "tool_call_id": "call_abc",
+                "output": "result data",
+            }],
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        self.assertEqual(len(result["messages"]), 1)
+        self.assertEqual(result["messages"][0]["role"], "tool")
+        self.assertEqual(result["messages"][0]["tool_call_id"], "call_abc")
+        self.assertEqual(result["messages"][0]["content"], "result data")
+
+    def test_computer_call_output_to_tool_role(self):
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{
+                "type": "computer_call_output",
+                "tool_call_id": "call_xyz",
+                "output": '{"screenshot": "base64..."}',
+            }],
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        self.assertEqual(len(result["messages"]), 1)
+        self.assertEqual(result["messages"][0]["role"], "tool")
+        self.assertEqual(result["messages"][0]["content"], '{"screenshot": "base64..."}')
+
+    def test_tool_name_namespace_preserved(self):
+        """验证 tool name 中的 . 命名空间保留。"""
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{
+                "type": "function_call",
+                "id": "call_mcp",
+                "name": "mcp.server__fetch",
+                "arguments": '{"url": "https://example.com"}',
+            }],
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        self.assertEqual(result["messages"][0]["tool_calls"][0]["function"]["name"], "mcp.server__fetch")
+
+
+class TestPreviousResponseIdDiscarded(unittest.TestCase):
+    def test_previous_response_id_not_in_output(self):
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [
+                {"type": "message", "role": "user", "content": "Hi"},
+                {"type": "message", "role": "assistant", "content": "Hello!"},
+                {"type": "message", "role": "user", "content": "How are you?"},
+            ],
+            "previous_response_id": "resp-prev-123",
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        self.assertNotIn("previous_response_id", result)
+        self.assertEqual(len(result["messages"]), 3)
+        self.assertEqual(result["messages"][0]["content"], "Hi")
+        self.assertEqual(result["messages"][1]["content"], "Hello!")
+        self.assertEqual(result["messages"][2]["content"], "How are you?")
+
+
+class TestChatToResponsesDirect(unittest.TestCase):
+    def test_gpt4_style_response(self):
+        from transform import chat_to_responses
+        resp = {
+            "id": "chatcmpl-9XyZ",
+            "object": "chat.completion",
+            "created": 1714089600,
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Hello! How can I help you today?",
+                    "refusal": None,
+                },
+                "finish_reason": "stop",
+            }],
+            "usage": {
+                "prompt_tokens": 20,
+                "completion_tokens": 10,
+                "total_tokens": 30,
+                "prompt_tokens_details": {"cached_tokens": 10},
+                "completion_tokens_details": {"reasoning_tokens": 5},
+            },
+        }
+        result = chat_to_responses(resp)
+        self.assertTrue(result["id"].startswith("resp-"))
+        self.assertIn("9XyZ", result["id"])
+        self.assertEqual(result["model"], "gpt-4o")
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(len(result["output"]), 1)
+        self.assertEqual(result["output"][0]["content"][0]["text"], "Hello! How can I help you today?")
+        self.assertEqual(result["usage"]["input_tokens"], 20)
+        self.assertEqual(result["usage"]["output_tokens"], 10)
+        self.assertEqual(result["usage"]["input_tokens_details"]["cached_tokens"], 10)
+        self.assertEqual(result["usage"]["output_tokens_details"]["reasoning_tokens"], 5)
+
+    def test_claude_style_tool_calls_response(self):
+        from transform import chat_to_responses
+        resp = {
+            "id": "chatcmpl-tool123",
+            "model": "claude-sonnet-4-6",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {"id": "call_abc1", "type": "function", "function": {"name": "bash", "arguments": '{"cmd":"pwd"}'}},
+                        {"id": "call_abc2", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"/etc/hosts"}'}},
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 20, "total_tokens": 70},
+        }
+        result = chat_to_responses(resp)
+        self.assertEqual(result["status"], "completed")
+        fc_items = [o for o in result["output"] if o["type"] == "function_call"]
+        self.assertEqual(len(fc_items), 2)
+        self.assertEqual(fc_items[0]["name"], "bash")
+        self.assertEqual(fc_items[1]["name"], "read_file")
+
+    def test_empty_content_with_usage(self):
+        from transform import chat_to_responses
+        resp = {
+            "id": "chatcmpl-empty",
+            "model": "test",
+            "choices": [{
+                "message": {"content": "", "refusal": None},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": 1},
+        }
+        result = chat_to_responses(resp)
+        self.assertEqual(result["status"], "completed")
+        msg_items = [o for o in result["output"] if o["type"] == "message"]
+        self.assertEqual(len(msg_items), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

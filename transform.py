@@ -78,6 +78,8 @@ def _map_input_item(item: dict, model_cfg: dict) -> list:
         return [_map_message(item, model_cfg)]
     elif item_type == "function_call":
         return [_map_function_call(item)]
+    elif item_type == "computer_call":
+        return [_map_function_call(item)]
     elif item_type == "function_call_output":
         return [_map_function_call_output(item)]
     elif item_type == "computer_call_output":
