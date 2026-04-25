@@ -61,7 +61,7 @@ class RequestLogger:
         self._cleanup_expired()
 
     def _get_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path))
+        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
