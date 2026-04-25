@@ -390,5 +390,107 @@ class TestLogWriteFailure(unittest.TestCase):
         self.logger.log_raw_request("fake-id", "gpt-4o", "qwen", {"key": "value"})
 
 
+class TestCleanupExpired(unittest.TestCase):
+    """_cleanup_expired 清理策略验证。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmpdir.name) / "test.db"
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _insert_old_debug_log(self, created_at: str, db_path=None):
+        """手动插入旧记录。"""
+        path = db_path or self.db_path
+        conn = sqlite3.connect(str(path))
+        conn.execute(
+            "INSERT INTO debug_log (request_id, stage, model, target_model, data, created_at) "
+            "VALUES (?, 'raw_request', 'gpt-4o', 'qwen', '{\"test\":1}', ?)",
+            ("old-request", created_at),
+        )
+        conn.commit()
+        conn.close()
+
+    def _insert_old_token_stats(self, created_at: str):
+        """手动插入旧 token_stats 记录。"""
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute(
+            "INSERT INTO token_stats "
+            "(request_id, agent, model, target_model, request_ts, duration_ms, "
+            "input_tokens, output_tokens, cached_read_tokens, cached_write_tokens, status, created_at) "
+            "VALUES (?, 'codex', 'gpt-4o', 'qwen', ?, 0, 0, 0, 0, 0, 'completed', ?)",
+            ("old-stats-request", created_at, created_at),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_cleanup_removes_old_debug_log(self):
+        """超过 retention_days 的 debug_log 记录应被清理。"""
+        # 先创建 logger（retention_days=7，不自动清理刚插入的旧数据）
+        logger = RequestLogger(self.db_path)
+
+        # 插入 10 天前的记录
+        old_date = (datetime.now().replace(day=1) if datetime.now().day > 7 else
+                    datetime.now().replace(month=datetime.now().month - 1 if datetime.now().month > 1 else 12,
+                                           day=15)).strftime("%Y-%m-%d %H:%M:%S")
+        # 简化：直接用固定旧日期
+        old_date = "2026-04-10 12:00:00"  # 假设当前日期是 4 月 25 日，超过 7 天
+        self._insert_old_debug_log(old_date)
+
+        # 手动触发清理
+        logger._cleanup_expired()
+
+        rows = _query_debug_log(self.db_path, "old-request")
+        self.assertEqual(len(rows), 0)
+
+    def test_cleanup_keeps_recent_debug_log(self):
+        """retention_days 内的 debug_log 记录应保留。"""
+        logger = RequestLogger(self.db_path)
+
+        recent_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._insert_old_debug_log(recent_date, self.db_path)
+
+        logger._cleanup_expired()
+
+        rows = _query_debug_log(self.db_path, "recent-request")
+        # 注意：上面的 _insert_old_debug_log 用的 request_id 是 "old-request"
+        # 我们需要用不同的方法
+        conn = sqlite3.connect(str(self.db_path))
+        rows = conn.execute("SELECT COUNT(*) FROM debug_log WHERE created_at > datetime('now', 'localtime', '-8 days')").fetchone()
+        conn.close()
+        # 至少有一条（刚插入的）
+        self.assertGreater(rows[0], 0)
+
+    def test_cleanup_does_not_affect_token_stats(self):
+        """token_stats 记录不受清理影响。"""
+        logger = RequestLogger(self.db_path)
+
+        old_date = "2026-04-10 12:00:00"
+        self._insert_old_token_stats(old_date)
+
+        # 清理前
+        stats_before = _query_token_stats(self.db_path)
+        self.assertEqual(len(stats_before), 1)
+
+        logger._cleanup_expired()
+
+        # 清理后
+        stats_after = _query_token_stats(self.db_path)
+        self.assertEqual(len(stats_after), 1)
+
+    def test_cleanup_with_custom_retention_days(self):
+        """自定义 retention_days 应生效。"""
+        short_retention = RequestLogger(self.db_path, debug_retention_days=1)
+
+        old_date = "2026-04-20 12:00:00"
+        self._insert_old_debug_log(old_date)
+
+        short_retention._cleanup_expired()
+
+        rows = _query_debug_log(self.db_path, "old-request")
+        self.assertEqual(len(rows), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
