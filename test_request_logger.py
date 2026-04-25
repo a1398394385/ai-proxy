@@ -380,13 +380,14 @@ class TestLogWriteFailure(unittest.TestCase):
     def tearDown(self):
         self.tmpdir.cleanup()
 
-    def test_log_raw_request_no_exception(self):
-        """即使写入函数内部出错也不应抛出异常。"""
-        rid = _generate_request_id()
-        # 正常写入后验证记录存在
-        self.logger.log_raw_request(rid, "gpt-4o", "qwen", {"key": "value"})
-        rows = _query_debug_log(self.db_path, rid)
-        self.assertEqual(len(rows), 1)
+    def test_log_raw_request_db_failure(self):
+        """mock _get_conn 抛异常时，log_raw_request 不应向外传播异常。"""
+        def failing_conn():
+            raise sqlite3.OperationalError("simulated DB error")
+
+        self.logger._get_conn = failing_conn
+        # 不应抛出异常
+        self.logger.log_raw_request("fake-id", "gpt-4o", "qwen", {"key": "value"})
 
 
 if __name__ == "__main__":
