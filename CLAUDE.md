@@ -61,12 +61,11 @@ python3 quick_test.py
 
 ## 开发注意事项
 
-1. **零外部依赖** — 只用 Python 标准库，不要引入 pip 包
-2. **修改后必须重启** — 标准 HTTP server 不支持热重载，改代码后运行 `./restart_server.sh`
-3. **计费规则缓存** — 修改 cc-switch.db 后需等 5 分钟或重启服务
-4. **Token 数据延迟** — 运行中 session 的 token 显示为 0，结束后才更新（Hermes 设计机制）
-5. **成本为 0 的两种情况** — 模型不在 cc-switch.db 或 token 为 0
-6. **数据库连接** — 每次查询新建连接，用完立即关闭（无连接池）
+1. **修改后必须重启** — 标准 HTTP server 不支持热重载，改代码后运行 `./restart_server.sh`
+2. **计费规则缓存** — 修改 cc-switch.db 后需等 5 分钟或重启服务
+3. **Token 数据延迟** — 运行中 session 的 token 显示为 0，结束后才更新（Hermes 设计机制）
+4. **成本为 0 的两种情况** — 模型不在 cc-switch.db 或 token 为 0
+5. **数据库连接** — 每次查询新建连接，用完立即关闭（无连接池）
 
 ## 数据库表结构参考
 

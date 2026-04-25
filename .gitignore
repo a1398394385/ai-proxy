@@ -14,3 +14,12 @@
 task_plan.md
 progress.md
 findings.md
+plan_tracking.md
+
+# Runtime
+.proxy.pid
+proxy.log
+data/
+__pycache__/
+*.pyc
+.pytest_cache/

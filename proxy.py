@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Codex Responses API → Chat Completions 转换代理。
-
-纯 Python 标准库，零外部依赖。
-"""
+"""Codex Responses API → Chat Completions 转换代理。"""
 
 import os
 import sys
@@ -274,18 +271,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         parsed = urllib.parse.urlparse(base_url)
         path = parsed.path.rstrip("/") + "/chat/completions"
+        port = parsed.port or (80 if parsed.scheme == "http" else 443)
+        use_ssl = parsed.scheme == "https"
         ssl_ctx = ssl.create_default_context() if upstream_cfg.get("ssl_verify", True) else ssl._create_unverified_context()
 
         for attempt in range(retries):
             conn = None
             try:
                 # 先用 connect_timeout 建立连接
-                conn = http.client.HTTPSConnection(
-                    parsed.hostname,
-                    parsed.port or 443,
-                    timeout=connect_timeout,
-                    context=ssl_ctx,
-                )
+                if use_ssl:
+                    conn = http.client.HTTPSConnection(
+                        parsed.hostname,
+                        port,
+                        timeout=connect_timeout,
+                        context=ssl_ctx,
+                    )
+                else:
+                    conn = http.client.HTTPConnection(
+                        parsed.hostname,
+                        port,
+                        timeout=connect_timeout,
+                    )
                 conn.request("POST", path, body=json.dumps(chat_body), headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
@@ -340,11 +346,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         parsed = urllib.parse.urlparse(base_url)
         path = parsed.path.rstrip("/") + "/chat/completions"
+        port = parsed.port or (80 if parsed.scheme == "http" else 443)
+        use_ssl = parsed.scheme == "https"
         ssl_ctx = ssl.create_default_context() if ssl_verify else ssl._create_unverified_context()
 
-        conn = http.client.HTTPSConnection(
-            parsed.hostname, parsed.port or 443, timeout=connect_timeout, context=ssl_ctx,
-        )
+        if use_ssl:
+            conn = http.client.HTTPSConnection(
+                parsed.hostname, port, timeout=connect_timeout, context=ssl_ctx,
+            )
+        else:
+            conn = http.client.HTTPConnection(
+                parsed.hostname, port, timeout=connect_timeout,
+            )
         conn.request("POST", path, body=json.dumps(chat_body), headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",

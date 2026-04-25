@@ -91,10 +91,9 @@ cc-switch.db 核心表：`model_pricing`（model_id/input_cost_per_million/outpu
 
 ## 开发注意事项
 
-1. **零外部依赖** — 只用 Python 标准库，不要引入 pip 包
-2. **单文件后端** — server.py 同时负责 API 路由和静态文件服务
-3. **静态文件服务** — `/` 和 `/static/*` 走 `SimpleHTTPRequestHandler` 的文件服务逻辑
-4. **CORS** — API 返回 `Access-Control-Allow-Origin: *`
-5. **修改后必须重启** — 标准库 HTTP server 不支持热重载，改代码后跑 `./restart_server.sh`
-6. **Token 数据有延迟** — 运行中 session 的 token 显示为 0，结束后才更新，这是 Hermes 设计机制
-7. **计费规则缺失时成本为 0** — 如果 model 不在 cc-switch.db 中，`calculate_cost` 返回 0
+1. **单文件后端** — server.py 同时负责 API 路由和静态文件服务
+2. **静态文件服务** — `/` 和 `/static/*` 走 `SimpleHTTPRequestHandler` 的文件服务逻辑
+3. **CORS** — API 返回 `Access-Control-Allow-Origin: *`
+4. **修改后必须重启** — 标准库 HTTP server 不支持热重载，改代码后跑 `./restart_server.sh`
+5. **Token 数据有延迟** — 运行中 session 的 token 显示为 0，结束后才更新，这是 Hermes 设计机制
+6. **计费规则缺失时成本为 0** — 如果 model 不在 cc-switch.db 中，`calculate_cost` 返回 0
