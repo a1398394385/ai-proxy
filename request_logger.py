@@ -1,5 +1,6 @@
 """Request Logger — 请求/响应日志记录和 Token 统计。"""
 
+import json
 import sqlite3
 import uuid
 import logging
@@ -69,22 +70,99 @@ class RequestLogger:
         pass
 
     def log_raw_request(self, request_id: str, model: str, target: str, body: str | dict):
-        pass
+        """阶段 1：记录 agent 原始请求。"""
+        try:
+            conn = self._get_conn()
+            try:
+                data = body if isinstance(body, str) else json.dumps(body)
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                conn.execute(
+                    "INSERT INTO debug_log (request_id, stage, model, target_model, data, created_at) "
+                    "VALUES (?, 'raw_request', ?, ?, ?, ?)",
+                    (request_id, model, target, data, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            logging.warning(f"日志写入失败 (raw_request): {e}")
 
     def log_converted_request(self, request_id: str, model: str, target: str, body: dict):
-        pass
+        """阶段 2：记录 proxy 转换后的请求。"""
+        try:
+            conn = self._get_conn()
+            try:
+                data = json.dumps(body)
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                conn.execute(
+                    "INSERT INTO debug_log (request_id, stage, model, target_model, data, created_at) "
+                    "VALUES (?, 'converted_request', ?, ?, ?, ?)",
+                    (request_id, model, target, data, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            logging.warning(f"日志写入失败 (converted_request): {e}")
 
     def log_upstream_response(self, request_id: str, status_code: int, body: str | dict, duration_ms: int):
-        pass
+        """阶段 3：记录上游原始响应。"""
+        try:
+            conn = self._get_conn()
+            try:
+                data = body if isinstance(body, str) else json.dumps(body)
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                conn.execute(
+                    "INSERT INTO debug_log (request_id, stage, status_code, data, created_at) "
+                    "VALUES (?, 'upstream_response', ?, ?, ?)",
+                    (request_id, status_code, data, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            logging.warning(f"日志写入失败 (upstream_response): {e}")
 
     def log_converted_response(self, request_id: str, model: str, target: str, body: dict):
-        pass
+        """阶段 4：记录 proxy 转换后的响应。"""
+        try:
+            conn = self._get_conn()
+            try:
+                data = json.dumps(body)
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                conn.execute(
+                    "INSERT INTO debug_log (request_id, stage, model, target_model, data, created_at) "
+                    "VALUES (?, 'converted_response', ?, ?, ?, ?)",
+                    (request_id, model, target, data, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            logging.warning(f"日志写入失败 (converted_response): {e}")
 
     def log_token_stats(self, request_id: str, agent: str, model: str, target_model: str,
                         request_ts: str, duration_ms: int, input_tokens: int,
                         output_tokens: int, cached_read: int, cached_write: int,
                         status: str):
-        pass
+        """写入 Token 统计记录。"""
+        try:
+            conn = self._get_conn()
+            try:
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                conn.execute(
+                    "INSERT INTO token_stats "
+                    "(request_id, agent, model, target_model, request_ts, duration_ms, "
+                    "input_tokens, output_tokens, cached_read_tokens, cached_write_tokens, status, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (request_id, agent, model, target_model, request_ts, duration_ms,
+                     input_tokens, output_tokens, cached_read, cached_write, status, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            logging.warning(f"日志写入失败 (token_stats): {e}")
 
     def _cleanup_expired(self):
         """启动时清理超过 debug_retention_days 的 debug_log 记录。"""
