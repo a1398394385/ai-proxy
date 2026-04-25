@@ -269,9 +269,21 @@ def _forward_non_streaming(self, chat_body: dict, request_id: str, model: str, t
 
 ### `_forward_streaming`
 
+流式场景处理：
+
 ```python
 def _forward_streaming(self, chat_body: dict, model_cfg: dict, request_id: str, model: str, target: str, request_ts: str):
     # ... 建立连接 ...
+    
+    resp = conn.getresponse()
+    
+    # 检查上游 HTTP 状态，非 200 直接报错
+    if resp.status != 200:
+        error_event = f'event: response.failed\n...'
+        self.wfile.write(error_event.encode("utf-8"))
+        self.wfile.flush()
+        logger.log_upstream_response(request_id, resp.status, resp.read().decode("utf-8", errors="replace"), 0)
+        return
     
     start = time.time()
     
@@ -294,7 +306,10 @@ def _forward_streaming(self, chat_body: dict, model_cfg: dict, request_id: str, 
     full_sse = "".join(sse_buffer)
     
     # 阶段 3：记录上游 SSE（完整，不截断）
-    logger.log_upstream_response(request_id, 200, full_sse, duration_ms)
+    logger.log_upstream_response(request_id, resp.status, full_sse, duration_ms)
+    
+    # 阶段 4：流式无 converted_response，跳过（写入跳过标记）
+    logger.log_converted_response(request_id, model, target, {"streaming": True, "note": "SSE 流式响应，无 converted_response"})
     
     # 阶段 5：记录 Token 统计（从 final_usage 提取）
     agent = _extract_agent(self.headers.get("User-Agent", ""))
@@ -308,6 +323,12 @@ def _forward_streaming(self, chat_body: dict, model_cfg: dict, request_id: str, 
         logger.log_token_stats(request_id, agent, model, target, request_ts, duration_ms,
                               0, 0, 0, 0, "incomplete")
 ```
+
+流式场景下 debug_log 也会有 4 条记录：
+1. `raw_request` — agent 原始请求
+2. `converted_request` — proxy 转换后的请求
+3. `upstream_response` — 完整 SSE 流
+4. `converted_response` — 跳过标记（含 `streaming: true`），使 debug_log 行数一致
 
 ### Agent 识别
 
