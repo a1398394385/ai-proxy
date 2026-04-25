@@ -22,6 +22,13 @@ from transform import (
     create_codex_sse_stream,
 )
 
+from request_logger import (
+    get_logger,
+    init_logger as init_request_logger,
+    _generate_request_id,
+    _extract_agent,
+)
+
 # ─── 最小 YAML 解析器（仅支持 3 层嵌套，标量值）───────────────────────────
 
 def _parse_yaml(text: str) -> dict:
@@ -227,34 +234,55 @@ class ProxyHandler(BaseHTTPRequestHandler):
         # 读取请求体
         content_length = int(self.headers.get("Content-Length", 0))
         body_raw = self.rfile.read(content_length)
+
+        # 生成 request_id
+        request_id = _generate_request_id()
+        request_ts = time.strftime("%Y-%m-%d %H:%M:%S")
+
         try:
             body = json.loads(body_raw)
         except json.JSONDecodeError as e:
             logging.error(f"JSON 解析失败: {e}")
+            model_name = body_raw.decode("utf-8", errors="replace")[:50]
+            logger = get_logger()
+            if logger:
+                logger.log_raw_request(request_id, model_name, "?", {"raw_error": str(e), "raw_body": body_raw.decode("utf-8", errors="replace")[:5000]})
             self._send_json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
             return
 
         model_name = body.get("model", "*")
         model_cfg = resolve_model(model_name)
+        target = model_cfg["target"]
         is_stream = body.get("stream", False)
 
-        logging.info(f"请求: model={model_name}, stream={is_stream}, target={model_cfg['target']}")
+        logging.info(f"请求: model={model_name}, stream={is_stream}, target={target}")
+
+        # 阶段 1：记录原始请求
+        logger = get_logger()
+        if logger:
+            logger.log_raw_request(request_id, model_name, target, body)
 
         # 转换请求体
         try:
             chat_body = responses_to_chat(body, model_cfg)
         except Exception as e:
             logging.exception("responses_to_chat 转换失败")
+            if logger:
+                logger.log_converted_request(request_id, model_name, target, {"error": str(e)})
             self._send_json(500, {"error": {"type": "internal_error", "message": str(e)}})
             return
 
-        # 转发到上游
-        if is_stream:
-            self._forward_streaming(chat_body, model_cfg)
-        else:
-            self._forward_non_streaming(chat_body)
+        # 阶段 2：记录转换后的请求
+        if logger:
+            logger.log_converted_request(request_id, model_name, target, chat_body)
 
-    def _forward_non_streaming(self, chat_body: dict):
+        # 转发到上游（传入 request_id, model_name, target, request_ts）
+        if is_stream:
+            self._forward_streaming(chat_body, model_cfg, request_id, model_name, target, request_ts)
+        else:
+            self._forward_non_streaming(chat_body, request_id, model_name, target, request_ts)
+
+    def _forward_non_streaming(self, chat_body: dict, request_id: str, model: str, target: str, request_ts: str):
         """非流式：转发到上游，转换响应，返回。
 
         超时处理：
@@ -298,10 +326,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 })
 
                 # 连接成功后设 read timeout（总超时 - 已用时）
+                start = time.time()
                 resp = conn.getresponse()
                 if conn.sock:
                     conn.sock.settimeout(timeout)
                 resp_body = resp.read()
+                duration_ms = int((time.time() - start) * 1000)
                 conn.close()
                 conn = None
 
@@ -310,15 +340,45 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     continue
 
                 if resp.status != 200:
+                    logger = get_logger()
+                    if logger:
+                        logger.log_upstream_response(request_id, resp.status, resp_body.decode("utf-8", errors="replace"), duration_ms)
                     self.send_response(resp.status)
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
                     self.wfile.write(resp_body)
                     return
 
-                # 转换响应
-                chat_response = json.loads(resp_body)
-                responses_response = chat_to_responses(chat_response)
+                # 阶段 3：记录上游响应
+                try:
+                    chat_response = json.loads(resp_body)
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    chat_response = {"error": str(e), "raw": resp_body.decode("utf-8", errors="replace")[:5000]}
+
+                logger = get_logger()
+                if logger:
+                    logger.log_upstream_response(request_id, resp.status, chat_response, duration_ms)
+
+                # 阶段 4 + 5：转换响应 + Token 统计
+                try:
+                    responses_response = chat_to_responses(chat_response)
+                    if logger:
+                        logger.log_converted_response(request_id, model, target, responses_response)
+
+                        agent = _extract_agent(self.headers.get("User-Agent", ""))
+                        usage = chat_response.get("usage", {})
+                        logger.log_token_stats(
+                            request_id, agent, model, target, request_ts, duration_ms,
+                            usage.get("prompt_tokens", 0),
+                            usage.get("completion_tokens", 0),
+                            usage.get("prompt_tokens_details", {}).get("cached_tokens", 0),
+                            0, "completed",
+                        )
+                except Exception as e:
+                    logging.exception("chat_to_responses 转换失败")
+                    if logger:
+                        logger.log_converted_response(request_id, model, target, {"error": str(e)})
+
                 self._send_json(200, responses_response)
                 return
 
@@ -335,7 +395,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
 
-    def _forward_streaming(self, chat_body: dict, model_cfg: dict):
+    def _forward_streaming(self, chat_body: dict, model_cfg: dict, request_id: str, model: str, target: str, request_ts: str):
         """流式：直连上游 SSE，通过 create_codex_sse_stream 转换后逐事件返回。"""
         upstream_cfg = CONFIG.get("upstream", {})
         base_url = upstream_cfg["base_url"]
@@ -371,39 +431,53 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
 
+        resp = conn.getresponse()
+        if conn.sock:
+            conn.sock.settimeout(timeout)
+
+        # 验证上游 Content-Type，非 SSE 则包装为 response.failed
+        ct = resp.getheader("Content-Type", "")
+        if resp.status != 200:
+            error_event = (
+                f'event: response.failed\n'
+                f'data: {{"type":"error","error":{{"type":"server_error",'
+                f'"message":"Upstream returned HTTP {resp.status}"}}}}\n\n'
+            )
+            self.wfile.write(error_event.encode("utf-8"))
+            self.wfile.flush()
+            logger = get_logger()
+            if logger:
+                logger.log_upstream_response(request_id, resp.status, resp.read().decode("utf-8", errors="replace"), 0)
+            return
+
+        if "text/event-stream" not in ct:
+            logging.warning(f"上游返回非 SSE Content-Type: {ct}")
+            error_event = (
+                f'event: response.failed\n'
+                f'data: {{"type":"error","error":{{"type":"server_error",'
+                f'"message":"Upstream returned non-SSE Content-Type: {ct}"}}}}\n\n'
+            )
+            self.wfile.write(error_event.encode("utf-8"))
+            self.wfile.flush()
+            return
+
+        # 核心：通过 create_codex_sse_stream 逐事件转换并发送
+        start = time.time()
+        sse_buffer = []
+        final_usage = None
+        upstream_status = resp.status
+
         try:
-            resp = conn.getresponse()
-            if conn.sock:
-                conn.sock.settimeout(timeout)
-
-            # 验证上游 Content-Type，非 SSE 则包装为 response.failed
-            ct = resp.getheader("Content-Type", "")
-            if resp.status != 200:
-                error_event = (
-                    f'event: response.failed\n'
-                    f'data: {{"type":"error","error":{{"type":"server_error",'
-                    f'"message":"Upstream returned HTTP {resp.status}"}}}}\n\n'
-                )
-                self.wfile.write(error_event.encode("utf-8"))
-                self.wfile.flush()
-                return
-
-            if "text/event-stream" not in ct:
-                logging.warning(f"上游返回非 SSE Content-Type: {ct}")
-                error_event = (
-                    f'event: response.failed\n'
-                    f'data: {{"type":"error","error":{{"type":"server_error",'
-                    f'"message":"Upstream returned non-SSE Content-Type: {ct}"}}}}\n\n'
-                )
-                self.wfile.write(error_event.encode("utf-8"))
-                self.wfile.flush()
-                return
-
-            # 核心：通过 create_codex_sse_stream 逐事件转换并发送
             for sse_event in create_codex_sse_stream(resp):
                 self.wfile.write(sse_event.encode("utf-8"))
                 self.wfile.flush()
-
+                sse_buffer.append(sse_event)
+                if "response.completed" in sse_event:
+                    try:
+                        data = json.loads(sse_event.split("data: ", 1)[1])
+                        final_usage = data.get("usage")
+                    except (json.JSONDecodeError, IndexError):
+                        pass
         except Exception as e:
             logging.exception("流式转发异常")
             try:
@@ -416,11 +490,38 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.wfile.flush()
             except Exception:
                 pass
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+
+        duration_ms = int((time.time() - start) * 1000)
+        full_sse = "".join(sse_buffer)
+
+        # 阶段 3：记录上游 SSE
+        logger = get_logger()
+        if logger:
+            logger.log_upstream_response(request_id, upstream_status, full_sse, duration_ms)
+
+            # 阶段 4：流式无 converted_response，跳过标记
+            logger.log_converted_response(request_id, model, target, {"streaming": True, "note": "SSE 流式响应，无 converted_response"})
+
+            # 阶段 5：记录 Token 统计
+            agent = _extract_agent(self.headers.get("User-Agent", ""))
+            if final_usage:
+                logger.log_token_stats(
+                    request_id, agent, model, target, request_ts, duration_ms,
+                    final_usage.get("prompt_tokens", 0),
+                    final_usage.get("completion_tokens", 0),
+                    final_usage.get("prompt_tokens_details", {}).get("cached_tokens", 0),
+                    0, "completed",
+                )
+            else:
+                logger.log_token_stats(
+                    request_id, agent, model, target, request_ts, duration_ms,
+                    0, 0, 0, 0, "incomplete",
+                )
+
+        try:
+            conn.close()
+        except Exception:
+            pass
 
     def _send_json(self, status_code: int, data: dict):
         """发送 JSON 响应。"""
@@ -445,6 +546,12 @@ def main():
     proxy_cfg = CONFIG.get("proxy", {})
     host = proxy_cfg.get("host", "127.0.0.1")
     port = proxy_cfg.get("port", 48743)
+
+    logging_cfg = CONFIG.get("logging", {})
+    retention_days = logging_cfg.get("debug_retention_days", 7)
+    log_dir = logging_cfg.get("log_dir", "data")
+    db_file = logging_cfg.get("log_file", "access_log.db")
+    init_request_logger(Path(__file__).parent / log_dir / db_file, retention_days)
 
     server = ThreadedHTTPServer((host, port), ProxyHandler)
     logging.info(f"Codex Proxy 启动: http://{host}:{port}")
