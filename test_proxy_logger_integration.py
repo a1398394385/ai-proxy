@@ -75,11 +75,16 @@ def _make_handler(mod, body: bytes):
     hdr = MagicMock()
     hdr.get = lambda k, d=None: {"Content-Length": str(len(body)), "User-Agent": "codex-cli/1.0"}.get(k, d)
     handler.headers = hdr
+    # Mock HTTP server response methods (send_response, end_headers etc.)
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
     # 绑定真实方法，让代理流程继续执行
     handler._forward_non_streaming = lambda *a, **kw: mod.ProxyHandler._forward_non_streaming(handler, *a, **kw)
     handler._forward_streaming = lambda *a, **kw: mod.ProxyHandler._forward_streaming(handler, *a, **kw)
-    handler._send_json = lambda s, d: None
-    return handler
+    sent = {}
+    handler._send_json = lambda status, data: sent.update({"status": status, "data": data})
+    return handler, sent
 
 
 class TestJsonParseFailure(unittest.TestCase):
@@ -96,9 +101,7 @@ class TestJsonParseFailure(unittest.TestCase):
 
     def test_json_parse_failure_records_raw_request(self):
         body = b"not valid json"
-        handler = _make_handler(self.mod, body)
-        sent = {}
-        handler._send_json = lambda s, d: sent.update({"status": s, "data": d})
+        handler, sent = _make_handler(self.mod, body)
 
         self.mod.ProxyHandler._handle_responses(handler)
 
@@ -135,7 +138,7 @@ class TestUpstream500Error(unittest.TestCase):
                 "model": "gpt-4o",
                 "input": [{"type": "message", "role": "user", "content": "Hi"}],
             }).encode()
-            handler = _make_handler(self.mod, body)
+            handler, _ = _make_handler(self.mod, body)
             self.mod.ProxyHandler._handle_responses(handler)
 
         stages = [r["stage"] for r in _query_debug_log(self.db_path)]
@@ -179,7 +182,7 @@ class TestFullRequestFlow(unittest.TestCase):
                 "model": "gpt-4o",
                 "input": [{"type": "message", "role": "user", "content": "Hi"}],
             }).encode()
-            handler = _make_handler(self.mod, body)
+            handler, _ = _make_handler(self.mod, body)
             self.mod.ProxyHandler._handle_responses(handler)
 
         stages = [r["stage"] for r in _query_debug_log(self.db_path)]
@@ -227,7 +230,7 @@ class TestConversionException(unittest.TestCase):
                     "model": "gpt-4o",
                     "input": [{"type": "message", "role": "user", "content": "Hi"}],
                 }).encode()
-                handler = _make_handler(self.mod, body)
+                handler, _ = _make_handler(self.mod, body)
                 self.mod.ProxyHandler._handle_responses(handler)
 
         stages = [r["stage"] for r in _query_debug_log(self.db_path)]
@@ -237,6 +240,100 @@ class TestConversionException(unittest.TestCase):
         self.assertIn("converted_response", stages)
         cr = [r for r in _query_debug_log(self.db_path) if r["stage"] == "converted_response"][0]
         self.assertIn("error", json.loads(cr["data"]))
+
+
+class TestStreamingFlow(unittest.TestCase):
+    """流式 SSE 场景：验证 _forward_streaming 路径的日志记录。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmpdir.name) / "test.db"
+        request_logger._logger = RequestLogger(self.db_path)
+        self.mod = _load_proxy()
+        _configure(self.mod)
+
+    def tearDown(self):
+        request_logger._logger = None
+        self.tmpdir.cleanup()
+
+    def test_streaming_flow_logs_upstream_and_token_stats(self):
+        """流式请求：有 upstream_response + converted_response + token_stats。"""
+        sse_events = [
+            "data: {\"type\":\"response.output_item.added\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":50,\"prompt_tokens_details\":{\"cached_tokens\":20}}}\n\n",
+        ]
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.getheader.return_value = "text/event-stream"
+        mock_resp.read.return_value = b""
+
+        with patch("http.client.HTTPConnection") as mock_conn_cls:
+            mock_conn = MagicMock()
+            mock_conn.getresponse.return_value = mock_resp
+            mock_conn.sock = MagicMock()
+            mock_conn_cls.return_value = mock_conn
+
+            with patch.object(self.mod, "create_codex_sse_stream", return_value=sse_events):
+                body = json.dumps({
+                    "model": "gpt-4o",
+                    "input": [{"type": "message", "role": "user", "content": "Hi"}],
+                    "stream": True,
+                }).encode()
+                handler, _ = _make_handler(self.mod, body)
+                self.mod.ProxyHandler._handle_responses(handler)
+
+        stages = [r["stage"] for r in _query_debug_log(self.db_path)]
+        self.assertIn("raw_request", stages)
+        self.assertIn("converted_request", stages)
+        self.assertIn("upstream_response", stages)
+        self.assertIn("converted_response", stages)
+
+        # converted_response 应标记 streaming
+        cr = [r for r in _query_debug_log(self.db_path) if r["stage"] == "converted_response"][0]
+        data = json.loads(cr["data"])
+        self.assertTrue(data["streaming"])
+
+        # token_stats 应有正确的值
+        stats = _query_token_stats(self.db_path)
+        self.assertEqual(len(stats), 1)
+        self.assertEqual(stats[0]["input_tokens"], 100)
+        self.assertEqual(stats[0]["output_tokens"], 50)
+        self.assertEqual(stats[0]["cached_read_tokens"], 20)
+        self.assertEqual(stats[0]["status"], "completed")
+
+    def test_streaming_sse_interrupt_no_final_usage(self):
+        """SSE 中断场景：无 final_usage → token_stats 为 incomplete。"""
+        sse_events = [
+            "data: {\"type\":\"response.output_item.added\"}\n\n",
+        ]
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.getheader.return_value = "text/event-stream"
+        mock_resp.read.return_value = b""
+
+        with patch("http.client.HTTPConnection") as mock_conn_cls:
+            mock_conn = MagicMock()
+            mock_conn.getresponse.return_value = mock_resp
+            mock_conn.sock = MagicMock()
+            mock_conn_cls.return_value = mock_conn
+
+            with patch.object(self.mod, "create_codex_sse_stream", return_value=sse_events):
+                body = json.dumps({
+                    "model": "gpt-4o",
+                    "input": [{"type": "message", "role": "user", "content": "Hi"}],
+                    "stream": True,
+                }).encode()
+                handler, _ = _make_handler(self.mod, body)
+                self.mod.ProxyHandler._handle_responses(handler)
+
+        stages = [r["stage"] for r in _query_debug_log(self.db_path)]
+        self.assertIn("upstream_response", stages)
+        self.assertIn("converted_response", stages)
+
+        stats = _query_token_stats(self.db_path)
+        self.assertEqual(len(stats), 1)
+        self.assertEqual(stats[0]["status"], "incomplete")
+        self.assertEqual(stats[0]["input_tokens"], 0)
 
 
 class TestLogWriteFailure(unittest.TestCase):
@@ -272,7 +369,7 @@ class TestLogWriteFailure(unittest.TestCase):
                 "model": "gpt-4o",
                 "input": [{"type": "message", "role": "user", "content": "Hi"}],
             }).encode()
-            handler = _make_handler(self.mod, body)
+            handler, _ = _make_handler(self.mod, body)
             self.mod.ProxyHandler._handle_responses(handler)
 
 
