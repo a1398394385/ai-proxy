@@ -385,9 +385,9 @@ def create_codex_sse_stream(upstream_response):
                     yield event_str
 
     # 所有 chunk 读完，发送 completion
-    if state.created_sent:
-        for event_str in _emit_completion(state):
-            yield event_str
+    # 即使从未发过 created（无 delta 的空响应），也需发送 completed 让客户端正常结束
+    for event_str in _emit_completion(state):
+        yield event_str
 
 
 def _emit_created(state: StreamState) -> list:
@@ -397,14 +397,18 @@ def _emit_created(state: StreamState) -> list:
     """
     events = []
     created = {
-        "id": state.response_id,
-        "object": "response",
-        "model": state.model,
-        "status": "in_progress",
-        "output": [],
+        "type": "response.created",
+        "response": {
+            "id": state.response_id,
+            "object": "response",
+            "model": state.model,
+            "status": "in_progress",
+            "output": [],
+        },
     }
     events.append(("response.created", created))
     metadata = {
+        "type": "response.metadata",
         "model": state.model,
         "previous_response_id": None,
     }
@@ -552,26 +556,29 @@ def _emit_completion(state: StreamState) -> list:
 
     # completed
     usage = state.usage
-    completed = {
-        "id": state.response_id,
-        "status": FINISH_REASON_MAP.get(state.finish_reason, "completed"),
-        "output": state.output_items,
-        "usage": {
-            "input_tokens": usage.get("prompt_tokens", 0),
-            "output_tokens": usage.get("completion_tokens", 0),
-            "total_tokens": usage.get("total_tokens", 0),
-            "input_tokens_details": {
-                "cached_tokens": usage.get("prompt_tokens_details", {}).get("cached_tokens", 0),
-            },
-            "output_tokens_details": {
-                "reasoning_tokens": usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0),
+    completed_data = {
+        "type": "response.completed",
+        "response": {
+            "id": state.response_id,
+            "status": FINISH_REASON_MAP.get(state.finish_reason, "completed"),
+            "output": state.output_items,
+            "usage": {
+                "input_tokens": usage.get("prompt_tokens", 0),
+                "output_tokens": usage.get("completion_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0),
+                "input_tokens_details": {
+                    "cached_tokens": usage.get("prompt_tokens_details", {}).get("cached_tokens", 0),
+                },
+                "output_tokens_details": {
+                    "reasoning_tokens": usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0),
+                },
             },
         },
     }
     if state.finish_reason in INCOMPLETE_REASON_MAP:
-        completed["incomplete_details"] = {"reason": INCOMPLETE_REASON_MAP[state.finish_reason]}
+        completed_data["response"]["incomplete_details"] = {"reason": INCOMPLETE_REASON_MAP[state.finish_reason]}
     events.append(
-        f'event: response.completed\ndata: {json.dumps(completed, ensure_ascii=False, separators=(",", ":"))}\n\n'
+        f'event: response.completed\ndata: {json.dumps(completed_data, ensure_ascii=False, separators=(",", ":"))}\n\n'
     )
 
     return events

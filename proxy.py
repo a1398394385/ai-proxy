@@ -490,11 +490,24 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 )
                 self.wfile.write(error_event.encode("utf-8"))
                 self.wfile.flush()
+                # 发送 completed 让客户端正常结束
+                completed_event = (
+                    f'event: response.completed\n'
+                    f'data: {{"id":"","status":"failed","output":[],"usage":{{"input_tokens":0,"output_tokens":0,"total_tokens":0,"input_tokens_details":{{}},"output_tokens_details":{{}}}}}}\n\n'
+                )
+                self.wfile.write(completed_event.encode("utf-8"))
+                self.wfile.flush()
             except Exception:
                 pass
 
         duration_ms = int((time.time() - start) * 1000)
         full_sse = "".join(sse_buffer)
+
+        # 关闭客户端响应流，让客户端知道流已结束
+        try:
+            self.wfile.close()
+        except Exception:
+            pass
 
         # 阶段 3：记录上游 SSE
         logger = get_logger()
