@@ -24,3 +24,8 @@ model_map:
   "*":
     target: "qwen3.6-plus"
     multimodal: true
+
+logging:
+  debug_retention_days: 7
+  log_dir: "data"
+  log_file: "access_log.db"

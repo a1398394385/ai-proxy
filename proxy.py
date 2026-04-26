@@ -542,7 +542,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
 # ─── 主入口 ────────────────────────────────────────────────────────
 
 def main():
-    load_config()
+    import argparse
+    parser = argparse.ArgumentParser(description="Codex Proxy")
+    parser.add_argument("-c", "--config", default=None, help="配置文件路径")
+    args = parser.parse_args()
+
+    load_config(Path(args.config) if args.config else None)
     rotate_log_if_needed()
 
     proxy_cfg = CONFIG.get("proxy", {})
