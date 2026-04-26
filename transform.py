@@ -419,8 +419,7 @@ def _emit_created(state: StreamState) -> list:
     events.append(("response.created", created))
     metadata = {
         "type": "response.metadata",
-        "model": state.model,
-        "previous_response_id": None,
+        "headers": {"model": state.model},
     }
     events.append(("response.metadata", metadata))
     state.created_sent = True

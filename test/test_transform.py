@@ -857,32 +857,59 @@ class TestSSEEventFormatIntegration(unittest.TestCase):
                 events.append((etype, data))
         return events
 
-    def test_all_events_have_type_field(self):
-        """纯文本流中每个事件的 data JSON 都包含 "type" 字段且与 event 行一致。"""
-        from transform import create_codex_sse_stream
-
+    @staticmethod
+    def _make_mock_stream(chunks):
+        """工厂：用 chunks 列表创建可读的 MockStream。"""
         class MockStream:
             def __init__(self):
-                chunks = [
-                    b'event: message\ndata: {"id":"chatcmpl-1","model":"test","choices":[{"delta":{"content":"Hello"},"index":0}]}\n\n',
-                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{"content":" World"},"index":0}]}\n\n',
-                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}\n\n',
-                    b'data: [DONE]\n\n',
-                ]
                 self.data = b"".join(chunks)
                 self.pos = 0
-
             def read(self, size):
                 chunk = self.data[self.pos:self.pos + size]
                 self.pos += size
                 return chunk
+        return MockStream()
 
-        stream = MockStream()
+    def _stream_to_events(self, chunks):
+        """辅助：chunks → create_codex_sse_stream → _parse_events。"""
+        from transform import create_codex_sse_stream
+
+        stream = self._make_mock_stream(chunks)
         text = ""
         for event in create_codex_sse_stream(stream):
             text += event
+        return self._parse_events(text)
 
-        events = self._parse_events(text)
+    # -- 预定义 chunk 数据 --
+
+    TEXT_ONLY_CHUNKS = [
+        b'event: message\ndata: {"id":"chatcmpl-1","model":"test","choices":[{"delta":{"content":"Hello"},"index":0}]}\n\n',
+        b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{"content":" World"},"index":0}]}\n\n',
+        b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}\n\n',
+        b'data: [DONE]\n\n',
+    ]
+
+    TRUNCATED_CHUNKS = [
+        b'event: message\ndata: {"id":"chatcmpl-1","model":"test","choices":[{"delta":{"content":"trunc"},"index":0,"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}\n\n',
+        b'data: [DONE]\n\n',
+    ]
+
+    REASONING_CHUNKS = [
+        b'event: message\ndata: {"id":"chatcmpl-1","model":"test","choices":[{"delta":{"reasoning_content":"Think..."},"index":0}]}\n\n',
+        b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Answer"},"index":0}]}\n\n',
+        b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}\n\n',
+        b'data: [DONE]\n\n',
+    ]
+
+    BASIC_CHUNKS = [
+        b'event: message\ndata: {"id":"chatcmpl-1","model":"test","choices":[{"delta":{"content":"Hi"},"index":0}]}\n\n',
+        b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',
+        b'data: [DONE]\n\n',
+    ]
+
+    def test_all_events_have_type_field(self):
+        """纯文本流中每个事件的 data JSON 都包含 "type" 字段且与 event 行一致。"""
+        events = self._stream_to_events(self.TEXT_ONLY_CHUNKS)
         self.assertGreater(len(events), 0, "至少应有一个 SSE 事件")
         for etype, data in events:
             self.assertIn("type", data, f"事件 '{etype}' 的 data JSON 缺少 'type' 字段")
@@ -891,28 +918,7 @@ class TestSSEEventFormatIntegration(unittest.TestCase):
 
     def test_response_incomplete_has_response_wrapping(self):
         """truncated 流中 response.incomplete 事件有 "response" 包裹。"""
-        from transform import create_codex_sse_stream
-
-        class MockStream:
-            def __init__(self):
-                chunks = [
-                    b'event: message\ndata: {"id":"chatcmpl-1","model":"test","choices":[{"delta":{"content":"trunc"},"index":0,"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}\n\n',
-                    b'data: [DONE]\n\n',
-                ]
-                self.data = b"".join(chunks)
-                self.pos = 0
-
-            def read(self, size):
-                chunk = self.data[self.pos:self.pos + size]
-                self.pos += size
-                return chunk
-
-        stream = MockStream()
-        text = ""
-        for event in create_codex_sse_stream(stream):
-            text += event
-
-        events = self._parse_events(text)
+        events = self._stream_to_events(self.TRUNCATED_CHUNKS)
         incomplete = [e for e in events if e[0] == "response.incomplete"]
         self.assertEqual(len(incomplete), 1, "应有一个 response.incomplete 事件")
         _, data = incomplete[0]
@@ -922,30 +928,7 @@ class TestSSEEventFormatIntegration(unittest.TestCase):
 
     def test_reasoning_plus_text_events_have_type_field(self):
         """推理+文本流中所有事件类型都出现且都有 "type" 字段。"""
-        from transform import create_codex_sse_stream
-
-        class MockStream:
-            def __init__(self):
-                chunks = [
-                    b'event: message\ndata: {"id":"chatcmpl-1","model":"test","choices":[{"delta":{"reasoning_content":"Think..."},"index":0}]}\n\n',
-                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Answer"},"index":0}]}\n\n',
-                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}\n\n',
-                    b'data: [DONE]\n\n',
-                ]
-                self.data = b"".join(chunks)
-                self.pos = 0
-
-            def read(self, size):
-                chunk = self.data[self.pos:self.pos + size]
-                self.pos += size
-                return chunk
-
-        stream = MockStream()
-        text = ""
-        for event in create_codex_sse_stream(stream):
-            text += event
-
-        events = self._parse_events(text)
+        events = self._stream_to_events(self.REASONING_CHUNKS)
         expected = {
             "response.created", "response.metadata",
             "response.output_item.added", "response.reasoning_summary_text.delta",
@@ -961,29 +944,7 @@ class TestSSEEventFormatIntegration(unittest.TestCase):
 
     def test_first_event_matches_codex_fixture(self):
         """快照：第一个事件 response.created 与 Codex fixture 格式一致。"""
-        from transform import create_codex_sse_stream
-
-        class MockStream:
-            def __init__(self):
-                chunks = [
-                    b'event: message\ndata: {"id":"chatcmpl-1","model":"test","choices":[{"delta":{"content":"Hi"},"index":0}]}\n\n',
-                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',
-                    b'data: [DONE]\n\n',
-                ]
-                self.data = b"".join(chunks)
-                self.pos = 0
-
-            def read(self, size):
-                chunk = self.data[self.pos:self.pos + size]
-                self.pos += size
-                return chunk
-
-        stream = MockStream()
-        text = ""
-        for event in create_codex_sse_stream(stream):
-            text += event
-
-        events = self._parse_events(text)
+        events = self._stream_to_events(self.BASIC_CHUNKS)
         etype, data = events[0]
         self.assertEqual(etype, "response.created")
         self.assertEqual(data["type"], "response.created")
@@ -992,29 +953,7 @@ class TestSSEEventFormatIntegration(unittest.TestCase):
 
     def test_last_event_matches_codex_fixture(self):
         """快照：最后一个事件 response.completed 与 Codex fixture 格式一致。"""
-        from transform import create_codex_sse_stream
-
-        class MockStream:
-            def __init__(self):
-                chunks = [
-                    b'event: message\ndata: {"id":"chatcmpl-1","model":"test","choices":[{"delta":{"content":"Hi"},"index":0}]}\n\n',
-                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',
-                    b'data: [DONE]\n\n',
-                ]
-                self.data = b"".join(chunks)
-                self.pos = 0
-
-            def read(self, size):
-                chunk = self.data[self.pos:self.pos + size]
-                self.pos += size
-                return chunk
-
-        stream = MockStream()
-        text = ""
-        for event in create_codex_sse_stream(stream):
-            text += event
-
-        events = self._parse_events(text)
+        events = self._stream_to_events(self.BASIC_CHUNKS)
         etype, data = events[-1]
         self.assertEqual(etype, "response.completed")
         self.assertEqual(data["type"], "response.completed")
