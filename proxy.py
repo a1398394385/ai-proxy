@@ -368,12 +368,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
                         agent = _extract_agent(self.headers.get("User-Agent", ""))
                         usage = chat_response.get("usage", {})
+                        cached_read = (
+                            usage.get("cache_read_input_tokens", 0)
+                            or usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
+                        )
+                        cache_write = usage.get("cache_creation_input_tokens", 0)
                         logger.log_token_stats(
                             request_id, agent, model, target, request_ts, duration_ms,
                             usage.get("prompt_tokens", 0),
                             usage.get("completion_tokens", 0),
-                            usage.get("prompt_tokens_details", {}).get("cached_tokens", 0),
-                            0, "completed",
+                            cached_read,
+                            cache_write,
+                            "completed",
                         )
                 except Exception as e:
                     logging.exception("chat_to_responses 转换失败")
@@ -554,12 +560,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # 阶段 5：记录 Token 统计
             agent = _extract_agent(self.headers.get("User-Agent", ""))
             if final_usage:
+                details = final_usage.get("input_tokens_details", {})
                 logger.log_token_stats(
                     request_id, agent, model, target, request_ts, duration_ms,
                     final_usage.get("input_tokens", 0),
                     final_usage.get("output_tokens", 0),
-                    final_usage.get("input_tokens_details", {}).get("cached_tokens", 0),
-                    0, "completed",
+                    details.get("cached_tokens", 0),
+                    details.get("cache_creation_input_tokens", 0),
+                    "completed",
                 )
             else:
                 logger.log_token_stats(

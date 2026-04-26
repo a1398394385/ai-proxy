@@ -586,6 +586,13 @@ def _emit_completion(state: StreamState) -> list:
 
     # completed
     usage = state.usage
+    # 缓存 token：兼容 OpenAI 格式 (prompt_tokens_details.cached_tokens) 和
+    # Anthropic 格式 (cache_read_input_tokens / cache_creation_input_tokens)
+    cached_read = (
+        usage.get("cache_read_input_tokens", 0)
+        or usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
+    )
+    cache_write = usage.get("cache_creation_input_tokens", 0)
     completed_response = {
         "id": state.response_id,
         "status": FINISH_REASON_MAP.get(state.finish_reason, "completed"),
@@ -595,7 +602,8 @@ def _emit_completion(state: StreamState) -> list:
             "output_tokens": usage.get("completion_tokens", 0),
             "total_tokens": usage.get("total_tokens", 0),
             "input_tokens_details": {
-                "cached_tokens": usage.get("prompt_tokens_details", {}).get("cached_tokens", 0),
+                "cached_tokens": cached_read,
+                "cache_creation_input_tokens": cache_write,
             },
             "output_tokens_details": {
                 "reasoning_tokens": usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0),
