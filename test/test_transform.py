@@ -837,5 +837,191 @@ class TestFormatSSEEvent(unittest.TestCase):
         self.assertEqual(payload["response"]["incomplete_details"]["reason"], "max_tokens")
 
 
+class TestSSEEventFormatIntegration(unittest.TestCase):
+    """集成测试 — 逐事件验证 create_codex_sse_stream 输出的 data JSON 包含 "type" 字段。"""
+
+    @staticmethod
+    def _parse_events(text):
+        """解析 SSE 文本，返回 [(event_type, data_dict), ...] 列表。"""
+        events = []
+        for block in text.strip().split("\n\n"):
+            lines = block.split("\n")
+            etype = None
+            data = None
+            for line in lines:
+                if line.startswith("event: "):
+                    etype = line[7:]
+                elif line.startswith("data: "):
+                    data = json.loads(line[6:])
+            if etype and data:
+                events.append((etype, data))
+        return events
+
+    def test_all_events_have_type_field(self):
+        """纯文本流中每个事件的 data JSON 都包含 "type" 字段且与 event 行一致。"""
+        from transform import create_codex_sse_stream
+
+        class MockStream:
+            def __init__(self):
+                chunks = [
+                    b'event: message\ndata: {"id":"chatcmpl-1","model":"test","choices":[{"delta":{"content":"Hello"},"index":0}]}\n\n',
+                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{"content":" World"},"index":0}]}\n\n',
+                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}\n\n',
+                    b'data: [DONE]\n\n',
+                ]
+                self.data = b"".join(chunks)
+                self.pos = 0
+
+            def read(self, size):
+                chunk = self.data[self.pos:self.pos + size]
+                self.pos += size
+                return chunk
+
+        stream = MockStream()
+        text = ""
+        for event in create_codex_sse_stream(stream):
+            text += event
+
+        events = self._parse_events(text)
+        self.assertGreater(len(events), 0, "至少应有一个 SSE 事件")
+        for etype, data in events:
+            self.assertIn("type", data, f"事件 '{etype}' 的 data JSON 缺少 'type' 字段")
+            self.assertEqual(data["type"], etype,
+                             f"data.type='{data.get('type')}' 与 event 行 '{etype}' 不一致")
+
+    def test_response_incomplete_has_response_wrapping(self):
+        """truncated 流中 response.incomplete 事件有 "response" 包裹。"""
+        from transform import create_codex_sse_stream
+
+        class MockStream:
+            def __init__(self):
+                chunks = [
+                    b'event: message\ndata: {"id":"chatcmpl-1","model":"test","choices":[{"delta":{"content":"trunc"},"index":0,"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}\n\n',
+                    b'data: [DONE]\n\n',
+                ]
+                self.data = b"".join(chunks)
+                self.pos = 0
+
+            def read(self, size):
+                chunk = self.data[self.pos:self.pos + size]
+                self.pos += size
+                return chunk
+
+        stream = MockStream()
+        text = ""
+        for event in create_codex_sse_stream(stream):
+            text += event
+
+        events = self._parse_events(text)
+        incomplete = [e for e in events if e[0] == "response.incomplete"]
+        self.assertEqual(len(incomplete), 1, "应有一个 response.incomplete 事件")
+        _, data = incomplete[0]
+        self.assertIn("response", data, "response.incomplete 的 data 缺少 'response' 键")
+        self.assertIn("incomplete_details", data["response"])
+        self.assertEqual(data["response"]["incomplete_details"]["reason"], "max_tokens")
+
+    def test_reasoning_plus_text_events_have_type_field(self):
+        """推理+文本流中所有事件类型都出现且都有 "type" 字段。"""
+        from transform import create_codex_sse_stream
+
+        class MockStream:
+            def __init__(self):
+                chunks = [
+                    b'event: message\ndata: {"id":"chatcmpl-1","model":"test","choices":[{"delta":{"reasoning_content":"Think..."},"index":0}]}\n\n',
+                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Answer"},"index":0}]}\n\n',
+                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}\n\n',
+                    b'data: [DONE]\n\n',
+                ]
+                self.data = b"".join(chunks)
+                self.pos = 0
+
+            def read(self, size):
+                chunk = self.data[self.pos:self.pos + size]
+                self.pos += size
+                return chunk
+
+        stream = MockStream()
+        text = ""
+        for event in create_codex_sse_stream(stream):
+            text += event
+
+        events = self._parse_events(text)
+        expected = {
+            "response.created", "response.metadata",
+            "response.output_item.added", "response.reasoning_summary_text.delta",
+            "response.reasoning_summary_text.done", "response.output_item.done",
+            "response.output_text.delta", "response.output_text.done",
+            "response.completed",
+        }
+        found = {e[0] for e in events}
+        missing = expected - found
+        self.assertFalse(missing, f"缺少事件类型: {missing}")
+        for etype, data in events:
+            self.assertIn("type", data, f"事件 '{etype}' 的 data JSON 缺少 'type' 字段")
+
+    def test_first_event_matches_codex_fixture(self):
+        """快照：第一个事件 response.created 与 Codex fixture 格式一致。"""
+        from transform import create_codex_sse_stream
+
+        class MockStream:
+            def __init__(self):
+                chunks = [
+                    b'event: message\ndata: {"id":"chatcmpl-1","model":"test","choices":[{"delta":{"content":"Hi"},"index":0}]}\n\n',
+                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',
+                    b'data: [DONE]\n\n',
+                ]
+                self.data = b"".join(chunks)
+                self.pos = 0
+
+            def read(self, size):
+                chunk = self.data[self.pos:self.pos + size]
+                self.pos += size
+                return chunk
+
+        stream = MockStream()
+        text = ""
+        for event in create_codex_sse_stream(stream):
+            text += event
+
+        events = self._parse_events(text)
+        etype, data = events[0]
+        self.assertEqual(etype, "response.created")
+        self.assertEqual(data["type"], "response.created")
+        self.assertIn("response", data)
+        self.assertTrue(data["response"]["id"].startswith("resp-"))
+
+    def test_last_event_matches_codex_fixture(self):
+        """快照：最后一个事件 response.completed 与 Codex fixture 格式一致。"""
+        from transform import create_codex_sse_stream
+
+        class MockStream:
+            def __init__(self):
+                chunks = [
+                    b'event: message\ndata: {"id":"chatcmpl-1","model":"test","choices":[{"delta":{"content":"Hi"},"index":0}]}\n\n',
+                    b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',
+                    b'data: [DONE]\n\n',
+                ]
+                self.data = b"".join(chunks)
+                self.pos = 0
+
+            def read(self, size):
+                chunk = self.data[self.pos:self.pos + size]
+                self.pos += size
+                return chunk
+
+        stream = MockStream()
+        text = ""
+        for event in create_codex_sse_stream(stream):
+            text += event
+
+        events = self._parse_events(text)
+        etype, data = events[-1]
+        self.assertEqual(etype, "response.completed")
+        self.assertEqual(data["type"], "response.completed")
+        self.assertIn("response", data)
+        self.assertIn("output", data["response"])
+        self.assertIn("usage", data["response"])
+
+
 if __name__ == "__main__":
     unittest.main()

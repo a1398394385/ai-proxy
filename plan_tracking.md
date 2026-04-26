@@ -8,7 +8,7 @@
 
 ## Current Task
 
-Task 3 (Not Started)
+Task 4 (Not Started)
 
 ## Tasks
 
@@ -42,12 +42,12 @@ Task 3 (Not Started)
 
 ### Task 3: 新增事件格式集成测试 + 快照测试
 
-- [ ] Step 1: 集成测试 — 逐事件验证 `"type"` 字段（3 个测试）
-- [ ] Step 2: 快照测试 — 完整 SSE 格式对照（2 个测试）
-- [ ] Step 3: 运行所有新增测试
-- [ ] Step 4: 运行全量测试
-- [ ] Step 5: Commit
-- **Status:** not_started
+- [x] Step 1: 集成测试 — 逐事件验证 `"type"` 字段（3 个测试）
+- [x] Step 2: 快照测试 — 完整 SSE 格式对照（2 个测试）
+- [x] Step 3: 运行所有新增测试
+- [x] Step 4: 运行全量测试
+- [x] Step 5: Commit
+- **Status:** done
 
 ### Task 4: Codex CLI 端对端验证
 
