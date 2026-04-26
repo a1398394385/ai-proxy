@@ -184,14 +184,14 @@ def _map_tools(tools: list) -> list:
     Chat Completions: {"type":"function", "function": {"name":"...", "parameters":{...}, ...}}
 
     已有 "function" 键的工具保持不变（幂等）。
+    非 "function" 类型的工具（custom、web_search 等）Chat Completions 不支持，丢弃并记录警告。
     """
     result = []
     for tool in tools:
         if tool.get("type") != "function":
-            result.append(tool)
+            logger.warning(f"[transform] 丢弃不支持的 tool 类型: {tool.get('type')} ({tool.get('name', '?')})")
             continue
         if "function" in tool:
-            # 已是 Chat Completions 格式，直接透传
             result.append(tool)
         else:
             func = {}

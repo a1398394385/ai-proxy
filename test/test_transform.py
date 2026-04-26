@@ -622,6 +622,25 @@ class TestAdvancedFeatures(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["function"]["name"], "bash")
 
+    def test_map_tools_drops_custom_type(self):
+        """验证 _map_tools 丢弃非 function 类型的工具（如 Codex 的 custom apply_patch）。"""
+        from transform import _map_tools
+        tools = [
+            {
+                "type": "custom",
+                "name": "apply_patch",
+                "description": "Apply a patch to a file.",
+                "format": {"type": "grammar", "syntax": "lark"},
+            },
+            {
+                "type": "function",
+                "function": {"name": "bash", "parameters": {}},
+            },
+        ]
+        result = _map_tools(tools)
+        self.assertEqual(len(result), 1, "应该只保留 function 类型工具")
+        self.assertEqual(result[0]["function"]["name"], "bash")
+
     def test_reasoning_effort_passthrough(self):
         from transform import responses_to_chat
         body = {
