@@ -378,6 +378,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     logging.exception("chat_to_responses 转换失败")
                     if logger:
                         logger.log_converted_response(request_id, model, target, {"error": str(e)})
+                    self._send_json(500, {"error": {"type": "internal_error", "message": str(e)}})
+                    return
 
                 self._send_json(200, responses_response)
                 return
