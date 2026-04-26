@@ -556,29 +556,24 @@ def _emit_completion(state: StreamState) -> list:
 
     # completed
     usage = state.usage
-    completed_data = {
-        "type": "response.completed",
-        "response": {
-            "id": state.response_id,
-            "status": FINISH_REASON_MAP.get(state.finish_reason, "completed"),
-            "output": state.output_items,
-            "usage": {
-                "input_tokens": usage.get("prompt_tokens", 0),
-                "output_tokens": usage.get("completion_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-                "input_tokens_details": {
-                    "cached_tokens": usage.get("prompt_tokens_details", {}).get("cached_tokens", 0),
-                },
-                "output_tokens_details": {
-                    "reasoning_tokens": usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0),
-                },
+    completed_response = {
+        "id": state.response_id,
+        "status": FINISH_REASON_MAP.get(state.finish_reason, "completed"),
+        "output": state.output_items,
+        "usage": {
+            "input_tokens": usage.get("prompt_tokens", 0),
+            "output_tokens": usage.get("completion_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+            "input_tokens_details": {
+                "cached_tokens": usage.get("prompt_tokens_details", {}).get("cached_tokens", 0),
+            },
+            "output_tokens_details": {
+                "reasoning_tokens": usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0),
             },
         },
     }
     if state.finish_reason in INCOMPLETE_REASON_MAP:
-        completed_data["response"]["incomplete_details"] = {"reason": INCOMPLETE_REASON_MAP[state.finish_reason]}
-    events.append(
-        f'event: response.completed\ndata: {json.dumps(completed_data, ensure_ascii=False, separators=(",", ":"))}\n\n'
-    )
+        completed_response["incomplete_details"] = {"reason": INCOMPLETE_REASON_MAP[state.finish_reason]}
+    events.append(_format_sse_event("response.completed", {"response": completed_response}))
 
     return events
