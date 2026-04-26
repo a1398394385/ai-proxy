@@ -446,10 +446,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     "id": generate_response_id(),
                     "status": "failed",
                     "output": [],
-                },
-                "error": {
-                    "type": "server_error",
-                    "message": f"Upstream returned HTTP {resp.status}",
+                    "status_details": {
+                        "error": {
+                            "type": "server_error",
+                            "message": f"Upstream returned HTTP {resp.status}",
+                        },
+                    },
                 },
             })
             self.wfile.write(error_event.encode("utf-8"))
@@ -466,10 +468,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     "id": generate_response_id(),
                     "status": "failed",
                     "output": [],
-                },
-                "error": {
-                    "type": "server_error",
-                    "message": f"Upstream returned non-SSE Content-Type: {ct}",
+                    "status_details": {
+                        "error": {
+                            "type": "server_error",
+                            "message": f"Upstream returned non-SSE Content-Type: {ct}",
+                        },
+                    },
                 },
             })
             self.wfile.write(error_event.encode("utf-8"))
@@ -501,10 +505,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         "id": generate_response_id(),
                         "status": "failed",
                         "output": [],
-                    },
-                    "error": {
-                        "type": "server_error",
-                        "message": str(e),
+                        "status_details": {
+                            "error": {
+                                "type": "server_error",
+                                "message": str(e),
+                            },
+                        },
                     },
                 })
                 self.wfile.write(error_event.encode("utf-8"))

@@ -575,6 +575,53 @@ class TestAdvancedFeatures(unittest.TestCase):
         self.assertEqual(result["tool_choice"], "required")
         self.assertTrue(result["parallel_tool_calls"])
 
+    def test_tools_responses_api_to_chat_format(self):
+        """验证 Responses API 工具格式转换为 Chat Completions 格式（"function" 包裹）。"""
+        from transform import responses_to_chat
+        # Codex 实际发送的 Responses API 工具格式（无 "function" 包裹）
+        body = {
+            "model": "gpt-5.1-codex-max",
+            "input": [{"type": "message", "role": "user", "content": "run ls"}],
+            "tools": [{
+                "type": "function",
+                "name": "shell_command",
+                "description": "Runs a shell command.",
+                "strict": False,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string"},
+                    },
+                    "required": ["command"],
+                    "additionalProperties": False,
+                },
+            }],
+        }
+        model_cfg = {"target": "qwen3.6-plus", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+
+        self.assertEqual(len(result["tools"]), 1)
+        tool = result["tools"][0]
+        self.assertEqual(tool["type"], "function")
+        self.assertIn("function", tool, "Chat Completions 工具必须有 'function' 键")
+        func = tool["function"]
+        self.assertEqual(func["name"], "shell_command")
+        self.assertEqual(func["description"], "Runs a shell command.")
+        self.assertFalse(func.get("strict"))
+        self.assertIn("parameters", func)
+        self.assertEqual(func["parameters"]["type"], "object")
+
+    def test_map_tools_idempotent_on_chat_format(self):
+        """验证 _map_tools 对已有 'function' 包裹的工具不会双重包裹。"""
+        from transform import _map_tools
+        chat_tools = [{
+            "type": "function",
+            "function": {"name": "bash", "parameters": {}},
+        }]
+        result = _map_tools(chat_tools)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["function"]["name"], "bash")
+
     def test_reasoning_effort_passthrough(self):
         from transform import responses_to_chat
         body = {

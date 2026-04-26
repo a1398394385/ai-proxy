@@ -52,8 +52,10 @@ def responses_to_chat(body: dict, model_cfg: dict) -> dict:
     if "max_output_tokens" in body:
         chat["max_tokens"] = body["max_output_tokens"]
 
-    # 透传字段
-    for key in ("tools", "tool_choice", "parallel_tool_calls", "stream"):
+    # 工具转换：Responses API → Chat Completions
+    if "tools" in body:
+        chat["tools"] = _map_tools(body["tools"])
+    for key in ("tool_choice", "parallel_tool_calls", "stream"):
         if key in body:
             chat[key] = body[key]
 
@@ -173,6 +175,31 @@ def _map_computer_call_output(item: dict) -> dict:
         "tool_call_id": item.get("tool_call_id", ""),
         "content": item.get("output", ""),
     }
+
+
+def _map_tools(tools: list) -> list:
+    """将 Responses API 工具格式转换为 Chat Completions 格式。
+
+    Responses API: {"type":"function", "name":"...", "parameters":{...}, "description":"...", "strict":...}
+    Chat Completions: {"type":"function", "function": {"name":"...", "parameters":{...}, ...}}
+
+    已有 "function" 键的工具保持不变（幂等）。
+    """
+    result = []
+    for tool in tools:
+        if tool.get("type") != "function":
+            result.append(tool)
+            continue
+        if "function" in tool:
+            # 已是 Chat Completions 格式，直接透传
+            result.append(tool)
+        else:
+            func = {}
+            for key in ("name", "description", "parameters", "strict"):
+                if key in tool:
+                    func[key] = tool[key]
+            result.append({"type": "function", "function": func})
+    return result
 
 
 def _map_response_format(text_format: dict) -> dict:
