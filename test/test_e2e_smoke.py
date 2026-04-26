@@ -17,7 +17,7 @@ import shutil
 import yaml
 
 
-PROXY_ROOT = Path(__file__).parent
+PROXY_ROOT = Path(__file__).parent.parent
 PROXY_PY = PROXY_ROOT / "proxy.py"
 PROXY_CONFIG = PROXY_ROOT / "proxy_config.yaml"
 

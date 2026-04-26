@@ -44,7 +44,7 @@ def _query_token_stats(db_path, request_id=None):
 
 
 def _load_proxy():
-    spec = importlib.util.spec_from_file_location("proxy_test", Path(__file__).parent / "proxy.py")
+    spec = importlib.util.spec_from_file_location("proxy_test", Path(__file__).parent.parent / "proxy.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

@@ -12,7 +12,7 @@ def load_proxy_module(config_path_override: Path = None):
 
     config_path_override: 可选，传入自定义 CONFIG_PATH（在 exec_module 后设置以避免覆盖）。
     """
-    proxy_py = Path(__file__).parent / "proxy.py"
+    proxy_py = Path(__file__).parent.parent / "proxy.py"
     spec = importlib.util.spec_from_file_location("proxy_test", str(proxy_py))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
