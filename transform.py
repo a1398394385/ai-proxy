@@ -55,7 +55,11 @@ def responses_to_chat(body: dict, model_cfg: dict) -> dict:
     # 工具转换：Responses API → Chat Completions
     if "tools" in body:
         chat["tools"] = _map_tools(body["tools"])
-    for key in ("tool_choice", "parallel_tool_calls", "stream"):
+    if "stream" in body:
+        chat["stream"] = body["stream"]
+        if body["stream"]:
+            chat["stream_options"] = {"include_usage": True}
+    for key in ("tool_choice", "parallel_tool_calls"):
         if key in body:
             chat[key] = body[key]
 
