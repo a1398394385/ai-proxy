@@ -1,3 +1,4 @@
+import json
 import unittest
 from transform import generate_response_id
 
@@ -754,6 +755,86 @@ class TestChatToResponsesDirect(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         msg_items = [o for o in result["output"] if o["type"] == "message"]
         self.assertEqual(len(msg_items), 0)
+
+
+class TestFormatSSEEvent(unittest.TestCase):
+    """测试 _format_sse_event 辅助函数 — 所有事件的 data JSON 必须包含 "type" 字段。"""
+
+    def test_injects_type_field(self):
+        """验证 data JSON 中包含 event_type 作为 "type" 字段。"""
+        from transform import _format_sse_event
+        result = _format_sse_event("response.output_text.delta", {
+            "output_index": 0, "content_index": 0, "delta": "hello",
+        })
+        data_line = result.split("\n")[1]
+        self.assertTrue(data_line.startswith("data: "))
+        payload = json.loads(data_line[6:])
+        self.assertEqual(payload["type"], "response.output_text.delta")
+        self.assertEqual(payload["output_index"], 0)
+        self.assertEqual(payload["content_index"], 0)
+        self.assertEqual(payload["delta"], "hello")
+
+    def test_type_overrides_existing(self):
+        """验证 event_type 覆盖 data 中已有的 "type" 键。"""
+        from transform import _format_sse_event
+        result = _format_sse_event("response.completed", {
+            "type": "wrong_type",
+            "response": {"id": "resp-1"},
+        })
+        data_line = result.split("\n")[1]
+        payload = json.loads(data_line[6:])
+        self.assertEqual(payload["type"], "response.completed")
+        self.assertNotEqual(payload["type"], "wrong_type")
+
+    def test_compact_separators(self):
+        """验证紧凑格式 — data JSON 的冒号和逗号后没有空格。"""
+        from transform import _format_sse_event
+        result = _format_sse_event("response.created", {
+            "response": {"id": "resp-1", "status": "in_progress"},
+        })
+        # 只检查 data 行中 JSON 部分（去除 "data: " 前缀）
+        data_line = result.split("\n")[1]
+        json_str = data_line[6:]  # 去掉 "data: "
+        self.assertNotIn(": ", json_str)
+        self.assertNotIn(", ", json_str)
+
+    def test_event_line_format(self):
+        """验证事件行格式为 'event: <type>'。"""
+        from transform import _format_sse_event
+        result = _format_sse_event("response.metadata", {"model": "test"})
+        first_line = result.split("\n")[0]
+        self.assertEqual(first_line, "event: response.metadata")
+
+    def test_data_json_parseable(self):
+        """验证 data 行后是合法 JSON。"""
+        from transform import _format_sse_event
+        result = _format_sse_event("response.output_item.added", {
+            "output_index": 1,
+            "item": {"type": "message", "role": "assistant", "content": [], "status": "in_progress"},
+        })
+        data_line = result.split("\n")[1]
+        self.assertTrue(data_line.startswith("data: "))
+        payload = json.loads(data_line[6:])
+        self.assertIsInstance(payload, dict)
+
+    def test_ends_with_double_newline(self):
+        """验证 SSE 事件以 \\n\\n 结尾。"""
+        from transform import _format_sse_event
+        result = _format_sse_event("response.output_text.done", {
+            "output_index": 0, "content_index": 0, "text": "done",
+        })
+        self.assertTrue(result.endswith("\n\n"))
+
+    def test_response_incomplete_event(self):
+        """验证 response.incomplete 的正确格式（含 response 包裹）。"""
+        from transform import _format_sse_event
+        result = _format_sse_event("response.incomplete", {
+            "response": {"incomplete_details": {"reason": "max_tokens"}},
+        })
+        data_line = result.split("\n")[1]
+        payload = json.loads(data_line[6:])
+        self.assertEqual(payload["type"], "response.incomplete")
+        self.assertEqual(payload["response"]["incomplete_details"]["reason"], "max_tokens")
 
 
 if __name__ == "__main__":
