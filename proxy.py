@@ -20,6 +20,7 @@ from transform import (
     responses_to_chat,
     chat_to_responses,
     create_codex_sse_stream,
+    _format_sse_event,
 )
 
 from request_logger import (
@@ -440,11 +441,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
         # 验证上游 Content-Type，非 SSE 则包装为 response.failed
         ct = resp.getheader("Content-Type", "")
         if resp.status != 200:
-            error_event = (
-                f'event: response.failed\n'
-                f'data: {{"type":"error","error":{{"type":"server_error",'
-                f'"message":"Upstream returned HTTP {resp.status}"}}}}\n\n'
-            )
+            error_event = _format_sse_event("response.failed", {
+                "response": {
+                    "id": generate_response_id(),
+                    "status": "failed",
+                    "output": [],
+                },
+                "error": {
+                    "type": "server_error",
+                    "message": f"Upstream returned HTTP {resp.status}",
+                },
+            })
             self.wfile.write(error_event.encode("utf-8"))
             self.wfile.flush()
             logger = get_logger()
@@ -454,11 +461,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         if "text/event-stream" not in ct:
             logging.warning(f"上游返回非 SSE Content-Type: {ct}")
-            error_event = (
-                f'event: response.failed\n'
-                f'data: {{"type":"error","error":{{"type":"server_error",'
-                f'"message":"Upstream returned non-SSE Content-Type: {ct}"}}}}\n\n'
-            )
+            error_event = _format_sse_event("response.failed", {
+                "response": {
+                    "id": generate_response_id(),
+                    "status": "failed",
+                    "output": [],
+                },
+                "error": {
+                    "type": "server_error",
+                    "message": f"Upstream returned non-SSE Content-Type: {ct}",
+                },
+            })
             self.wfile.write(error_event.encode("utf-8"))
             self.wfile.flush()
             return
@@ -477,24 +490,39 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 if "response.completed" in sse_event:
                     try:
                         data = json.loads(sse_event.split("data: ", 1)[1])
-                        final_usage = data.get("usage")
+                        final_usage = data.get("response", {}).get("usage")
                     except (json.JSONDecodeError, IndexError):
                         pass
         except Exception as e:
             logging.exception("流式转发异常")
             try:
-                error_event = (
-                    f'event: response.failed\n'
-                    f'data: {{"type":"error","error":{{"type":"server_error",'
-                    f'"message":{json.dumps(str(e))}}}}}\n\n'
-                )
+                error_event = _format_sse_event("response.failed", {
+                    "response": {
+                        "id": generate_response_id(),
+                        "status": "failed",
+                        "output": [],
+                    },
+                    "error": {
+                        "type": "server_error",
+                        "message": str(e),
+                    },
+                })
                 self.wfile.write(error_event.encode("utf-8"))
                 self.wfile.flush()
-                # 发送 completed 让客户端正常结束
-                completed_event = (
-                    f'event: response.completed\n'
-                    f'data: {{"id":"","status":"failed","output":[],"usage":{{"input_tokens":0,"output_tokens":0,"total_tokens":0,"input_tokens_details":{{}},"output_tokens_details":{{}}}}}}\n\n'
-                )
+                completed_event = _format_sse_event("response.completed", {
+                    "response": {
+                        "id": generate_response_id(),
+                        "status": "failed",
+                        "output": [],
+                        "usage": {
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "total_tokens": 0,
+                            "input_tokens_details": {},
+                            "output_tokens_details": {},
+                        },
+                    },
+                })
                 self.wfile.write(completed_event.encode("utf-8"))
                 self.wfile.flush()
             except Exception:
@@ -522,9 +550,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
             if final_usage:
                 logger.log_token_stats(
                     request_id, agent, model, target, request_ts, duration_ms,
-                    final_usage.get("prompt_tokens", 0),
-                    final_usage.get("completion_tokens", 0),
-                    final_usage.get("prompt_tokens_details", {}).get("cached_tokens", 0),
+                    final_usage.get("input_tokens", 0),
+                    final_usage.get("output_tokens", 0),
+                    final_usage.get("input_tokens_details", {}).get("cached_tokens", 0),
                     0, "completed",
                 )
             else:

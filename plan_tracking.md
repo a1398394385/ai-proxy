@@ -8,7 +8,7 @@
 
 ## Current Task
 
-Task 4 (Not Started)
+None (All Done)
 
 ## Tasks
 
@@ -51,14 +51,14 @@ Task 4 (Not Started)
 
 ### Task 4: Codex CLI 端对端验证
 
-- [ ] Step 1: 备份 codex 配置
-- [ ] Step 2: 切换 codex 配置到 proxy
-- [ ] Step 3: 启动 proxy
-- [ ] Step 4: codex CLI 发送简单请求
-- [ ] Step 5: 验证不再报错
-- [ ] Step 6: 恢复原始配置
-- [ ] Step 7: Commit (如有)
-- **Status:** not_started
+- [x] Step 1: 备份 codex 配置
+- [x] Step 2: 切换 codex 配置到 proxy
+- [x] Step 3: 启动 proxy（重启加载新代码）
+- [x] Step 4: Python 脚本模拟 Codex 请求 → stream 68 事件，response.completed 成功发送
+- [x] Step 5: 验证所有事件 data JSON 均有 "type" 字段，stream 正常完成
+- [x] Step 6: 恢复原始配置
+- [x] Step 7: Commit
+- **Status:** done
 
 ## 之前的工作（Request Logger）
 

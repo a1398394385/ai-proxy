@@ -259,8 +259,8 @@ class TestStreamingFlow(unittest.TestCase):
     def test_streaming_flow_logs_upstream_and_token_stats(self):
         """流式请求：有 upstream_response + converted_response + token_stats。"""
         sse_events = [
-            "data: {\"type\":\"response.output_item.added\"}\n\n",
-            "data: {\"type\":\"response.completed\",\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":50,\"prompt_tokens_details\":{\"cached_tokens\":20}}}\n\n",
+            "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\"}\n\n",
+            "event: response.completed\ndata: {\"response\":{\"output\":[],\"usage\":{\"input_tokens\":100,\"output_tokens\":50,\"input_tokens_details\":{\"cached_tokens\":20}}},\"type\":\"response.completed\"}\n\n",
         ]
         mock_resp = MagicMock()
         mock_resp.status = 200
