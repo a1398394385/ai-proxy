@@ -434,7 +434,7 @@ def _process_delta(delta: dict, state: StreamState) -> list:
     # 首次：发送 created + metadata
     if not state.created_sent:
         for etype, edata in _emit_created(state):
-            events.append(f"event: {etype}\ndata: {json.dumps(edata, ensure_ascii=False, separators=(',', ':'))}\n\n")
+            events.append(_format_sse_event(etype, edata))
 
     # 推理 delta（检测顺序：reasoning_content → thinking → reasoning）
     for key in ("reasoning_content", "thinking", "reasoning"):
@@ -444,18 +444,16 @@ def _process_delta(delta: dict, state: StreamState) -> list:
                 state.has_reasoning = True
                 state.reasoning_id = f"rs_{uuid.uuid4().hex[:8]}"
                 # output_item.added for reasoning
-                events.append(
-                    f'event: response.output_item.added\n'
-                    f'data: {{"output_index":0,"item":{{"type":"reasoning",'
-                    f'"id":"{state.reasoning_id}","summary":[],"status":"in_progress"}}}}\n\n'
-                )
+                events.append(_format_sse_event("response.output_item.added", {
+                    "output_index": 0,
+                    "item": {"type": "reasoning", "id": state.reasoning_id, "summary": [], "status": "in_progress"},
+                }))
                 state.reasoning_item_announced = True
             # reasoning delta
             state.reasoning_buffer += reasoning_text
-            events.append(
-                f'event: response.reasoning_summary_text.delta\n'
-                f'data: {{"output_index":0,"summary_index":0,"delta":{json.dumps(reasoning_text, ensure_ascii=False)}}}\n\n'
-            )
+            events.append(_format_sse_event("response.reasoning_summary_text.delta", {
+                "output_index": 0, "summary_index": 0, "delta": reasoning_text,
+            }))
             break  # 只处理第一个命中的推理字段
 
     # 文本 delta
@@ -463,19 +461,17 @@ def _process_delta(delta: dict, state: StreamState) -> list:
     if content:
         if not state.message_item_announced:
             idx = state.message_output_index
-            events.append(
-                f'event: response.output_item.added\n'
-                f'data: {{"output_index":{idx},"item":{{"type":"message","role":"assistant",'
-                f'"content":[],"status":"in_progress"}}}}\n\n'
-            )
+            events.append(_format_sse_event("response.output_item.added", {
+                "output_index": idx,
+                "item": {"type": "message", "role": "assistant", "content": [], "status": "in_progress"},
+            }))
             state.message_item_announced = True
         state.text_buffer += content
         state.has_text = True
         idx = state.message_output_index
-        events.append(
-            f'event: response.output_text.delta\n'
-            f'data: {{"output_index":{idx},"content_index":0,"delta":{json.dumps(content, ensure_ascii=False)}}}\n\n'
-        )
+        events.append(_format_sse_event("response.output_text.delta", {
+            "output_index": idx, "content_index": 0, "delta": content,
+        }))
 
     # 工具调用 delta（积累，不发事件）
     tool_calls = delta.get("tool_calls")
@@ -501,39 +497,35 @@ def _emit_completion(state: StreamState) -> list:
 
     # 推理完成
     if state.has_reasoning:
-        events.append(
-            f'event: response.reasoning_summary_text.done\n'
-            f'data: {{"output_index":0,"summary_index":0,"text":{json.dumps(state.reasoning_buffer, ensure_ascii=False)}}}\n\n'
-        )
+        events.append(_format_sse_event("response.reasoning_summary_text.done", {
+            "output_index": 0, "summary_index": 0, "text": state.reasoning_buffer,
+        }))
         reasoning_item = {
             "type": "reasoning",
             "id": state.reasoning_id,
             "summary": [{"type": "summary_text", "text": state.reasoning_buffer}],
             "status": "completed",
         }
-        events.append(
-            f'event: response.output_item.done\n'
-            f'data: {{"output_index":0,"item":{json.dumps(reasoning_item, ensure_ascii=False, separators=(",", ":"))}}}\n\n'
-        )
+        events.append(_format_sse_event("response.output_item.done", {
+            "output_index": 0, "item": reasoning_item,
+        }))
         state.output_items.append(reasoning_item)
 
     # 文本完成
     if state.has_text:
         idx = state.message_output_index
-        events.append(
-            f'event: response.output_text.done\n'
-            f'data: {{"output_index":{idx},"content_index":0,"text":{json.dumps(state.text_buffer, ensure_ascii=False)}}}\n\n'
-        )
+        events.append(_format_sse_event("response.output_text.done", {
+            "output_index": idx, "content_index": 0, "text": state.text_buffer,
+        }))
         message_item = {
             "type": "message",
             "role": "assistant",
             "content": [{"type": "output_text", "text": state.text_buffer}],
             "status": "completed",
         }
-        events.append(
-            f'event: response.output_item.done\n'
-            f'data: {{"output_index":{idx},"item":{json.dumps(message_item, ensure_ascii=False, separators=(",", ":"))}}}\n\n'
-        )
+        events.append(_format_sse_event("response.output_item.done", {
+            "output_index": idx, "item": message_item,
+        }))
         state.output_items.append(message_item)
 
     # 工具调用完成（按 index 排序）
@@ -551,18 +543,16 @@ def _emit_completion(state: StreamState) -> list:
             "name": tc["name"],
             "arguments": tc["arguments_buffer"],
         }
-        events.append(
-            f'event: response.output_item.done\n'
-            f'data: {{"output_index":{output_idx},"item":{json.dumps(tc_item, ensure_ascii=False, separators=(",", ":"))}}}\n\n'
-        )
+        events.append(_format_sse_event("response.output_item.done", {
+            "output_index": output_idx, "item": tc_item,
+        }))
         state.output_items.append(tc_item)
 
     # incomplete
     if state.finish_reason in INCOMPLETE_REASON_MAP:
-        events.append(
-            f'event: response.incomplete\n'
-            f'data: {{"reason":{json.dumps(INCOMPLETE_REASON_MAP[state.finish_reason])}}}\n\n'
-        )
+        events.append(_format_sse_event("response.incomplete", {
+            "response": {"incomplete_details": {"reason": INCOMPLETE_REASON_MAP[state.finish_reason]}},
+        }))
 
     # completed
     usage = state.usage

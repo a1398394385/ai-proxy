@@ -8,7 +8,7 @@
 
 ## Current Task
 
-Task 2 (Not Started)
+Task 3 (Not Started)
 
 ## Tasks
 
@@ -25,20 +25,20 @@ Task 2 (Not Started)
 
 ### Task 2: 修改所有 SSE 事件生成点，使用 `_format_sse_event`
 
-- [ ] Step 1: `_emit_created` 元组拼接 (line 427)
-- [ ] Step 2: `output_item.added` reasoning (line 437-441)
-- [ ] Step 3: `reasoning_summary_text.delta` (line 445-448)
-- [ ] Step 4: `output_item.added` message (line 456-460)
-- [ ] Step 5: `output_text.delta` (line 465-468)
-- [ ] Step 6: `reasoning_summary_text.done` (line 494-497)
-- [ ] Step 7: `output_item.done` reasoning (line 504-507)
-- [ ] Step 8: `output_text.done` (line 513-516)
-- [ ] Step 9: `output_item.done` message (line 523-526)
-- [ ] Step 10: `output_item.done` function_call (line 544-547)
-- [ ] Step 11: `response.incomplete` (line 552-555)
-- [ ] Step 12: 运行全量测试
-- [ ] Step 13: Commit
-- **Status:** not_started
+- [x] Step 1: `_emit_created` 元组拼接 (line ~435)
+- [x] Step 2: `output_item.added` reasoning
+- [x] Step 3: `reasoning_summary_text.delta`
+- [x] Step 4: `output_item.added` message
+- [x] Step 5: `output_text.delta`
+- [x] Step 6: `reasoning_summary_text.done`
+- [x] Step 7: `output_item.done` reasoning
+- [x] Step 8: `output_text.done`
+- [x] Step 9: `output_item.done` message
+- [x] Step 10: `output_item.done` function_call
+- [x] Step 11: `response.incomplete`（含 `"response"` 包裹）
+- [x] Step 12: 运行全量测试
+- [x] Step 13: Commit
+- **Status:** done
 
 ### Task 3: 新增事件格式集成测试 + 快照测试
 
