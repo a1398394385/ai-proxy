@@ -39,7 +39,15 @@ proxy.py → config_manager.py → config.db (读取+缓存)
 
 数据库路径：`~/.hermes/config.db`，与其他数据库（memory_store.db, state.db）统一管理。
 
-**重要**：SQLite 默认不启用外键约束。`ConfigDB.__init__` 每次连接后必须执行 `PRAGMA foreign_keys = ON`，否则 `ON DELETE RESTRICT` 静默失效。测试中也需验证此行为。
+**重要**：SQLite 默认不启用外键约束。`ConfigDB.__init__` 每次连接后必须执行以下 PRAGMA：
+
+```python
+conn.execute("PRAGMA journal_mode=WAL")      # 允许并发读 + 单写，避免 server.py 多线程写入时 database is locked
+conn.execute("PRAGMA busy_timeout=3000")     # 写锁等待 3 秒，不直接抛锁错误
+conn.execute("PRAGMA foreign_keys = ON")     # 启用外键约束（RESTRICT 依赖此开关）
+```
+
+WAL 模式下 `config.db-wal` 和 `config.db-shm` 文件会出现在 `~/.hermes/` 目录，属正常行为。
 
 ```sql
 -- schema 版本管理表
@@ -99,7 +107,7 @@ CREATE TABLE model_routes (
 - `multimodal` 标志跟着每个目标模型
 - `*` fallback 路由，要求必须存在（启动校验）
 - 目标模型 `(name, upstream_id)` 联合唯一，不同上游可有同名模型
-- `updated_at` 在应用层显式更新（SQLite DEFAULT 仅在 INSERT 时生效），`config_manager.py` 的 update 方法负责维护
+- `updated_at`：INSERT 时由 SQLite `DEFAULT (datetime('now'))` 自动填充，无需应用层设置；UPDATE 时由 `config_manager.py` 的 update 方法显式 `SET updated_at = datetime('now')`
 
 ---
 
@@ -126,7 +134,7 @@ server.py（18742 端口）新增 `/api/upstreams`、`/api/models`、`/api/route
 | GET | `/api/models/:id` | 获取单个模型详情 |
 | POST | `/api/models` | 新增模型 |
 | PUT | `/api/models/:id` | 修改模型 |
-| DELETE | `/api/models/:id` | 删除模型 |
+| DELETE | `/api/models/:id` | 删除模型。删除前预检查：`SELECT COUNT(*) FROM model_routes WHERE target_model_id=?`。若有引用，返回 409 + 引用路由列表（与上游禁用的 409 处理一致），前端提示"请先删除或重定向以下路由：..." |
 
 ### 路由映射管理
 
@@ -158,7 +166,7 @@ server.py（18742 端口）新增 `/api/upstreams`、`/api/models`、`/api/route
 - 新增路由时校验：`source` 唯一；`target_model_id` 必须存在且其所属上游 `is_active=1`
 - 删除路由时校验：不能删除最后一条 `source="*"` 的路由
 - 删除上游时设为 `is_active=0`（软删除），不物理删除。若存在活跃路由引用该上游下的模型，返回 409 + 引用列表
-- 删除模型时校验：不能删除被任何 model_route 引用的模型
+- 删除模型时校验：DELETE 前先 `SELECT COUNT(*) FROM model_routes WHERE target_model_id=?`，若有引用返回 409 + 引用列表；无引用则直接物理删除。与上游禁用场景的 409 响应格式保持一致
 
 ### 种子导入
 
@@ -170,8 +178,15 @@ server.py（18742 端口）新增 `/api/upstreams`、`/api/models`、`/api/route
 4. 从 `proxy_config.yaml` 解析 `model_map` 段 → 写入 `target_models` + `model_routes` 表
 5. 写入 `schema_version = 1`（最后一步，确保中途失败则整个事务回滚）
 6. 若事务中任一步失败 → `ROLLBACK`，数据库保持干净，下次启动重新尝试
-7. 若数据库已有数据（`schema_version` 存在）→ 跳过全部导入逻辑
-8. 提供 `POST /api/config/import-from-yaml` 手动重新导入（覆盖同名 upstream/model/route，不删除数据库中独有数据）
+7. 若 `proxy_config.yaml` 不存在或解析失败 → 写入 `schema_version = 1`（空配置），系统正常启动，用户通过 Web UI 手动配置。避免删除 yaml 后陷入"启动→导入失败→回滚→下次启动重试"的死循环
+8. 若数据库已有数据（`schema_version` 存在）→ 跳过全部导入逻辑
+9. 提供 `POST /api/config/import-from-yaml` 手动重新导入
+
+**手动重新导入的匹配规则**：
+- 上游：按 `upstreams.id` 匹配，同名则覆盖 `(base_url, api_key, timeout, ...)`
+- 模型：按 `(target_models.name, target_models.upstream_id)` 联合匹配，同组合则覆盖 `(multimodal, format)`
+- 路由：按 `model_routes.source` 匹配，同名则覆盖 `target_model_id`（target_model_id 需解析为新导入的模型 ID）
+- 数据库中独有的记录（yaml 中不存在）不删除
 
 ---
 
@@ -266,8 +281,12 @@ class ConfigDB:
     # 配置查询（供 proxy 使用）
     resolve_model(source_name) -> dict
         # 返回 {target_name, multimodal, format, upstream: {base_url, api_key, ...}}
-        # 找不到 → 走 "*" fallback
+        # 找不到精确匹配 → 走 "*" fallback
+        # 匹配到但目标模型所属上游 is_active=0 → 跳过，视为未匹配，继续走 "*" fallback
+        # 连 "*" 也找不到 → 返回 None（proxy 返回 500）
     get_all_routes() -> dict
+        # 返回 {source_name: {target_name, multimodal, format, upstream_id, ...}, ...}
+        # key 为 source 模型名，value 为完整路由目标配置，供 _handle_models() 生成模型列表
 ```
 
 ### ConfigCache — 内存缓存（供 proxy.py 使用）
@@ -285,6 +304,15 @@ class ConfigCache:
 - `proxy.py` 的 `_handle_models()` → 从 `ConfigCache.get_all()` 取源模型列表
 - `load_config()` 不再加载 model_map
 
+**实例化方式**：`ConfigCache` 在 `proxy.py` 中以模块级全局单例存在：
+
+```python
+# proxy.py 模块顶层
+config_cache = ConfigCache(db_path=Path(__file__).parent / ".." / ".." / ".hermes" / "config.db")
+```
+
+所有请求线程共用同一实例，`reload()` 刷新同一份缓存，`threading.Lock` 保证读写安全。
+
 ---
 
 ## 六、配置重载与生效
@@ -297,6 +325,8 @@ class ConfigCache:
 | 自动过期 | `ConfigCache` TTL 到期（默认 5 秒），下次 `resolve()` 时重新读库 | ≤ 5 秒 | 兜底，防止手动重载失败 |
 
 两条路径不冲突：用户保存配置后如果没点"应用配置"，最长 5 秒后自动生效；点了则立即生效。
+
+**缓存失效窗口**：删除或禁用路由后，`ConfigCache` 中已缓存的旧映射在 TTL（5 秒）内仍可能被 `resolve()` 命中。对实时性要求高的场景（如刚禁用了某条路由，期望立即切断），用户应点击"应用配置"强制 reload，而非等待 TTL 自动过期。
 
 ### 手动重载流程
 
@@ -328,7 +358,9 @@ class ConfigCache:
 
 前端在配置页面展示此状态（顶部状态栏），让用户知道当前配置是否已生效。
 
-proxy.py 新增 `/admin/reload` 端点（仅监听 127.0.0.1），重载不重启进程。
+proxy.py 新增 `/admin/reload` 端点，重载不重启进程。
+
+**安全要求**：Handler 中必须校验 `self.client_address[0]` 是否为 `127.0.0.1` 或 `::1`，非本地请求返回 403。不依赖 socket bind 地址（proxy 可能绑定 `0.0.0.0`），在应用层做访问控制。
 
 ---
 
