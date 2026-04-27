@@ -151,7 +151,7 @@ Task 0: 准备 plan_tracking.md + 验证基线（130 passed）
 
 将 proxy_config.yaml 的静态 model_map 替换为数据库驱动的动态配置系统，支持 Web 页面管理多上游、多模型、多路由映射。
 
-## Current Task
+## Current Task: 全部完成 ✅
 
 Task 1 (Not Started)
 
@@ -281,36 +281,27 @@ Task 1 (Not Started)
 
 | Decision | Rationale | Source |
 |----------|-----------|--------|
-<<<<<<< HEAD
 | sse_utils.py 独立文件 | 避免 transform 模块间横向依赖 | 设计文稿/审阅 |
 | 阶段 1 纯重构 | 先重命名/移动（不改逻辑）→ 跑测试 → 再做功能 | 设计文稿/审阅 |
 | tool_blocks dict[int, ToolBlockState] | 多 tool 并发流式场景需要按 index 管理 | 设计文稿/审阅 |
 | 推理字段双检测（reasoning_content + reasoning） | LiteLLM 网关字段名不确定 | 设计文稿/审阅 |
 | Anthropic event data 自带 "type" | _format_sse_event 约定不重复注入 | 设计文稿/审阅 |
-=======
-| 新增 config.db（SQLite WAL）作为配置存储 | 与现有 memory_store.db / state.db 统一，方便后续 token 统计连表查询 | 设计文稿 |
-| config_manager.py 独立模块 | 纯数据层，不被 server.py 或 proxy.py 耦合 | 设计文稿 |
-| ConfigCache TTL=5s + 手动 reload 双路径 | 手动即时生效 + 自动兜底，防止 proxy 离线时配置无法生效 | 设计文稿 |
-| upstream 用软删除（is_active）而非物理删除 | 保护现有关联数据，防止误删 | 审阅 |
-| 外键 ON DELETE RESTRICT + PRAGMA foreign_keys | 数据库层阻止非法操作，应用层预检查 + 友好 409 响应 | 设计文稿 |
-| _seed_from_yaml 包裹事务 | 全部成功才写 schema_version，中途失败回滚 | 审阅 |
-| is_default 全局唯一（应用层维护） | SQLite CHECK 子查询限制多，应用层清除旧默认更简单可靠 | 审阅 |
-| 前端 CustomEvent 事件总线 | vanilla JS 无框架下实现组件通信，约 30 行代码 | 设计文稿 |
-| 连通性测试 TCP + HTTP GET 两步 | TCP 验证网络可达，HTTP 验证服务存活；不假设 /models 端点存在 | 设计文稿/审阅 |
-| /admin/reload 仅允许 127.0.0.1/::1 | 应用层白名单校验，不依赖 socket bind 地址 | 设计文稿 |
-| format 字段当前阶段仅存储不生效 | UI 附 tooltip 说明避免用户误解 | 审阅 |
-| delete_model 内置 check_refs 参数 | 默认预检查返回引用列表，省去 handler 中的重复逻辑 | 审阅 |
-| ConfigCache._refresh_if_stale 用 _resolve_one | 避免 resolve_model 的 fallback 把不同 source 归一化到 * 的语义错误 | 审阅 |
->>>>>>> 4e046db (docs: 生成动态模型配置 plan_tracking.md — 12 Task 进度跟踪)
+ 4e046db (docs: 生成动态模型配置 plan_tracking.md — 12 Task 进度跟踪)
 
 ## Errors Encountered
 
 | Error | Attempt | Resolution |
 |-------|---------|------------|
+<<<<<<< HEAD
 | Task 3 集成测试 mock 路径不匹配 | `_forward_streaming` 改为局部 import 后 mock 失效 | 改 `patch.object(self.mod, "create_codex_sse_stream")` 为 `patch("transform_responses.create_codex_sse_stream")` |
 | system array 过滤未检查 type 字段 | `block.get("text")` 也匹配了 thinking 块 | 改为 `block.get("type") == "text" and block.get("text")` |
 | assistant text content 测试期望错误 | 测试期望字符串 "Hello"，实际返回 list `[{"type":"text","text":"Hello"}]` | 修正测试期望值，与实现一致 |
 | message_start 未发送 | 首个 chunk 只有 id/model 无 delta，未触发 _send_message_start | 在捕获 id 后立即 emit message_start |
+=======
+| test_proxy_config 3 tests 在 proxy.py 集成后失败 | 1 | 更新测试适配动态配置：用 temp config.db 替代 yaml model_map 校验 |
+| test_cache_* 3 tests add_route("*") UNIQUE 冲突 | 1 | 改用 update_route 修改已有 * 路由而非 add_route |
+| test_valid_config_loads multimodal 断言失败 | 1 | 测试数据设 multimodal=0 匹配预期 |
+>>>>>>> bd771b3 (docs: 更新 plan_tracking — 全部 12 Task 完成，180 tests passing)
 
 ## Notes
 
