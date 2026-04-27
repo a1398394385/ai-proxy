@@ -15,6 +15,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
+from token_stats import _find_first
+
 logger = logging.getLogger(__name__)
 
 
@@ -586,11 +588,9 @@ def _emit_completion(state: StreamState) -> list:
 
     # completed
     raw = state.usage
-    # 与 token_stats._find_first 对齐：使用 key 存在性而非值回退。
-    # 如果 prompt_tokens 存在（即使为 0），使用它；不存在才回退到 input_tokens。
     usage = {
-        "input_tokens": raw["prompt_tokens"] if "prompt_tokens" in raw else raw.get("input_tokens", 0),
-        "output_tokens": raw["completion_tokens"] if "completion_tokens" in raw else raw.get("output_tokens", 0),
+        "input_tokens": _find_first(raw, ["prompt_tokens", "input_tokens"]),
+        "output_tokens": _find_first(raw, ["completion_tokens", "output_tokens"]),
         "total_tokens": raw.get("total_tokens", 0),
     }
     # 合并两个 details dict。上游通常只返回一种格式，即使同时返回
