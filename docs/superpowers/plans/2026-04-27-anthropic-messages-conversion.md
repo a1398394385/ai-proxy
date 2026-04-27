@@ -56,7 +56,7 @@ Task 0: 准备 plan_tracking.md
 
 ### Task 0: 准备 plan_tracking.md + 验证基线
 - [ ] Step 1: 写入新 plan_tracking.md
-- [ ] Step 2: 运行全量测试确认基线（130 passed）
+- [ ] Step 2: 运行全量测试确认基线（123 passed）
 - [ ] Step 3: Commit
 - **Status:** in_progress
 
@@ -65,7 +65,7 @@ Task 0: 准备 plan_tracking.md
 - [ ] Step 2: 验证测试失败（import 不到的 sse_utils）
 - [ ] Step 3: 创建 sse_utils.py + 从 transform.py 移动 _format_sse_event
 - [ ] Step 4: 更新 transform.py 从 sse_utils import
-- [ ] Step 5: 运行全量测试确认（130+ passed）
+- [ ] Step 5: 运行全量测试确认（123+ passed）
 - [ ] Step 6: Commit
 - **Status:** pending
 
@@ -74,7 +74,7 @@ Task 0: 准备 plan_tracking.md
 - [ ] Step 2: 修改 proxy.py 的 import（从 transform_responses 导入）
 - [ ] Step 3: 修改 test/test_transform.py 的 import
 - [ ] Step 4: 重写 transform.py 为选择器（re-export）
-- [ ] Step 5: 运行全量测试确认（130+ passed）
+- [ ] Step 5: 运行全量测试确认（123+ passed）
 - [ ] Step 6: Commit
 - **Status:** pending
 
@@ -83,7 +83,7 @@ Task 0: 准备 plan_tracking.md
 - [ ] Step 2: _forward_streaming 增加 response_converter + sse_stream_factory 参数
 - [ ] Step 3: 更新 _handle_responses 中的两处调用
 - [ ] Step 4: 更新集成测试中的 mock 调用
-- [ ] Step 5: 运行全量测试确认（130+ passed）
+- [ ] Step 5: 运行全量测试确认（123+ passed）
 - [ ] Step 6: Commit
 - **Status:** pending
 
@@ -153,7 +153,7 @@ Task 0: 准备 plan_tracking.md
 cd /Users/xys/.hermes/fact-store-browser && python3 -m pytest test/ -q --tb=no
 ```
 
-Expected: `130 passed`
+Expected: `123 passed`
 
 - [ ] **Step 3: Commit**
 
@@ -240,7 +240,7 @@ class TestFormatSSEEvent(unittest.TestCase):
         data_part = result.split("data: ", 1)[1].strip()
         data = json.loads(data_part)
         self.assertIn("response", data)
-        self.assertEqual(data["response"]["reason"], "max_tokens")
+        self.assertEqual(data["response"]["incomplete_details"]["reason"], "max_tokens")
 
     # ─── Responses API 'item' 包裹 ───
 
@@ -340,12 +340,12 @@ from sse_utils import _format_sse_event
 cd /Users/xys/.hermes/fact-store-browser && python3 -m pytest test/ -q --tb=no
 ```
 
-Expected: `138 passed`（130 + 8 new sse_utils tests）
+Expected: `132 passed`（123 baseline + 9 new sse_utils tests）
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add sse_utils.py test/test_sse_utils.py transform.py plan_tracking.md && git commit -m "refactor: 提取 _format_sse_event 至 sse_utils.py，新增 8 个独立测试"
+git add sse_utils.py test/test_sse_utils.py transform.py plan_tracking.md && git commit -m "refactor: 提取 _format_sse_event 至 sse_utils.py，新增 9 个独立测试"
 ```
 
 ---
@@ -470,7 +470,7 @@ from transform import (
 cd /Users/xys/.hermes/fact-store-browser && python3 -m pytest test/ -q --tb=short
 ```
 
-Expected: `138 passed`（无回归）
+Expected: `132 passed`（无回归）
 
 - [ ] **Step 6: Commit**
 
@@ -548,7 +548,7 @@ self._forward_streaming(chat_body, model_cfg, request_id, model_name, target, re
 cd /Users/xys/.hermes/fact-store-browser && python3 -m pytest test/ -q --tb=short
 ```
 
-Expected: `138 passed`
+Expected: `132 passed`
 
 - [ ] **Step 6: Commit**
 
@@ -723,7 +723,7 @@ def _convert_message_to_chat(role: str, content) -> list:
                     },
                 })
             elif block_type == "tool_result":
-                tc = block.get("content", "")
+                tc = block.get("content") or ""  # None/null 视为空字符串
                 if isinstance(tc, list):
                     tc = json.dumps(tc)
                 result.append({
@@ -734,7 +734,12 @@ def _convert_message_to_chat(role: str, content) -> list:
             elif block_type in ("thinking", "redacted_thinking"):
                 pass  # 丢弃
         if role == "assistant" and tool_calls:
-            result.insert(0, {"role": "assistant", "tool_calls": tool_calls})
+            msg = {}
+            if chat_content:
+                msg["content"] = chat_content
+            msg["role"] = "assistant"
+            msg["tool_calls"] = tool_calls
+            result.insert(0, msg)
         elif chat_content:
             result.insert(0, {"role": role, "content": chat_content})
         elif not result:
@@ -819,9 +824,11 @@ Expected: PASS
 git add test/test_transform_anthropic.py transform_anthropic.py && git commit -m "feat: anthropic_to_chat 基本消息转换（TDD Step 1）"
 ```
 
-- [ ] **Step 6-25: 以下 20 个测试逐个 TDD 循环（每个：写测试 → 验证失败 → 实现 → 验证通过）**
+- [ ] **Step 6-28: 以下 23 个测试逐个 TDD 循环（每个：写测试 → 验证失败 → 实现 → 验证通过）**
 
-每个测试先写出来，验证因缺失功能而失败，再在 `transform_anthropic.py` 中逐步添加实现：
+每个测试先写出来，验证因缺失功能而失败，再在 `transform_anthropic.py` 中逐步添加实现。
+
+> **TDD 纯度说明**: Step 3 的最小实现已覆盖 system、message、image、tool_use、tool_result、thinking 丢弃、o-series 等基本场景，因此 #6-16、#28 等测试写出来后会直接 PASS（不经过 RED 阶段）。这不是问题——这些测试仍然验证了实现正确性，并在后续重构中提供回归保护。真正的 RED→GREEN 循环集中在 #17-26（工具定义、reasoning_effort、tool_choice 映射等）需要新增辅助函数的测试上。
 
 | # | 测试名 | 验证内容 | 实现要点 |
 |---|--------|---------|---------|
@@ -855,15 +862,15 @@ git add test/test_transform_anthropic.py transform_anthropic.py && git commit -m
 cd /Users/xys/.hermes/fact-store-browser && python3 -m pytest test/test_transform_anthropic.py -q --tb=short
 ```
 
-- [ ] **Step 26: 运行全量测试确认**
+- [ ] **Step 29: 运行全量测试确认**
 
 ```bash
 cd /Users/xys/.hermes/fact-store-browser && python3 -m pytest test/ -q --tb=no
 ```
 
-Expected: ~162+ passed（138 baseline + 23 anthropic_to_chat + 1 for Step 1 initial test）
+Expected: ~155+ passed（123 baseline + 9 sse_utils + 23 anthropic_to_chat）
 
-- [ ] **Step 27: Commit**
+- [ ] **Step 30: Commit**
 
 ```bash
 git add test/test_transform_anthropic.py transform_anthropic.py plan_tracking.md && git commit -m "feat: anthropic_to_chat 请求转换完成（23 个测试覆盖 28 个场景）"
@@ -903,7 +910,7 @@ git add test/test_transform_anthropic.py transform_anthropic.py plan_tracking.md
 cd /Users/xys/.hermes/fact-store-browser && python3 -m pytest test/ -q --tb=no
 ```
 
-Expected: ~160+ passed
+Expected: ~141+ passed
 
 - [ ] **Step 12: Commit**
 
@@ -940,7 +947,7 @@ git add test/test_transform_anthropic.py transform_anthropic.py plan_tracking.md
 | 11 | `test_finish_reason_mapping` | `finish_reason: "stop"` → `stop_reason: "end_turn"` | message_delta 中的 stop_reason 正确映射 |
 | 12 | `test_stream_interrupt` | 中途抛异常 | `event: error` → `data: {"type":"error","error":{"type":"stream_error","message":"Stream error: ..."}}`（验证 error 事件的 type 和 error.type 字段，与 cc-switch streaming.rs line 562-575 一致） |
 | 13 | `test_content_block_index_sequence` | text + tool 交替 | index 递增（text=0, tool=1, text=2, ...） |
-| 14 | `test_utf8_split` | 多字节字符跨 chunk 边界 | 正确拼接，不乱码 |
+| 14 | `test_utf8_split` | 多字节字符跨 chunk 边界 | 正确拼接，不乱码。**优先级低**：Python http.client 读取层通常已按行分割，此场景在 Python 中不如 Rust 中常见，实现后验证即可 |
 
 mock 辅助：
 
@@ -960,7 +967,7 @@ def mock_sse_stream(events):
 cd /Users/xys/.hermes/fact-store-browser && python3 -m pytest test/ -q --tb=no
 ```
 
-Expected: ~175+ passed
+Expected: ~155+ passed
 
 - [ ] **Step 16: Commit**
 
@@ -987,7 +994,7 @@ git add test/test_transform_anthropic.py transform_anthropic.py plan_tracking.md
 from transform_anthropic import anthropic_to_chat, chat_to_anthropic, create_anthropic_sse_stream  # noqa: F401
 ```
 
-- [ ] **Step 2: proxy.py 新增 import + _handle_messages**
+- [ ] **Step 2: 更新 proxy.py import**
 
 ```python
 # 在 proxy.py 顶部 import（line 18-24）替换为：
@@ -1001,38 +1008,6 @@ from transform import (
     create_anthropic_sse_stream,
     _format_sse_event,
 )
-```
-
-在 `ProxyHandler` 类中新增 `_handle_messages` 方法：
-
-```python
-def _handle_messages(self, body, request_id, request_ts, model_name, target, is_stream, model_cfg):
-    """核心：Anthropic Messages → Chat → Anthropic Messages 转换。"""
-    logger = get_logger()
-    if logger:
-        logger.log_raw_request(request_id, model_name, target, body)
-
-    # 请求转换
-    try:
-        chat_body = anthropic_to_chat(body, model_cfg)
-    except Exception as e:
-        logging.exception("anthropic_to_chat 转换失败")
-        if logger:
-            logger.log_converted_request(request_id, model_name, target, {"error": str(e)})
-        self._send_json(500, {"error": {"type": "internal_error", "message": str(e)}})
-        return
-
-    if logger:
-        logger.log_converted_request(request_id, model_name, target, chat_body)
-
-    # 转发
-    if is_stream:
-        self._forward_streaming(chat_body, model_cfg, request_id, model_name, target, request_ts,
-                                response_converter=chat_to_anthropic,
-                                sse_stream_factory=create_anthropic_sse_stream)
-    else:
-        self._forward_non_streaming(chat_body, request_id, model_name, target, request_ts,
-                                    response_converter=chat_to_anthropic)
 ```
 
 - [ ] **Step 3: do_POST 添加 /v1/messages 路由 + _handle_messages 独立方法**
@@ -1140,7 +1115,7 @@ def test_streaming_messages_path(self):
 cd /Users/xys/.hermes/fact-store-browser && python3 -m pytest test/ -q --tb=short
 ```
 
-Expected: ~180+ passed
+Expected: ~157+ passed
 
 - [ ] **Step 7: Commit**
 
