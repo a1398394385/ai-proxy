@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import importlib.util
 
 import request_logger
+import token_stats
 from request_logger import RequestLogger
 
 
@@ -153,10 +154,13 @@ class TestFullRequestFlow(unittest.TestCase):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmpdir.name) / "test.db"
         request_logger._logger = RequestLogger(self.db_path)
+        self._orig_token_db = token_stats.DB_PATH
+        token_stats.DB_PATH = self.db_path
         self.mod = _load_proxy()
         _configure(self.mod)
 
     def tearDown(self):
+        token_stats.DB_PATH = self._orig_token_db
         request_logger._logger = None
         self.tmpdir.cleanup()
 
@@ -249,10 +253,13 @@ class TestStreamingFlow(unittest.TestCase):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmpdir.name) / "test.db"
         request_logger._logger = RequestLogger(self.db_path)
+        self._orig_token_db = token_stats.DB_PATH
+        token_stats.DB_PATH = self.db_path
         self.mod = _load_proxy()
         _configure(self.mod)
 
     def tearDown(self):
+        token_stats.DB_PATH = self._orig_token_db
         request_logger._logger = None
         self.tmpdir.cleanup()
 
@@ -302,7 +309,7 @@ class TestStreamingFlow(unittest.TestCase):
         self.assertEqual(stats[0]["status"], "completed")
 
     def test_streaming_sse_interrupt_no_final_usage(self):
-        """SSE 中断场景：无 final_usage → token_stats 为 incomplete。"""
+        """SSE 中断场景：无 final_usage → 不记录 token_stats。"""
         sse_events = [
             "data: {\"type\":\"response.output_item.added\"}\n\n",
         ]
@@ -330,10 +337,9 @@ class TestStreamingFlow(unittest.TestCase):
         self.assertIn("upstream_response", stages)
         self.assertIn("converted_response", stages)
 
+        # 无 final_usage 时不写 token_stats（之前会写 incomplete，现在只记录成功请求）
         stats = _query_token_stats(self.db_path)
-        self.assertEqual(len(stats), 1)
-        self.assertEqual(stats[0]["status"], "incomplete")
-        self.assertEqual(stats[0]["input_tokens"], 0)
+        self.assertEqual(len(stats), 0)
 
 
 class TestLogWriteFailure(unittest.TestCase):

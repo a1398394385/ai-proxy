@@ -8,7 +8,7 @@
 
 ## Current Task
 
-Task 3 (Not Started)
+Task 4 (Not Started)
 
 ## Tasks
 
@@ -28,12 +28,12 @@ Task 3 (Not Started)
 
 ### Task 3: 重构 `proxy.py` — 替换两处 token 统计调用点
 
-- [ ] Step 1: 添加 `from token_stats import record_token_stats` import
-- [ ] Step 2: 修改非流式路径（替换内联格式提取）
-- [ ] Step 3: 修改流式路径（替换内联格式提取）
-- [ ] Step 4: 运行全量测试（预期 127/127）
-- [ ] Step 5: Commit
-- **Status:** not_started
+- [x] Step 1: 添加 `from token_stats import record_token_stats` import
+- [x] Step 2: 修改非流式路径（替换内联格式提取）
+- [x] Step 3: 修改流式路径（替换内联格式提取）
+- [x] Step 4: 运行全量测试（127/127）
+- [x] Step 5: Commit
+- **Status:** done
 
 ### Task 4: 重构 `transform.py` — `_emit_completion` usage 透传
 
@@ -44,10 +44,10 @@ Task 3 (Not Started)
 
 ### Task 5: 确认集成测试兼容性
 
-- [ ] Step 1: 确认 mock SSE 路径与新的透传逻辑兼容
-- [ ] Step 2: 运行集成测试确认
-- [ ] Step 3: Commit（如有修改）
-- **Status:** not_started
+- [x] Step 1: 确认 mock SSE 路径 — 需新增 token_stats.DB_PATH patch
+- [x] Step 2: 运行集成测试确认（127/127）
+- [x] Step 3: Commit
+- **Status:** done
 
 ### Task 6: 最终验证
 
