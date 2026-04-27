@@ -7,12 +7,74 @@ import os
 import sqlite3
 import re
 import time
+import http.client
+import socket
 from datetime import datetime, timedelta
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
+from pathlib import Path
+
+from config_manager import ConfigDB
 
 # 配置
 DB_PATH = os.path.expanduser("~/.hermes/memory_store.db")
+CONFIG_DB_PATH = Path.home() / ".hermes" / "config.db"
+YAML_SEED_PATH = Path(__file__).parent / "proxy_config.yaml"
+
+
+def get_config_db():
+    return ConfigDB(CONFIG_DB_PATH, yaml_seed_path=YAML_SEED_PATH)
+
+
+def _read_json(handler):
+    """读取请求体 JSON，错误时发送 400 并返回 None。"""
+    length = int(handler.headers.get("Content-Length", 0))
+    body = handler.rfile.read(length)
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        json_response(handler, {"error": "Invalid JSON"}, 400)
+        return None
+
+
+def _test_upstream_connectivity(upstream: dict) -> dict:
+    """测试上游连通性：TCP + HTTP GET。"""
+    parsed = urlparse(upstream["base_url"])
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+
+    result = {"reachable": False, "http_status": None, "latency_ms": 0}
+
+    start = time.time()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(5)
+    try:
+        sock.connect((host, port))
+        result["latency_ms"] = int((time.time() - start) * 1000)
+        sock.close()
+    except (socket.timeout, OSError) as e:
+        result["error"] = str(e)
+        return result
+
+    http_path = parsed.path.rstrip("/") + "/" if parsed.path else "/"
+    start = time.time()
+    conn = http.client.HTTPConnection(host, port, timeout=5)
+    try:
+        conn.request("GET", http_path)
+        resp = conn.getresponse()
+        result["reachable"] = True
+        result["http_status"] = resp.status
+        result["latency_ms"] = int((time.time() - start) * 1000)
+        if resp.status == 401:
+            result["warning"] = "返回 401，API Key 可能无效，但网络可达"
+        if resp.status == 404:
+            result["warning"] = "返回 404，端点可能不存在，但服务存活"
+    except Exception as e:
+        result["error"] = str(e)
+    finally:
+        conn.close()
+
+    return result
 STATE_DB_PATH = os.path.expanduser("~/.hermes/state.db")
 CC_SWITCH_DB_PATH = os.path.expanduser("~/.cc-switch/cc-switch.db")
 PORT = 18742
@@ -514,6 +576,22 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
         path = parsed.path
         qs = parse_qs(parsed.query)
 
+        # ===== 模型配置 API =====
+        if path == "/api/upstreams":
+            db = get_config_db()
+            upstreams = db.list_upstreams()
+            db.close()
+            return json_response(self, {"upstreams": upstreams})
+
+        m = re.match(r"/api/upstreams/([^/]+)$", path)
+        if m:
+            db = get_config_db()
+            u = db.get_upstream(m.group(1))
+            db.close()
+            if u:
+                return json_response(self, u)
+            return json_response(self, {"error": "Not found"}, 404)
+
         # ===== Fact Store API =====
         if path == "/api/facts":
             q = qs.get("q", [None])[0]
@@ -623,6 +701,32 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        # ===== 模型配置 API =====
+        if parsed.path == "/api/upstreams":
+            data = _read_json(self)
+            if not data:
+                return
+            db = get_config_db()
+            try:
+                uid = db.add_upstream(data)
+                db.close()
+                return json_response(self, {"id": uid, "message": "Created"}, 201)
+            except sqlite3.IntegrityError as e:
+                db.close()
+                return json_response(self, {"error": str(e)}, 409)
+
+        test_m = re.match(r"/api/upstreams/([^/]+)/test$", parsed.path)
+        if test_m:
+            uid = test_m.group(1)
+            db = get_config_db()
+            u = db.get_upstream(uid)
+            db.close()
+            if not u:
+                return json_response(self, {"error": "Not found"}, 404)
+            result = _test_upstream_connectivity(u)
+            return json_response(self, result)
+
+        # ===== Fact Store API =====
         if parsed.path == "/api/facts":
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)
@@ -681,6 +785,22 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
 
     def do_PUT(self):
         parsed = urlparse(self.path)
+        # ===== 模型配置 API =====
+        m = re.match(r"/api/upstreams/([^/]+)$", parsed.path)
+        if m:
+            data = _read_json(self)
+            if not data:
+                return
+            db = get_config_db()
+            try:
+                db.update_upstream(m.group(1), data)
+                db.close()
+                return json_response(self, {"message": "Updated"})
+            except sqlite3.IntegrityError as e:
+                db.close()
+                return json_response(self, {"error": str(e)}, 409)
+
+        # ===== Fact Store API =====
         m = re.match(r"/api/facts/(\d+)$", parsed.path)
         if m:
             fact_id = int(m.group(1))
@@ -711,6 +831,27 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self):
         parsed = urlparse(self.path)
+        # ===== 模型配置 API =====
+        m = re.match(r"/api/upstreams/([^/]+)$", parsed.path)
+        if m:
+            uid = m.group(1)
+            db = get_config_db()
+            u = db.get_upstream(uid)
+            if not u:
+                db.close()
+                return json_response(self, {"error": "Not found"}, 404)
+            active_routes = db.upstream_active_routes(uid)
+            if active_routes:
+                db.close()
+                return json_response(self, {
+                    "error": "上游有活跃路由引用，无法禁用",
+                    "referenced_routes": active_routes,
+                }, 409)
+            db.disable_upstream(uid)
+            db.close()
+            return json_response(self, {"message": "Disabled"})
+
+        # ===== Fact Store API =====
         m = re.match(r"/api/facts/(\d+)$", parsed.path)
         if m:
             fact_id = int(m.group(1))
