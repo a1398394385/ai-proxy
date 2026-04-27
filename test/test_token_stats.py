@@ -18,36 +18,6 @@ class TestFindFirst(unittest.TestCase):
         usage = {"input_tokens": 200}
         self.assertEqual(_find_first(usage, ["prompt_tokens", "input_tokens"]), 200)
 
-    def test_zero_is_valid_value(self):
-        """key 存在且值为 0 时返回 0，不回退到下一个 key。"""
-        from token_stats import _find_first
-        usage = {"prompt_tokens": 0, "input_tokens": 200}
-        self.assertEqual(_find_first(usage, ["prompt_tokens", "input_tokens"]), 0)
-
-    def test_no_match_returns_default(self):
-        from token_stats import _find_first
-        usage = {}
-        self.assertEqual(_find_first(usage, ["prompt_tokens"]), 0)
-
-    def test_all_missing_returns_default(self):
-        from token_stats import _find_first
-        usage = {"other": 999}
-        self.assertEqual(_find_first(usage, ["prompt_tokens", "input_tokens"]), 0)
-
-
-class TestFindFirst(unittest.TestCase):
-    """_find_first — 按 key 存在性（非值大小）做优先级查找。"""
-
-    def test_returns_first_existing_key(self):
-        from token_stats import _find_first
-        usage = {"prompt_tokens": 100, "input_tokens": 200}
-        self.assertEqual(_find_first(usage, ["prompt_tokens", "input_tokens"]), 100)
-
-    def test_skips_missing_key(self):
-        from token_stats import _find_first
-        usage = {"input_tokens": 200}
-        self.assertEqual(_find_first(usage, ["prompt_tokens", "input_tokens"]), 200)
-
     def test_skips_none_value(self):
         """key 存在但值为 None 时跳过，继续查下一个 key。"""
         from token_stats import _find_first
@@ -55,6 +25,7 @@ class TestFindFirst(unittest.TestCase):
         self.assertEqual(_find_first(usage, ["prompt_tokens", "input_tokens"]), 200)
 
     def test_zero_is_valid_value(self):
+        """key 存在且值为 0 时返回 0，不回退到下一个 key。"""
         from token_stats import _find_first
         usage = {"prompt_tokens": 0, "input_tokens": 200}
         self.assertEqual(_find_first(usage, ["prompt_tokens", "input_tokens"]), 0)
@@ -169,6 +140,19 @@ class TestExtractTokens(unittest.TestCase):
             "completion_tokens": 200,
             "cache_read_input_tokens": 0,
             "cache_creation_input_tokens": 0,
+        }
+        result = _extract_tokens(usage)
+        self.assertEqual(result["cached_read"], 0)
+        self.assertEqual(result["cached_write"], 0)
+
+    def test_cache_fields_none_value(self):
+        """cache 字段值为 None 时返回 0，不回退到其他格式。"""
+        from token_stats import _extract_tokens
+        usage = {
+            "prompt_tokens": 5000,
+            "completion_tokens": 200,
+            "cache_read_input_tokens": None,
+            "cache_creation_input_tokens": None,
         }
         result = _extract_tokens(usage)
         self.assertEqual(result["cached_read"], 0)

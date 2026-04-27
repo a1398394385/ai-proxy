@@ -63,17 +63,17 @@ def _extract_tokens(usage: dict) -> dict:
     input_details = usage.get("input_tokens_details") or {}
 
     cached_read = 0
-    if "cache_read_input_tokens" in usage:
+    if "cache_read_input_tokens" in usage and usage["cache_read_input_tokens"] is not None:
         cached_read = usage["cache_read_input_tokens"]
-    elif "cached_tokens" in prompt_details:
+    elif "cached_tokens" in prompt_details and prompt_details["cached_tokens"] is not None:
         cached_read = prompt_details["cached_tokens"]
-    elif "cached_tokens" in input_details:
+    elif "cached_tokens" in input_details and input_details["cached_tokens"] is not None:
         cached_read = input_details["cached_tokens"]
 
     cached_write = 0
-    if "cache_creation_input_tokens" in usage:
+    if "cache_creation_input_tokens" in usage and usage["cache_creation_input_tokens"] is not None:
         cached_write = usage["cache_creation_input_tokens"]
-    elif "cache_creation_input_tokens" in input_details:
+    elif "cache_creation_input_tokens" in input_details and input_details["cache_creation_input_tokens"] is not None:
         cached_write = input_details["cache_creation_input_tokens"]
 
     return {
