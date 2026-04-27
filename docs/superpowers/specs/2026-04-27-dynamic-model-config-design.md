@@ -23,6 +23,8 @@ Web UI → server.py API → config_manager.py → config.db (读写)
 proxy.py → config_manager.py → config.db (读取+缓存)
 ```
 
+**config.db 路径**：统一为 `~/.hermes/config.db`。`ConfigDB.__init__` 接收 `Path.home() / ".hermes" / "config.db"`，server.py 和 proxy.py 使用相同的路径构造参数，确保操作同一数据库。
+
 **职责划分**：
 
 | 模块 | 职责 |
@@ -106,6 +108,7 @@ CREATE TABLE model_routes (
 **保留的特性**：
 - `multimodal` 标志跟着每个目标模型
 - `*` fallback 路由，要求必须存在（启动校验）
+- 启动时额外校验：`resolve_model("*")` 不能返回 None，即 `*` 路由指向的目标模型所属上游必须 `is_active=1`。校验失败则 `sys.exit(1)` 打印明确错误
 - 目标模型 `(name, upstream_id)` 联合唯一，不同上游可有同名模型
 - `updated_at`：INSERT 时由 SQLite `DEFAULT (datetime('now'))` 自动填充，无需应用层设置；UPDATE 时由 `config_manager.py` 的 update 方法显式 `SET updated_at = datetime('now')`
 
@@ -280,10 +283,10 @@ class ConfigDB:
 
     # 配置查询（供 proxy 使用）
     resolve_model(source_name) -> dict
-        # 返回 {target_name, multimodal, format, upstream: {base_url, api_key, ...}}
-        # 找不到精确匹配 → 走 "*" fallback
-        # 匹配到但目标模型所属上游 is_active=0 → 跳过，视为未匹配，继续走 "*" fallback
-        # 连 "*" 也找不到 → 返回 None（proxy 返回 500）
+        # 返回值约定：
+        #   - 找到可用匹配（路由存在 + 上游 is_active=1）→ 返回完整配置 dict
+        #   - 匹配到但上游禁用 → 跳过该匹配，继续尝试 "*" fallback
+        #   - "*" 也找不到或也禁用 → 返回 None（proxy 返回 500 + 错误信息）
     get_all_routes() -> dict
         # 返回 {source_name: {target_name, multimodal, format, upstream_id, ...}, ...}
         # key 为 source 模型名，value 为完整路由目标配置，供 _handle_models() 生成模型列表
@@ -308,7 +311,7 @@ class ConfigCache:
 
 ```python
 # proxy.py 模块顶层
-config_cache = ConfigCache(db_path=Path(__file__).parent / ".." / ".." / ".hermes" / "config.db")
+config_cache = ConfigCache(db_path=Path.home() / ".hermes" / "config.db")
 ```
 
 所有请求线程共用同一实例，`reload()` 刷新同一份缓存，`threading.Lock` 保证读写安全。
