@@ -372,6 +372,12 @@ class TestConfigCache(unittest.TestCase):
         cfg2 = cache.resolve("*")
         self.assertEqual(cfg2["target_name"], "claude")
 
+    def test_get_all(self):
+        from config_manager import ConfigCache
+        cache = ConfigCache(self.db_path, ttl=5)
+        all_routes = cache.get_all()
+        self.assertIn("*", all_routes)
+
     def test_ttl_expiry_refreshes(self):
         from config_manager import ConfigCache
         cache = ConfigCache(self.db_path, ttl=0)
@@ -382,8 +388,69 @@ class TestConfigCache(unittest.TestCase):
         cfg2 = cache.resolve("*")
         self.assertEqual(cfg2["target_name"], "claude")
 
-    def test_get_all(self):
-        from config_manager import ConfigCache
-        cache = ConfigCache(self.db_path, ttl=5)
-        all_routes = cache.get_all()
-        self.assertIn("*", all_routes)
+class TestSeedImport(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "config.db"
+        self.yaml_path = Path(self.tmp.name) / "proxy_config.yaml"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _make_yaml(self, content: str):
+        self.yaml_path.write_text(content)
+
+    def test_seed_empty_db(self):
+        from config_manager import ConfigDB
+        self._make_yaml("""\
+upstream:
+  base_url: "http://test:4000"
+  api_key: "sk-test"
+  timeout: 120
+  connect_timeout: 10
+  ssl_verify: true
+  retry: 1
+
+model_map:
+  "codex-mini-latest":
+    target: "qwen-plus"
+    multimodal: true
+  "gpt-4o":
+    target: "qwen-plus"
+    multimodal: true
+  "*":
+    target: "qwen-plus"
+    multimodal: true
+""")
+        db = ConfigDB(self.db_path, yaml_seed_path=self.yaml_path)
+        u = db.get_upstream("default")
+        self.assertIsNotNone(u)
+        self.assertEqual(u["base_url"], "http://test:4000")
+        self.assertEqual(u["api_key"], "sk-test")
+        models = db.list_models()
+        self.assertGreater(len(models), 0)
+        routes = db.list_routes()
+        self.assertGreater(len(routes), 0)
+        star_routes = [r for r in routes if r["source"] == "*"]
+        self.assertEqual(len(star_routes), 1)
+        db.close()
+
+    def test_seed_skip_if_already_seeded(self):
+        from config_manager import ConfigDB
+        self._make_yaml("upstream:\n  base_url: \"http://a:4000\"\nmodel_map:\n  \"*\":\n    target: \"m1\"\n    multimodal: false\n")
+        db1 = ConfigDB(self.db_path, yaml_seed_path=self.yaml_path)
+        db1.close()
+
+        self._make_yaml("upstream:\n  base_url: \"http://b:5000\"\nmodel_map:\n  \"*\":\n    target: \"m2\"\n    multimodal: false\n")
+        db2 = ConfigDB(self.db_path, yaml_seed_path=self.yaml_path)
+        u = db2.get_upstream("default")
+        self.assertEqual(u["base_url"], "http://a:4000")
+        db2.close()
+
+    def test_seed_yaml_missing_writes_version(self):
+        from config_manager import ConfigDB
+        missing_path = Path(self.tmp.name) / "nonexistent.yaml"
+        db = ConfigDB(self.db_path, yaml_seed_path=missing_path)
+        upstreams = db.list_upstreams()
+        self.assertEqual(len(upstreams), 0)
+        db.close()
