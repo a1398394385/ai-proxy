@@ -39,6 +39,8 @@ proxy.py → config_manager.py → config.db (读取+缓存)
 
 数据库路径：`~/.hermes/config.db`，与其他数据库（memory_store.db, state.db）统一管理。
 
+**重要**：SQLite 默认不启用外键约束。`ConfigDB.__init__` 每次连接后必须执行 `PRAGMA foreign_keys = ON`，否则 `ON DELETE RESTRICT` 静默失效。测试中也需验证此行为。
+
 ```sql
 -- schema 版本管理表
 CREATE TABLE schema_version (
@@ -85,11 +87,11 @@ CREATE TABLE model_routes (
 
 - `upstreams.id`：上游名称/标识，如 `"litellm-prod"`
 - `upstreams.is_active`：0=禁用（软删除），禁用后的上游不会出现在路由查询结果中，现有关联数据保留
-- `upstreams.is_default`：新建模型时默认选中的上游
+- `upstreams.is_default`：新建模型时默认选中的上游。`add_upstream()` 在创建 `is_default=1` 的上游时，先用 `UPDATE upstreams SET is_default=0` 将所有其他上游的默认标志清除，确保全局最多一个默认上游。`update_upstream()` 同理
 - `schema_version`：用于未来 schema 迁移（`_ensure_tables()` 读取版本号判断是否需要 ALTER TABLE）
 - `target_models.format`：支持 `'openai_chat'` / `'openai_responses'` / `'anthropic'`，多个格式用逗号分隔。当前阶段先记录，后续用于动态判断是否跳过转换
 - `model_routes.source`：源模型名，`"*"` 为 fallback 兜底路由
-- 所有外键使用 `ON DELETE RESTRICT`，不允许直接删除被引用的记录。需先删除引用方或标记禁用
+- 所有外键使用 `ON DELETE RESTRICT`（配合 `PRAGMA foreign_keys = ON`）。被引用的记录无法物理删除——需先删除或重定向引用方，或使用软删除（`is_active=0`）
 
 **查询链路**：源模型 → `model_routes` → `target_models`（跳过 `is_active=0` 的上游）→ `upstreams`
 
@@ -114,7 +116,7 @@ server.py（18742 端口）新增 `/api/upstreams`、`/api/models`、`/api/route
 | POST | `/api/upstreams` | 新增上游 |
 | PUT | `/api/upstreams/:id` | 修改上游 |
 | DELETE | `/api/upstreams/:id` | 禁用上游（设 `is_active=0`）。若存在活跃路由（有 model_routes 引用该上游下的模型），拒绝并返回被引用的路由列表。前端弹二次确认对话框，列出将被影响的模型和路由数量 |
-| POST | `/api/upstreams/:id/test` | 测试上游连通性（发 GET 到 `{base_url}/models`，超时 5 秒，返回可达性 + 延迟 + HTTP 状态码。401 视为可达，只作警告） |
+| POST | `/api/upstreams/:id/test` | 测试上游连通性：先尝试 TCP 连接 base_url 的 host:port（验证网络可达），再发 GET 到 `{base_url}/`（验证 HTTP 服务存活）。超时 5 秒，返回可达性 + 延迟。401 视为可达只作警告，404 视为可达但提示端点可能不存在 |
 
 ### 目标模型管理
 
@@ -163,11 +165,13 @@ server.py（18742 端口）新增 `/api/upstreams`、`/api/models`、`/api/route
 `config_manager.py` 初始化时执行 `_seed_from_yaml()`：
 
 1. 检查 `schema_version` 表是否有记录 → 无记录 = 首次启动，执行导入
-2. 从 `proxy_config.yaml` 解析 `upstream` 段 → 写入 `upstreams` 表
-3. 从 `proxy_config.yaml` 解析 `model_map` 段 → 写入 `target_models` + `model_routes` 表
-4. 写入 `schema_version = 1`
-5. 若数据库已有数据（`schema_version` 存在）→ 跳过，不做任何修改
-6. 提供 `POST /api/config/import-from-yaml` 手动重新导入（覆盖同名 upstream/model/route，不删除数据库中独有数据）
+2. 开启 SQLite 事务（`BEGIN` / `COMMIT`）
+3. 从 `proxy_config.yaml` 解析 `upstream` 段 → 写入 `upstreams` 表
+4. 从 `proxy_config.yaml` 解析 `model_map` 段 → 写入 `target_models` + `model_routes` 表
+5. 写入 `schema_version = 1`（最后一步，确保中途失败则整个事务回滚）
+6. 若事务中任一步失败 → `ROLLBACK`，数据库保持干净，下次启动重新尝试
+7. 若数据库已有数据（`schema_version` 存在）→ 跳过全部导入逻辑
+8. 提供 `POST /api/config/import-from-yaml` 手动重新导入（覆盖同名 upstream/model/route，不删除数据库中独有数据）
 
 ---
 
@@ -355,7 +359,70 @@ else:
     forward_to_chat(chat_body, model_cfg["upstream"])
 ```
 
-**当前阶段**：所有上游都是 `openai_chat` 格式，转换逻辑不变。format 字段作为数据预留存在于数据库和 UI 中。
+**当前阶段**：所有上游都是 `openai_chat` 格式，转换逻辑不变。format 字段在 UI 中显示但带有 tooltip："当前所有上游统一使用格式转换，此字段暂不生效"。避免用户误以为改了 format 就会改变转发行为。
+
+---
+
+## 八、前端状态管理策略
+
+考虑到纯 vanilla JS 单文件架构（无框架、无构建工具），采用 **CustomEvent 事件总线**模式实现组件间通信。
+
+### 全局事件
+
+| 事件名 | 触发时机 | payload | 订阅者 |
+|--------|---------|---------|--------|
+| `config:upstream-changed` | 上游新增/编辑/禁用 | `{upstream}` | 模型表（刷新 dropdown），路由表（刷新 dropdown），状态栏（刷新计数） |
+| `config:model-changed` | 模型新增/编辑/删除 | `{model}` | 路由表（刷新 dropdown），状态栏（刷新计数） |
+| `config:route-changed` | 路由新增/编辑/删除 | `{route}` | 状态栏（刷新计数） |
+| `config:dirty` | 任何配置被修改 | `{source: "upstream\|model\|route"}` | "应用配置"按钮（高亮） |
+| `config:applied` | POST /api/config/reload 成功 | `{reloaded_at}` | 状态栏（更新时间戳），"应用配置"按钮（取消高亮） |
+
+### 实现方式
+
+```javascript
+// 事件工具（内联在 static/index.html 中）
+const bus = {
+  emit(name, detail) {
+    document.dispatchEvent(new CustomEvent(name, { detail }));
+  },
+  on(name, fn) {
+    document.addEventListener(name, fn);
+  }
+};
+
+// 示例：上游保存后
+async function saveUpstream(data) {
+  const result = await api('/api/upstreams', { method: 'POST', body: JSON.stringify(data) });
+  bus.emit('config:upstream-changed', { upstream: result });
+  bus.emit('config:dirty', { source: 'upstream' });
+  refreshUpstreamTable();  // 只刷新自己的表格
+}
+
+// 模型表订阅上游变更
+bus.on('config:upstream-changed', () => {
+  refreshModelDropdown();  // 重新获取上游列表更新下拉选项
+});
+
+// "应用配置"按钮订阅 dirty 事件
+bus.on('config:dirty', () => {
+  const btn = document.getElementById('apply-config-btn');
+  btn.classList.add('pulse-orange');  // CSS 动画：橙色脉冲
+});
+```
+
+### 数据流方向
+
+```
+用户操作表格 → CRUD API → 成功后 → 派发事件 → 相关表格刷新 + 状态栏更新
+                                          ↓
+                                    config:dirty → 按钮高亮
+                                          ↓
+                              用户点"应用配置" → POST /api/config/reload
+                                          ↓
+                              config:applied → 按钮取消高亮 + 状态栏更新时间戳
+```
+
+Dropdown 选项在每次弹出模态框时实时从 API 拉取（不缓存），确保最新数据。此方案不引入额外依赖，代码量约 30 行。
 
 ---
 
@@ -370,3 +437,7 @@ else:
 | proxy 不可达 — manual reload 时 proxy 进程不在 | 返回友好错误提示给前端，配置将在 TTL 过期后自动生效 |
 | API Key 安全 — 明文存储在 config.db | 当前 proxy_config.yaml 也是明文，暂无额外加密需求。后续可选 AES 加密 |
 | API Key 前端暴露 — 网页展示时泄露 | 前端展示 API Key 时用 `sk-****abc` 脱敏格式，仅在编辑模态框中明文显示 |
+| SQLite 外键静默失效 — 不加 PRAGMA 则 RESTRICT 无效 | `ConfigDB.__init__` 每次连接执行 `PRAGMA foreign_keys = ON`；测试中显式验证违反约束会抛出 `IntegrityError` |
+| is_default 多上游冲突 — 多个上游标记为默认 | `add_upstream`/`update_upstream` 设置 `is_default=1` 前先清除其他上游的默认标记 |
+| 种子导入部分失败 — 数据不完整 | 整个导入包裹在 SQLite 事务中，全部成功才写入 `schema_version`，否则回滚 |
+| format 字段用户误解 — 以为改 format 就能改变转发 | UI 中 format 字段显示但附 tooltip 说明当前不生效 |
