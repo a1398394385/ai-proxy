@@ -616,9 +616,13 @@ logger = logging.getLogger(__name__)
 
 
 def anthropic_to_chat(body: dict, model_cfg: dict) -> dict:
-    """Anthropic Messages → OpenAI Chat Completions 请求转换。"""
+    """Anthropic Messages → OpenAI Chat Completions 请求转换。
+    
+    model_cfg: 来自 proxy.py resolve_model()，必需字段 target（如 "qwen3.6-plus"）。
+              测试中 mock 为 {"target": "qwen3.6-plus", "multimodal": True}。
+    """
     chat = {
-        "model": model_cfg["target"],
+        "model": model_cfg["target"],  # 由 proxy 层保证 target 存在
         "messages": [],
     }
     
@@ -647,7 +651,8 @@ def anthropic_to_chat(body: dict, model_cfg: dict) -> dict:
     # temperature, top_p, stop, stream
     # temperature, top_p, stop, stream
     # stop_sequences → stop: 数组直接透传（Chat API 同时接受 string/array），
-    # 与 cc-switch transform.rs line 153 行为一致
+    # 与 cc-switch transform.rs line 153 行为一致。
+    # 空数组 [] 也透传——Chat API 可接受但行为取决于上游实现。
     for key in ("temperature", "top_p", "stop_sequences", "stream"):
         if key in body:
             target_key = "stop" if key == "stop_sequences" else key
@@ -691,13 +696,17 @@ def supports_reasoning_effort(model: str) -> bool:
 
 
 def _convert_message_to_chat(role: str, content) -> list:
-    """将单个 Anthropic 消息转换为 Chat messages（可能多条）。"""
+    """将单个 Anthropic 消息转换为 Chat messages（可能多条）。
+    
+    返回顺序：assistant/user 消息在前，tool 消息在后。
+    先构建 chat_content + tool_calls，再 append tool_result。
+    """
     if isinstance(content, str):
         return [{"role": role, "content": content}]
     if isinstance(content, list):
-        result = []
         chat_content = []
         tool_calls = []
+        tool_messages = []  # tool_result → 独立 tool 消息
         for block in content:
             block_type = block.get("type")
             if block_type == "text":
@@ -726,24 +735,25 @@ def _convert_message_to_chat(role: str, content) -> list:
                 tc = block.get("content") or ""  # None/null 视为空字符串
                 if isinstance(tc, list):
                     tc = json.dumps(tc)
-                result.append({
+                tool_messages.append({
                     "role": "tool",
                     "tool_call_id": block.get("tool_use_id", ""),
                     "content": tc,
                 })
             elif block_type in ("thinking", "redacted_thinking"):
                 pass  # 丢弃
+        # 构建结果：assistant/user 消息在前，tool 消息在后
+        result = []
         if role == "assistant" and tool_calls:
-            msg = {}
+            msg = {"role": "assistant", "tool_calls": tool_calls}
             if chat_content:
                 msg["content"] = chat_content
-            msg["role"] = "assistant"
-            msg["tool_calls"] = tool_calls
-            result.insert(0, msg)
+            result.append(msg)
         elif chat_content:
-            result.insert(0, {"role": role, "content": chat_content})
-        elif not result:
-            result.insert(0, {"role": role, "content": ""})
+            result.append({"role": role, "content": chat_content})
+        elif not tool_messages:
+            result.append({"role": role, "content": ""})
+        result.extend(tool_messages)
         return result
     return [{"role": role, "content": str(content)}]
 
@@ -848,6 +858,8 @@ git add test/test_transform_anthropic.py transform_anthropic.py && git commit -m
 | 19 | `test_thinking_to_reasoning_effort_budget` | `thinking: {type:"enabled", budget_tokens: 16000}` → `reasoning_effort: "high"` | budget range 判断 |
 | 20 | `test_reasoning_effort_on_gpt5_model` | 目标模型 gpt-5.1 → 注入 `reasoning_effort` | `supports_reasoning_effort` 覆盖 gpt-5+ |
 | 21 | `test_reasoning_effort_skipped_on_qwen` | 目标模型 qwen3.6-plus → 不注入 `reasoning_effort` | `supports_reasoning_effort` 正确跳过 |
+
+> **model_cfg 测试约定**: 测试中 model_cfg 为 `{"target": "<model_name>", "multimodal": True/False}` 的简单 dict，模拟 proxy 层 `resolve_model()` 的返回结果。测试推理 effort 时需要切换 target 模型名（如 `"gpt-5.1"` vs `"qwen3.6-plus"`）。
 | 22 | `test_tool_choice_auto` | `{type:"auto"}` → `"auto"` | tool_choice 映射 |
 | 23 | `test_tool_choice_any` | `{type:"any"}` → `"required"` | tool_choice 映射 |
 | 24 | `test_tool_choice_tool` | `{type:"tool", name:"x"}` → `{type:"function", function:{name:"x"}}` | tool_choice 映射 |
@@ -899,6 +911,8 @@ git add test/test_transform_anthropic.py transform_anthropic.py plan_tracking.md
 | 7 | `test_finish_reason_content_filter` | `finish_reason: "content_filter"` | `stop_reason: "end_turn"` |
 | 8 | `test_usage_mapping` | `usage: {prompt_tokens, completion_tokens, prompt_tokens_details: {cached_tokens}}` | `usage: {input_tokens, output_tokens, cache_read_input_tokens}` |
 | 9 | `test_hardcoded_fields` | — | `type: "message"`, `role: "assistant"`, `stop_sequence: null` |
+| 10 | `test_tool_calls_empty_arguments` | `function.arguments: ""` | `input: {}`（空字符串降级为空 dict） |
+| 11 | `test_tool_calls_invalid_arguments_json` | `function.arguments: "not valid json"` | `input: {}`（无效 JSON 降级为空 dict） |
 
 函数签名：`chat_to_anthropic(response: dict) -> dict`
 
@@ -915,7 +929,7 @@ Expected: ~141+ passed
 - [ ] **Step 12: Commit**
 
 ```bash
-git add test/test_transform_anthropic.py transform_anthropic.py plan_tracking.md && git commit -m "feat: chat_to_anthropic 响应转换完成（9 个测试）"
+git add test/test_transform_anthropic.py transform_anthropic.py plan_tracking.md && git commit -m "feat: chat_to_anthropic 响应转换完成（11 个测试）"
 ```
 
 ---
@@ -928,9 +942,26 @@ git add test/test_transform_anthropic.py transform_anthropic.py plan_tracking.md
 
 **目标**: 实现 Chat Completions SSE → Anthropic Messages SSE 流式转换。
 
-- [ ] **Step 1-14: TDD 循环**
+**test_mock 构造方式**: 使用原始 SSE 文本 + `io.BytesIO` 模拟上游 response，与现有 `test_transform.py` 中 `TestCodexSSEStream` 保持一致。测试流程：
 
-测试策略：构造 mock 上游 SSE 事件 generator，验证输出的 Anthropic SSE 事件序列。
+```python
+import io
+
+def _mock_upstream_stream(sse_text: str):
+    """构造模拟上游 response — 返回 io.BytesIO。"""
+    return io.BytesIO(sse_text.encode("utf-8"))
+
+# 示例：文本流
+upstream = _mock_upstream_stream(
+    'data: {"id":"chatcmpl-1","model":"qwen","choices":[{"delta":{"content":"Hello"}}]}\n\n'
+    'data: {"id":"chatcmpl-1","model":"qwen","choices":[{"delta":{"content":" world"}}]}\n\n'
+    'data: {"id":"chatcmpl-1","model":"qwen","choices":[{"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2}}\n\n'
+    'data: [DONE]\n\n'
+)
+events = list(create_anthropic_sse_stream(upstream))
+# events[0] -> "event: message_start\ndata: {...}\n\n"
+# ... 断言每个 SSE 字符串的内容
+```
 
 | # | 测试名 | Mock 上游事件 | 预期 Anthropic 事件序列 |
 |---|--------|-------------|------------------------|
