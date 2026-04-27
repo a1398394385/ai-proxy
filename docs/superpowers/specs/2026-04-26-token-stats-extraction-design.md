@@ -189,6 +189,16 @@ for k in ("cache_read_input_tokens", "cache_creation_input_tokens"):
 
 ---
 
+## Breaking Changes
+
+1. **流式 SSE 中断不再记录 `status="incomplete"`**：之前 `_forward_streaming` 在没有 `final_usage` 时（如 SSE 流中断）会写入一条 `(input=0, output=0, status="incomplete")` 记录。现在 `record_token_stats` 仅在有 `usage` 时写入，中断请求不产生任何 token_stats 记录。如果下游监控依赖 `status="incomplete"` 识别失败请求，需要在 `proxy.py` 的调用侧（流式路径的 else 分支）补充调用。
+
+2. **非流式路径空 usage 不再记录全 0 行**：之前即使 `chat_response` 不含 usage 也会写入一条全 0 记录。现在 `record_token_stats` 在 `usage` 为空时直接返回。
+
+3. **`_find_first` 使用 key 存在性而非值大小判断**：当 Anthropic 格式的 cache 字段值为 0（缓存未命中）时，不会回退到 OpenAI Chat 格式的 `cached_tokens` 字段。这是有意的设计选择——key 存在性表达的是上游的"格式选择"而非"业务值"。在实际场景中，上游不会在同一响应内混用两种格式的 cache 字段。
+
+---
+
 ## 性能
 
 - 纯 dict key 查找，`_find_first` 每个提取项最多 3 次 `dict.get()`

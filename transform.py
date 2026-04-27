@@ -591,7 +591,8 @@ def _emit_completion(state: StreamState) -> list:
         "output_tokens": raw.get("completion_tokens") or raw.get("output_tokens", 0),
         "total_tokens": raw.get("total_tokens", 0),
     }
-    # 合并两个 details dict（上游可能同时返回 prompt_tokens_details 和 input_tokens_details）
+    # 合并两个 details dict。上游通常只返回一种格式，即使同时返回
+    # 两者也不会包含同名 key，后者覆盖前者的风险在实际上游行为中不存在。
     details = {}
     for k in ("prompt_tokens_details", "input_tokens_details"):
         if raw.get(k):

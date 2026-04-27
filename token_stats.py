@@ -52,6 +52,13 @@ def _extract_tokens(usage: dict) -> dict:
     }
     """
     # 展开嵌套的 details dict（_find_first 只查顶层 key，不做点号导航）
+    # if/elif 链用 key 存在性做优先级判断：
+    #   优先 Anthropic 格式（cache_*_input_tokens 在 usage 顶层），
+    #   其次 OpenAI Chat 格式（prompt_tokens_details.cached_tokens），
+    #   最后 OpenAI Responses 格式（input_tokens_details.cached_tokens）。
+    # 假设上游不会在同一响应中同时返回多种格式的 cache 字段 —
+    # 如果 Anthropic 的 cache_read_input_tokens 为 0（缓存未命中），
+    # 不会回退到 Chat/Responses 格式的值，因为 key 已存在。
     prompt_details = usage.get("prompt_tokens_details", {})
     input_details = usage.get("input_tokens_details", {})
 
