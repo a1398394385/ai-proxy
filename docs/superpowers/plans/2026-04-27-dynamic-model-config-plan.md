@@ -109,6 +109,7 @@ Expected: 6 个 FAIL（ModuleNotFoundError: No module named 'config_manager'）
 """动态模型配置管理 — ConfigDB（数据库 CRUD）+ ConfigCache（内存缓存）。"""
 
 import sqlite3
+import sys
 import threading
 import time
 from pathlib import Path
@@ -126,7 +127,7 @@ class ConfigDB:
     def __init__(self, db_path: Path, yaml_seed_path: Path = None):
         self.db_path = db_path
         self._ensure_db()
-        if yaml_seed_path:
+        if yaml_seed_path is not None:
             self._seed_from_yaml(yaml_seed_path)
 
     def _connect(self):
@@ -182,7 +183,11 @@ class ConfigDB:
             conn.close()
 
     def _seed_from_yaml(self, yaml_path: Path):
-        """首次启动从 proxy_config.yaml 导入种子数据。"""
+        """首次启动从 proxy_config.yaml 导入种子数据。
+        
+        注：_parse_yaml 和 _yaml_scalar 定义在文件末尾，Python 模块级函数在 import 时全部解析，
+        调用时已可用，顺序无关。
+        """
         conn = self._connect()
         try:
             has_version = conn.execute(
@@ -443,11 +448,23 @@ class ConfigDB:
         finally:
             conn.close()
 
-    def delete_model(self, model_id: int):
+    def delete_model(self, model_id: int, check_refs: bool = True):
+        """删除模型。check_refs=True 时先检查路由引用，有引用则直接返回引用列表（不抛异常）。
+        调用方（server.py handler）应使用 check_refs=True（默认），获取引用列表后返回 409。
+        内部脚本可直接用 check_refs=False 跳过预检查（依赖外键 RESTRICT 拦截）。
+        """
         conn = self._connect()
         try:
+            if check_refs:
+                refs = [r["source"] for r in conn.execute(
+                    "SELECT source FROM model_routes WHERE target_model_id = ?",
+                    (model_id,),
+                ).fetchall()]
+                if refs:
+                    return {"error": "模型被路由引用，无法删除", "referenced_routes": refs}
             conn.execute("DELETE FROM target_models WHERE id = ?", (model_id,))
             conn.commit()
+            return {"message": "Deleted"}
         finally:
             conn.close()
 
@@ -886,8 +903,9 @@ class TestModelCRUD(unittest.TestCase):
         """ON DELETE RESTRICT：被路由引用的模型无法删除。"""
         mid = self.db.add_model({"name": "qwen", "upstream_id": "up-a"})
         self.db.add_route({"source": "gpt-4", "target_model_id": mid})
+        # check_refs=False 跳过预检查，直接让外键 RESTRICT 拦截
         with self.assertRaises(sqlite3.IntegrityError):
-            self.db.delete_model(mid)
+            self.db.delete_model(mid, check_refs=False)
         # 显式二次验证：用独立连接 + 手动 PRAGMA 确认外键约束生效
         conn = sqlite3.connect(str(self.db_path))
         conn.execute("PRAGMA foreign_keys = ON")
@@ -1270,7 +1288,7 @@ class ConfigCache:
 
     def __init__(self, db_path: Path, ttl: float = 5, yaml_seed_path: Path = None):
         self._db_path = db_path
-        self._ttl = ttl
+        self._ttl = ttl            # TTL=0 表示每次 resolve 都读库（测试用）
         self._yaml_seed_path = yaml_seed_path
         self._lock = threading.Lock()
         self._routes: dict = {}     # {source: config_dict}
@@ -2006,21 +2024,11 @@ git commit -m "feat: server.py 新增上游管理 API — CRUD + 连通性测试
     if m:
         mid = int(m.group(1))
         db = get_config_db()
-        # 预检查引用
-        refs = db.model_referenced_routes(mid)
-        if refs:
-            db.close()
-            return json_response(self, {
-                "error": "模型被以下路由引用，无法删除",
-                "referenced_routes": refs,
-            }, 409)
-        try:
-            db.delete_model(mid)
-            db.close()
-            return json_response(self, {"message": "Deleted"})
-        except sqlite3.IntegrityError as e:
-            db.close()
-            return json_response(self, {"error": str(e)}, 409)
+        result = db.delete_model(mid)  # check_refs=True (default), 有引用返回 dict with error
+        db.close()
+        if "error" in result:
+            return json_response(self, result, 409)
+        return json_response(self, {"message": "Deleted"})
 
     m = re.match(r"/api/routes/(\d+)$", parsed.path)
     if m:
