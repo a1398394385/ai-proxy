@@ -8,7 +8,7 @@
 
 ## Current Task
 
-Task 4 (Not Started)
+Task 6 (Not Started)
 
 ## Tasks
 
@@ -37,10 +37,10 @@ Task 4 (Not Started)
 
 ### Task 4: 重构 `transform.py` — `_emit_completion` usage 透传
 
-- [ ] Step 1: 简化 usage 构建为透传原始字段，移除 Anthropic cache 适配
-- [ ] Step 2: 运行全量测试（预期 127/127）
-- [ ] Step 3: Commit
-- **Status:** not_started
+- [x] Step 1: 简化 usage 构建为透传原始字段，移除 Anthropic cache 适配
+- [x] Step 2: 运行全量测试（127/127）
+- [x] Step 3: Commit
+- **Status:** done
 
 ### Task 5: 确认集成测试兼容性
 

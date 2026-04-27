@@ -585,30 +585,31 @@ def _emit_completion(state: StreamState) -> list:
         }))
 
     # completed
-    usage = state.usage
-    # 缓存 token：兼容 OpenAI 格式 (prompt_tokens_details.cached_tokens) 和
-    # Anthropic 格式 (cache_read_input_tokens / cache_creation_input_tokens)
-    cached_read = (
-        usage.get("cache_read_input_tokens", 0)
-        or usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
-    )
-    cache_write = usage.get("cache_creation_input_tokens", 0)
+    raw = state.usage
+    usage = {
+        "input_tokens": raw.get("prompt_tokens") or raw.get("input_tokens", 0),
+        "output_tokens": raw.get("completion_tokens") or raw.get("output_tokens", 0),
+        "total_tokens": raw.get("total_tokens", 0),
+    }
+    # 合并两个 details dict（上游可能同时返回 prompt_tokens_details 和 input_tokens_details）
+    details = {}
+    for k in ("prompt_tokens_details", "input_tokens_details"):
+        if raw.get(k):
+            details.update(raw[k])
+    if details:
+        usage["input_tokens_details"] = details
+    output_details = raw.get("completion_tokens_details") or raw.get("output_tokens_details")
+    if output_details:
+        usage["output_tokens_details"] = output_details
+    # 透传 Anthropic 格式顶层缓存字段
+    for k in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+        if k in raw:
+            usage[k] = raw[k]
     completed_response = {
         "id": state.response_id,
         "status": FINISH_REASON_MAP.get(state.finish_reason, "completed"),
         "output": state.output_items,
-        "usage": {
-            "input_tokens": usage.get("prompt_tokens", 0),
-            "output_tokens": usage.get("completion_tokens", 0),
-            "total_tokens": usage.get("total_tokens", 0),
-            "input_tokens_details": {
-                "cached_tokens": cached_read,
-                "cache_creation_input_tokens": cache_write,
-            },
-            "output_tokens_details": {
-                "reasoning_tokens": usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0),
-            },
-        },
+        "usage": usage,
     }
     if state.finish_reason in INCOMPLETE_REASON_MAP:
         completed_response["incomplete_details"] = {"reason": INCOMPLETE_REASON_MAP[state.finish_reason]}
