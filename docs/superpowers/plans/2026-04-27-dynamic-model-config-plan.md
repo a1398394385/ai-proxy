@@ -568,6 +568,7 @@ class ConfigDB:
                 "target_name": d["target_name"],
                 "multimodal": d["multimodal"],
                 "format": d["format"],
+                "matched_source": source_name,  # 调试用：记录实际命中的 source
                 "upstream": {
                     "id": d["upstream_id"],
                     "base_url": d["base_url"],
@@ -1278,23 +1279,30 @@ class ConfigCache:
         now = time.time()
         if self._loaded_at > 0 and now - self._loaded_at < self._ttl:
             return
-        db = ConfigDB(self._db_path)
         try:
-            self._routes.clear()
-            all_routes = db.get_all_routes()
-            for source in all_routes:
-                cfg = db.resolve_model(source)
-                if cfg:
-                    self._routes[source] = cfg
-            star_cfg = db.resolve_model("*")
-            if star_cfg:
-                self._routes["*"] = star_cfg
-            self._loaded_at = time.time()
-        finally:
-            db.close()
+            db = ConfigDB(self._db_path)
+            try:
+                new_routes = {}
+                all_routes = db.get_all_routes()
+                for source in all_routes:
+                    cfg = db.resolve_model(source)
+                    if cfg:
+                        new_routes[source] = cfg
+                star_cfg = db.resolve_model("*")
+                if star_cfg:
+                    new_routes["*"] = star_cfg
+                # 全部成功后才替换
+                self._routes = new_routes
+                self._loaded_at = time.time()
+            finally:
+                db.close()
+        except Exception:
+            # 数据库异常时保留旧缓存，不更新 _loaded_at
+            # TTL 机制下次继续尝试，避免一次性失败导致永不过期
+            pass
 ```
 
-This is clean and simple. Let me use this version.
+数据库异常时保留旧缓存，resolve() 继续返回旧值，不抛 500。下次 TTL 到期后自动重试。
 ```
 
 - [ ] **Step 4: 运行测试确认通过**
@@ -1420,6 +1428,12 @@ git commit -m "test: 种子导入测试 — 空库导入/yaml缺失兜底/已导
 
 **Files:**
 - Modify: `proxy.py`
+
+**load_config() 保留逻辑**：load_config() 不再校验 model_map / `*` fallback，但保留以下功能：
+- 加载 `proxy_config.yaml`（仅读取 upstream 段用于日志配置等）
+- 配置 logging（log_level、FileHandler）
+- 启动时校验改为 `config_cache.resolve("*") is not None`
+- config.db 种子导入由 config_manager 自动处理，proxy.py 无需关心
 
 - [ ] **Step 1: 修改 proxy.py 导入和全局单例**
 
@@ -1908,7 +1922,7 @@ git commit -m "feat: server.py 新增上游管理 API — CRUD + 连通性测试
     # POST /api/config/reload
     if parsed.path == "/api/config/reload":
         try:
-            conn = http.client.HTTPConnection("127.0.0.1", 48743, timeout=3)
+            conn = http.client.HTTPConnection("127.0.0.1", 48743, timeout=5)
             conn.request("POST", "/admin/reload")
             resp = conn.getresponse()
             body = json.loads(resp.read())
@@ -2198,6 +2212,11 @@ document.querySelectorAll('.nav-tab').forEach(tab => {
 - [ ] **Step 2: 实现事件总线**
 
 ```javascript
+// ===== 工具函数 =====
+function escHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 // ===== 事件总线 =====
 const bus = {
   emit(name, detail) {
