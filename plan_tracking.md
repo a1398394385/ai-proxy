@@ -1,86 +1,90 @@
-# Plan Tracking: Codex SSE 格式对齐 实现进度跟踪
+# Plan Tracking: Token 统计抽取 实现进度跟踪
 
-> 基于 `docs/superpowers/plans/2026-04-26-codex-sse-format-alignment.md` 实施计划生成的进度跟踪文档。
+> 基于 `docs/superpowers/plans/2026-04-27-token-stats-extraction.md` 实施计划生成的进度跟踪文档。
 
 ## Goal
 
-修复 fact-store-browser proxy 的 SSE 流式响应格式，使所有事件的 data JSON 都包含 `"type"` 字段，与 Codex CLI 的 `ResponsesStreamEvent` 解析完全兼容，解决 `stream closed before response.completed` 错误。
+将 token 统计逻辑从 proxy.py 抽取为独立 `token_stats.py` 模块，统一处理 Anthropic / OpenAI Chat / OpenAI Responses 三种 usage 格式，包括 qwen 通过 LiteLLM 返回的 Anthropic 格式 cache 字段。
 
 ## Current Task
 
-None (All Done)
+Task 3 (Not Started)
 
 ## Tasks
 
-### Task 1: 新增 `_format_sse_event` 辅助函数 + 单元测试
+### Task 1: 创建 `token_stats.py` — 核心函数
 
-- [x] Step 0: 补充 `import json` 到 test/test_transform.py
-- [x] Step 1: 写 7 个 `_format_sse_event` 单元测试
-- [x] Step 2: 运行测试，验证全部失败
-- [x] Step 3: 实现 `_format_sse_event` 函数
-- [x] Step 4: 运行测试，验证全部通过
-- [x] Step 5: 运行全量测试，确认无回归
-- [x] Step 6: Commit
+- [x] Step 1: 写 `_find_first` 辅助函数和 `record_token_stats` 函数（含幂等建表）
+- [x] Step 2: 验证模块可导入
+- [x] Step 3: Commit
 - **Status:** done
 
-### Task 2: 修改所有 SSE 事件生成点，使用 `_format_sse_event`
+### Task 2: 新增 `test/test_token_stats.py` — 16 个单元测试
 
-- [x] Step 1: `_emit_created` 元组拼接 (line ~435)
-- [x] Step 2: `output_item.added` reasoning
-- [x] Step 3: `reasoning_summary_text.delta`
-- [x] Step 4: `output_item.added` message
-- [x] Step 5: `output_text.delta`
-- [x] Step 6: `reasoning_summary_text.done`
-- [x] Step 7: `output_item.done` reasoning
-- [x] Step 8: `output_text.done`
-- [x] Step 9: `output_item.done` message
-- [x] Step 10: `output_item.done` function_call
-- [x] Step 11: `response.incomplete`（含 `"response"` 包裹）
-- [x] Step 12: 运行全量测试
-- [x] Step 13: Commit
+- [x] Step 1: 写测试代码（_find_first × 5 + _extract_tokens × 6 + record_token_stats × 5）
+- [x] Step 2: 运行测试，验证全部通过（16/16）
+- [x] Step 3: Commit
 - **Status:** done
 
-### Task 3: 新增事件格式集成测试 + 快照测试
+### Task 3: 重构 `proxy.py` — 替换两处 token 统计调用点
 
-- [x] Step 1: 集成测试 — 逐事件验证 `"type"` 字段（3 个测试）
-- [x] Step 2: 快照测试 — 完整 SSE 格式对照（2 个测试）
-- [x] Step 3: 运行所有新增测试
-- [x] Step 4: 运行全量测试
-- [x] Step 5: Commit
-- **Status:** done
+- [ ] Step 1: 添加 `from token_stats import record_token_stats` import
+- [ ] Step 2: 修改非流式路径（替换内联格式提取）
+- [ ] Step 3: 修改流式路径（替换内联格式提取）
+- [ ] Step 4: 运行全量测试（预期 127/127）
+- [ ] Step 5: Commit
+- **Status:** not_started
 
-### Task 4: Codex CLI 端对端验证
+### Task 4: 重构 `transform.py` — `_emit_completion` usage 透传
 
-- [x] Step 1: 备份 codex 配置
-- [x] Step 2: 切换 codex 配置到 proxy
-- [x] Step 3: 启动 proxy（重启加载新代码）
-- [x] Step 4: Python 脚本模拟 Codex 请求 → stream 68 事件，response.completed 成功发送
-- [x] Step 5: 验证所有事件 data JSON 均有 "type" 字段，stream 正常完成
-- [x] Step 6: 恢复原始配置
-- [x] Step 7: Commit
-- **Status:** done
+- [ ] Step 1: 简化 usage 构建为透传原始字段，移除 Anthropic cache 适配
+- [ ] Step 2: 运行全量测试（预期 127/127）
+- [ ] Step 3: Commit
+- **Status:** not_started
+
+### Task 5: 确认集成测试兼容性
+
+- [ ] Step 1: 确认 mock SSE 路径与新的透传逻辑兼容
+- [ ] Step 2: 运行集成测试确认
+- [ ] Step 3: Commit（如有修改）
+- **Status:** not_started
+
+### Task 6: 最终验证
+
+- [ ] Step 1: 运行全量测试（预期 127/127）
+- [ ] Step 2: 重启 proxy（`./server.sh restart`）
+- [ ] Step 3: 冒烟测试（需上游网络可用）
+- [ ] Step 4: 检查 token_stats 数据库写入是否正确
+- **Status:** not_started
+
+## 之前的工作（SSE 格式对齐）
+
+1. Task 1-4 全部完成，6 个 commit，108+ tests passing。
+2. `_format_sse_event` 辅助函数 + 12 个 SSE 事件生成点统一 + 集成测试 + Codex CLI 验证通过。
+3. 后续审阅修复：response.completed 统一、metadata headers 包裹、MockStream 重构、proxy.py 硬编码 SSE 修复。
+4. 工具格式转换修复：`_map_tools` 将 Responses API 工具格式转为 Chat Completions 格式，丢弃非 function 类型工具。
+5. stream_options 修复：流式请求添加 `include_usage: true` 使上游返回 token 统计。
 
 ## 之前的工作（Request Logger）
 
 1. Request Logger 模块已完成全部 6 个 Task（Task 0-5），97 个测试通过。
 2. 测试文件已统一移至 `test/` 目录。
-3. 测试文件：`test/test_request_logger.py`、`test/test_proxy_logger_integration.py`、`test/test_e2e_smoke.py`、`test/test_proxy_config.py`、`test/test_transform.py`。
 
 ## 之前的工作（Codex Proxy 基础）
 
-1. Codex Proxy 已完成全部 10 个 Task（Task 0 环境准备 + Task 1-9 实施），`proxy.py` 和 `transform.py` 均已上线运行。
-2. `_emit_created` 和 `_emit_completed` 的格式已修复，但 `_process_delta` 和 `_emit_completion` 中仍有 10+ 个事件缺失 `"type"` 字段。
-3. 根因：Codex 的 `ResponsesStreamEvent` 要求所有事件 data JSON 必须有 `"type"` 字段。
+1. Codex Proxy 已完成全部 10 个 Task，`proxy.py` 和 `transform.py` 均已上线运行。
 
 ## Decisions Made
 
 | Decision | Rationale | Source |
 |----------|-----------|--------|
-| 新增 `_format_sse_event` 统一辅助函数 | 所有事件统一格式化，避免遗漏 | 设计文稿 |
-| 使用 `{"type": event_type, **data}` 注入 | event_type 覆盖 data 中已有的 "type"，保证一致 | 设计文稿 |
-| 统一 `separators=(',', ':')` 紧凑格式 | 与已有修复的事件格式一致 | 设计文稿 |
-| `response.incomplete` 使用 `"response"` 包裹 | Codex 从 `response.incomplete_details.reason` 读取 | 设计文稿 |
-| `chat_to_responses` 无需修改 | 非流式响应，Codex 直接解析 JSON 响应体 | 设计文稿 |
+| `_find_first` 用 `k in usage` 判断存在性，不用 `v > 0` | 0 是合法业务值（cache 未命中），不应被跳过 | 设计文稿/审阅 |
+| `_extract_tokens` 中 cache_* 用 if/elif 链 | 嵌套路径需展开；if/elif 更清晰表达优先级 | 设计文稿/审阅 |
+| `record_token_stats` 内建 `CREATE TABLE IF NOT EXISTS` | 不依赖 request_logger 初始化顺序 | 审阅 |
+| `sqlite3.connect` 不加 `check_same_thread` | 每次调用新建连接，天然线程安全 | 审阅 |
+| `request_logger.log_token_stats()` 保留但不再调用 | 向后兼容 | 设计文稿 |
+| DB_PATH 硬编码到项目根目录 | 与 request_logger.py 同一路径约定 | 设计文稿 |
+| context 缺字段用默认值，仅 request_id 缺失时跳过 | 统计容错性优先于完整性 | 设计文稿 |
 
 ## Errors Encountered
 
@@ -90,9 +94,11 @@ None (All Done)
 
 ## Notes
 
-- 设计文稿：`docs/superpowers/specs/2026-04-26-codex-sse-format-alignment-design.md`
-- 实施计划：`docs/superpowers/plans/2026-04-26-codex-sse-format-alignment.md`
-- 共 4 个 Task，每个 Task 包含多个 Step（TDD 循环：写测试 → 验证失败 → 实现 → 验证通过 → Commit）
-- Task 2 改动最敏感，需要确保不影响现有 proxy 转发逻辑
-- Task 4 涉及外部工具（Codex CLI），需要在实现完成后手动执行
-- 纯 Python 标准库实现，无外部依赖，与 Codex Proxy 项目约束一致
+- 设计文稿：`docs/superpowers/specs/2026-04-26-token-stats-extraction-design.md`
+- 实施计划：`docs/superpowers/plans/2026-04-27-token-stats-extraction.md`
+- 共 6 个 Task，每个 Task 包含 3-5 个 Step（TDD 循环）
+- Task 1-2 为新文件创建，Task 3-4 为现有文件重构
+- Task 5 检查集成测试兼容性（可能无需修改）
+- Task 6 为最终验证，包含冒烟测试（依赖上游网络）
+- 纯 Python 标准库实现，无外部依赖
+- **注意**：`token_stats.py` 必须放在项目根目录（与 `data/` 同级），`DB_PATH` 基于 `__file__` 计算
