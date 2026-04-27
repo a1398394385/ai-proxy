@@ -215,11 +215,16 @@ class TestFormatSSEEvent(unittest.TestCase):
         self.assertEqual(data["x"], 1)
 
     # ─── Responses API 'response' 包裹 ───
+    # 注意：_format_sse_event 本身不做包裹，包裹由调用方传入 data 时处理
+    # （如 create_codex_sse_stream 在调用 _format_sse_event 前已构造 {"response": {...}}）
 
     def test_response_event_wrapped(self):
-        """response.* 事件 data 被 'response' 键包裹。"""
+        """response.* 事件的 data 中 'response' 键由调用方预先构造。"""
         from sse_utils import _format_sse_event
-        result = _format_sse_event("response.created", {"id": "resp-123"})
+        # 模拟调用方传入已包裹的 data
+        result = _format_sse_event("response.created", {
+            "response": {"id": "resp-123"}
+        })
         data_part = result.split("data: ", 1)[1].strip()
         data = json.loads(data_part)
         self.assertIn("response", data)
@@ -227,9 +232,11 @@ class TestFormatSSEEvent(unittest.TestCase):
         self.assertEqual(data["type"], "response.created")
 
     def test_response_incomplete_wrapped(self):
-        """response.incomplete 也被包裹。"""
+        """response.incomplete 的 data 中 'response' 键由调用方预先构造。"""
         from sse_utils import _format_sse_event
-        result = _format_sse_event("response.incomplete", {"reason": "max_tokens"})
+        result = _format_sse_event("response.incomplete", {
+            "response": {"incomplete_details": {"reason": "max_tokens"}}
+        })
         data_part = result.split("data: ", 1)[1].strip()
         data = json.loads(data_part)
         self.assertIn("response", data)
@@ -238,13 +245,18 @@ class TestFormatSSEEvent(unittest.TestCase):
     # ─── Responses API 'item' 包裹 ───
 
     def test_output_item_event_wrapped(self):
-        """output_item.* 事件 data 被 'item' 键包裹。"""
+        """output_item.* 事件的 data 中 'item' 键由调用方预先构造。"""
         from sse_utils import _format_sse_event
-        result = _format_sse_event("response.output_item.added", {"id": "item-1"})
+        result = _format_sse_event("response.output_item.added", {
+            "output_index": 0, 
+            "item": {"type": "reasoning", "id": "item-1", "summary": [], "status": "in_progress"}
+        })
         data_part = result.split("data: ", 1)[1].strip()
         data = json.loads(data_part)
         self.assertIn("item", data)
         self.assertEqual(data["item"]["id"], "item-1")
+        self.assertEqual(data["type"], "response.output_item.added")
+        self.assertEqual(data["output_index"], 0)
         self.assertEqual(data["type"], "response.output_item.added")
 
     # ─── Anthropic 事件（不匹配 response. / output_item. 前缀） ───
@@ -610,30 +622,32 @@ def anthropic_to_chat(body: dict, model_cfg: dict) -> dict:
         "messages": [],
     }
     
-    # system → system message
+    # system → system message（只保留含 text 字段的 block）
     system = body.get("system")
     if isinstance(system, str):
         chat["messages"].append({"role": "system", "content": system})
     elif isinstance(system, list):
-        parts = []
-        for block in system:
-            parts.append(block.get("text", ""))
-        chat["messages"].append({"role": "system", "content": "\n".join(parts)})
+        parts = [block["text"] for block in system if block.get("text")]
+        if parts:
+            chat["messages"].append({"role": "system", "content": "\n".join(parts)})
     
     # messages
     for msg in body.get("messages", []):
         converted = _convert_message_to_chat(msg.get("role", "user"), msg.get("content"))
         chat["messages"].extend(converted)
     
-    # max_tokens
+    # max_tokens：gpt-5+ 用 max_tokens，o-series 用 max_completion_tokens
     if "max_tokens" in body:
-        model = body.get("model", "")
-        if _is_o_series(model):
+        model_target = model_cfg.get("target", "")
+        if _is_o_series(model_target):
             chat["max_completion_tokens"] = body["max_tokens"]
         else:
             chat["max_tokens"] = body["max_tokens"]
     
     # temperature, top_p, stop, stream
+    # temperature, top_p, stop, stream
+    # stop_sequences → stop: 数组直接透传（Chat API 同时接受 string/array），
+    # 与 cc-switch transform.rs line 153 行为一致
     for key in ("temperature", "top_p", "stop_sequences", "stream"):
         if key in body:
             target_key = "stop" if key == "stop_sequences" else key
@@ -642,6 +656,20 @@ def anthropic_to_chat(body: dict, model_cfg: dict) -> dict:
     if body.get("stream"):
         chat["stream_options"] = {"include_usage": True}
     
+    # tool_choice 格式映射
+    if "tool_choice" in body:
+        chat["tool_choice"] = _map_tool_choice(body["tool_choice"])
+    
+    # tools 格式转换
+    if "tools" in body:
+        chat["tools"] = _map_anthropic_tools(body["tools"])
+    
+    # thinking → reasoning_effort（仅支持的模型）
+    if supports_reasoning_effort(model_cfg.get("target", "")):
+        effort = _resolve_reasoning_effort(body)
+        if effort:
+            chat["reasoning_effort"] = effort
+    
     return chat
 
 
@@ -649,6 +677,17 @@ def _is_o_series(model: str) -> bool:
     """检测 o-series 模型（o + 数字开头）。"""
     import re
     return bool(re.match(r'^o\d', model))
+
+
+def supports_reasoning_effort(model: str) -> bool:
+    """检测模型是否支持 reasoning_effort 字段（o-series + gpt-5+）。
+    
+    参考 cc-switch transform.rs line 22-27。
+    """
+    m = model.lower()
+    return _is_o_series(model) or (
+        m.startswith("gpt-") and len(m) > 4 and m[4].isdigit() and int(m[4]) >= 5
+    )
 
 
 def _convert_message_to_chat(role: str, content) -> list:
@@ -702,6 +741,66 @@ def _convert_message_to_chat(role: str, content) -> list:
             result.insert(0, {"role": role, "content": ""})
         return result
     return [{"role": role, "content": str(content)}]
+
+
+def _map_tool_choice(tc) -> str | dict:
+    """映射 Anthropic tool_choice → Chat Completions 格式。
+    
+    参考设计文稿 tool_choice 映射表。
+    """
+    if isinstance(tc, str):
+        mapping = {"auto": "auto", "any": "required", "none": "none"}
+        return mapping.get(tc, tc)
+    if isinstance(tc, dict):
+        tc_type = tc.get("type", "auto")
+        if tc_type == "auto":
+            return "auto"
+        elif tc_type == "any":
+            return "required"
+        elif tc_type == "tool":
+            return {"type": "function", "function": {"name": tc.get("name", "")}}
+    return tc
+
+
+def _resolve_reasoning_effort(body: dict) -> str | None:
+    """将 Anthropic thinking/output_config 映射为 reasoning_effort 值。
+    
+    参考设计文稿 thinking → reasoning_effort 映射表。
+    """
+    output_config = body.get("output_config", {})
+    if isinstance(output_config, dict) and "effort" in output_config:
+        effort_map = {"low": "low", "medium": "medium", "high": "high", "max": "xhigh"}
+        return effort_map.get(output_config["effort"])
+    thinking = body.get("thinking")
+    if isinstance(thinking, dict):
+        if thinking.get("type") == "adaptive":
+            return "xhigh"
+        if thinking.get("type") == "enabled":
+            budget = thinking.get("budget_tokens", 0)
+            if budget < 4000:
+                return "low"
+            elif budget < 16000:
+                return "medium"
+            else:
+                return "high"
+    return None
+
+
+def _map_anthropic_tools(tools: list) -> list:
+    """Anthropic 工具格式 → Chat Completions 工具格式。
+    
+    Anthropic: {name, description?, input_schema}
+    Chat: {type:"function", function:{name, description, parameters: input_schema}}
+    """
+    result = []
+    for tool in tools:
+        func = {}
+        for key in ("name", "description"):
+            if key in tool:
+                func[key] = tool[key]
+        func["parameters"] = tool.get("input_schema", {})
+        result.append({"type": "function", "function": func})
+    return result
 ```
 
 添加 `_map_tool_choice` 辅助函数和 tools 转换、reasoning_effort 映射等——后续每个测试逐步添加。
@@ -720,7 +819,7 @@ Expected: PASS
 git add test/test_transform_anthropic.py transform_anthropic.py && git commit -m "feat: anthropic_to_chat 基本消息转换（TDD Step 1）"
 ```
 
-- [ ] **Step 6-14: 以下测试逐个 TDD 循环（每个：写测试 → 验证失败 → 实现 → 验证通过 → commit）**
+- [ ] **Step 6-25: 以下 20 个测试逐个 TDD 循环（每个：写测试 → 验证失败 → 实现 → 验证通过）**
 
 每个测试先写出来，验证因缺失功能而失败，再在 `transform_anthropic.py` 中逐步添加实现：
 
@@ -728,23 +827,27 @@ git add test/test_transform_anthropic.py transform_anthropic.py && git commit -m
 |---|--------|---------|---------|
 | 6 | `test_system_string` | `system: "You are helpful"` → `messages[0]` 为 `{role:"system", content:"You are helpful"}` | 已在 Step 3 包含 |
 | 7 | `test_system_array` | `system: [{type:"text", text:"part1"}, ...]` → `\n` 连接 | 已在 Step 3 包含 |
-| 8 | `test_multimodal_image` | image source base64 → `image_url` | 已在 `_convert_message_to_chat` 包含 |
-| 9 | `test_tool_use_conversion` | `tool_use` block → `tool_calls[]` + `arguments` 序列化 | 已在 Step 3 包含 |
-| 10 | `test_tool_result_conversion` | `tool_result` → 独立 `{role:"tool", tool_call_id, content}` | 已在 Step 3 包含 |
-| 11 | `test_tool_result_array_content` | tool_result content 为数组 → `json.dumps` | 已在 Step 3 包含 |
-| 12 | `test_thinking_discarded` | 消息中的 `thinking` block → 不出现在 Chat messages 中 | `pass` 即正确 |
-| 13 | `test_o_series_max_completion_tokens` | o3 模型 → `max_completion_tokens` 替代 `max_tokens` | `_is_o_series` 判断 |
-| 14 | `test_tool_definitions_conversion` | Anthropic tools → `{type:"function", function:{name,description,parameters}}` | 新增 `_map_anthropic_tools` |
-| 15 | `test_thinking_to_reasoning_effort_adaptive` | `thinking: {type:"adaptive"}` → `reasoning_effort: "xhigh"` | 新增 `_resolve_reasoning_effort` |
-| 16 | `test_thinking_to_reasoning_effort_budget` | `thinking: {type:"enabled", budget_tokens: 16000}` → `reasoning_effort: "high"` | budget range 判断 |
-| 17 | `test_reasoning_effort_only_on_supported_models` | 非 o-series 模型 → 不注入 `reasoning_effort` | `_is_o_series or gpt-5+` 判断 |
-| 18 | `test_tool_choice_auto` | `{type:"auto"}` → `"auto"` | tool_choice 映射 |
-| 19 | `test_tool_choice_any` | `{type:"any"}` → `"required"` | tool_choice 映射 |
-| 20 | `test_tool_choice_tool` | `{type:"tool", name:"x"}` → `{type:"function", function:{name:"x"}}` | tool_choice 映射 |
-| 21 | `test_tool_choice_string_fallback` | `"auto"` → `"auto"`, `"any"` → `"required"` | tool_choice 字符串兜底 |
-| 22 | `test_unknown_fields_not_crash` | 含 `output_config.format`、`context_management` 等未知字段不抛异常 | 默认行为 |
-| 23 | `test_empty_messages` | 空 messages → Chat messages 不含奇怪数据 | 边界 |
-| 24 | `test_cache_control_preserved` | text block 上的 `cache_control` → 保留在 output 中 | `_convert_message_to_chat` 已含 |
+| 8 | `test_system_array_filters_empty` | system block 无 text 字段 → 跳过，不产生空行 | 已在 Step 3 包含 |
+| 9 | `test_multimodal_image` | image source base64 → `image_url` | 已在 `_convert_message_to_chat` 包含 |
+| 10 | `test_tool_use_conversion` | `tool_use` block → `tool_calls[]` + `arguments` 序列化 | 已在 Step 3 包含 |
+| 11 | `test_tool_result_conversion` | `tool_result` → 独立 `{role:"tool", tool_call_id, content}` | 已在 Step 3 包含 |
+| 12 | `test_tool_result_array_content` | tool_result content 为数组 → `json.dumps` | 已在 Step 3 包含 |
+| 13 | `test_tool_result_null_content` | tool_result content 为 null → `content: ""` | 边界防护 |
+| 14 | `test_tool_result_complex_content` | content 含 image 块 → 取第一个 text 块 | 降级策略 |
+| 15 | `test_thinking_discarded` | 消息中的 `thinking` block → 不出现在 Chat messages 中 | `pass` 即正确 |
+| 16 | `test_o_series_max_completion_tokens` | o3 模型 → `max_completion_tokens`，普通模型 → `max_tokens` | `_is_o_series` 判断 |
+| 17 | `test_tool_definitions_conversion` | Anthropic tools → `{type:"function", function:{name,description,parameters}}` | `_map_anthropic_tools`（已在 Step 3 包含） |
+| 18 | `test_thinking_to_reasoning_effort_adaptive` | `thinking: {type:"adaptive"}` → `reasoning_effort: "xhigh"` | `_resolve_reasoning_effort`（已在 Step 3 包含） |
+| 19 | `test_thinking_to_reasoning_effort_budget` | `thinking: {type:"enabled", budget_tokens: 16000}` → `reasoning_effort: "high"` | budget range 判断 |
+| 20 | `test_reasoning_effort_on_gpt5_model` | 目标模型 gpt-5.1 → 注入 `reasoning_effort` | `supports_reasoning_effort` 覆盖 gpt-5+ |
+| 21 | `test_reasoning_effort_skipped_on_qwen` | 目标模型 qwen3.6-plus → 不注入 `reasoning_effort` | `supports_reasoning_effort` 正确跳过 |
+| 22 | `test_tool_choice_auto` | `{type:"auto"}` → `"auto"` | tool_choice 映射 |
+| 23 | `test_tool_choice_any` | `{type:"any"}` → `"required"` | tool_choice 映射 |
+| 24 | `test_tool_choice_tool` | `{type:"tool", name:"x"}` → `{type:"function", function:{name:"x"}}` | tool_choice 映射 |
+| 25 | `test_tool_choice_string_fallback` | `"auto"` → `"auto"`, `"any"` → `"required"` | tool_choice 字符串兜底 |
+| 26 | `test_unknown_fields_not_crash` | 含 `output_config.format`、`context_management`、`speed` 等未知字段不抛异常 | 默认行为 |
+| 27 | `test_empty_messages` | 空 messages → Chat messages 不含奇怪数据 | 边界 |
+| 28 | `test_cache_control_preserved` | text block 上的 `cache_control` → 保留在 output 中 | `_convert_message_to_chat` 已含 |
 
 每个测试编写 + 实现后执行：
 
@@ -752,18 +855,18 @@ git add test/test_transform_anthropic.py transform_anthropic.py && git commit -m
 cd /Users/xys/.hermes/fact-store-browser && python3 -m pytest test/test_transform_anthropic.py -q --tb=short
 ```
 
-- [ ] **Step 15: 运行全量测试确认**
+- [ ] **Step 26: 运行全量测试确认**
 
 ```bash
 cd /Users/xys/.hermes/fact-store-browser && python3 -m pytest test/ -q --tb=no
 ```
 
-Expected: ~150+ passed
+Expected: ~162+ passed（138 baseline + 23 anthropic_to_chat + 1 for Step 1 initial test）
 
-- [ ] **Step 16: Commit**
+- [ ] **Step 27: Commit**
 
 ```bash
-git add test/test_transform_anthropic.py transform_anthropic.py plan_tracking.md && git commit -m "feat: anthropic_to_chat 请求转换完成（25 个测试）"
+git add test/test_transform_anthropic.py transform_anthropic.py plan_tracking.md && git commit -m "feat: anthropic_to_chat 请求转换完成（23 个测试覆盖 28 个场景）"
 ```
 
 ---
@@ -835,7 +938,7 @@ git add test/test_transform_anthropic.py transform_anthropic.py plan_tracking.md
 | 9 | `test_message_stop` | `[DONE]` | `event: message_stop` |
 | 10 | `test_arguments_null_skip` | `tool_calls[i].function.arguments` 为 null | 不发送 `input_json_delta` |
 | 11 | `test_finish_reason_mapping` | `finish_reason: "stop"` → `stop_reason: "end_turn"` | message_delta 中的 stop_reason 正确映射 |
-| 12 | `test_stream_interrupt` | 中途抛异常 | `event: error` 事件发送 |
+| 12 | `test_stream_interrupt` | 中途抛异常 | `event: error` → `data: {"type":"error","error":{"type":"stream_error","message":"Stream error: ..."}}`（验证 error 事件的 type 和 error.type 字段，与 cc-switch streaming.rs line 562-575 一致） |
 | 13 | `test_content_block_index_sequence` | text + tool 交替 | index 递增（text=0, tool=1, text=2, ...） |
 | 14 | `test_utf8_split` | 多字节字符跨 chunk 边界 | 正确拼接，不乱码 |
 
@@ -932,51 +1035,72 @@ def _handle_messages(self, body, request_id, request_ts, model_name, target, is_
                                     response_converter=chat_to_anthropic)
 ```
 
-- [ ] **Step 3: do_POST 添加 /v1/messages 路由**
+- [ ] **Step 3: do_POST 添加 /v1/messages 路由 + _handle_messages 独立方法**
+
+`do_POST` 修改：
 
 ```python
 def do_POST(self):
     if self.path in ("/v1/responses", "/v1/responses/compact"):
         self._handle_responses()
     elif self.path == "/v1/messages":
-        self._handle_responses()  # 重用解析逻辑
+        self._handle_messages()
     else:
         self._send_json(404, {"error": "not found"})
 ```
 
-修改 `_handle_responses` 以支持分发（根据 path 选择转换函数）：
-
-在 `_handle_responses` 中 line 268-270，根据 `self.path` 选择：
+`_handle_messages` 为独立方法（遵循设计文稿，职责清晰）：
 
 ```python
-is_messages = self.path == "/v1/messages"
-if is_messages:
-    converter = anthropic_to_chat
-else:
-    converter = responses_to_chat
+def _handle_messages(self):
+    """核心：Anthropic Messages → Chat → Anthropic Messages 转换。"""
+    content_length = int(self.headers.get("Content-Length", 0))
+    body_raw = self.rfile.read(content_length)
+    request_id = _generate_request_id()
+    request_ts = time.strftime("%Y-%m-%d %H:%M:%S")
 
-chat_body = converter(body, model_cfg)
-```
+    try:
+        body = json.loads(body_raw)
+    except json.JSONDecodeError as e:
+        logging.error(f"JSON 解析失败: {e}")
+        self._send_json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
+        return
 
-并在转发时传入对应的 response_converter 和 sse_stream_factory。
+    model_name = body.get("model", "*")
+    model_cfg = resolve_model(model_name)
+    target = model_cfg["target"]
+    is_stream = body.get("stream", False)
 
-```python
-if is_stream:
-    if is_messages:
+    logging.info(f"请求[/v1/messages]: model={model_name}, stream={is_stream}, target={target}")
+
+    logger = get_logger()
+    if logger:
+        logger.log_raw_request(request_id, model_name, target, body)
+
+    # 请求转换（不可恢复错误 → 500；可恢复 → 默认值继续）
+    try:
+        chat_body = anthropic_to_chat(body, model_cfg)
+    except Exception as e:
+        logging.exception("anthropic_to_chat 转换失败")
+        if logger:
+            logger.log_converted_request(request_id, model_name, target, {"error": str(e)})
+        self._send_json(500, {"error": {"type": "internal_error", "message": str(e)}})
+        return
+
+    if logger:
+        logger.log_converted_request(request_id, model_name, target, chat_body)
+
+    # 转发（response_converter 始终为 chat_to_anthropic）
+    if is_stream:
         self._forward_streaming(chat_body, model_cfg, request_id, model_name, target, request_ts,
                                 response_converter=chat_to_anthropic,
                                 sse_stream_factory=create_anthropic_sse_stream)
     else:
-        self._forward_streaming(chat_body, model_cfg, request_id, model_name, target, request_ts)
-else:
-    if is_messages:
         self._forward_non_streaming(chat_body, request_id, model_name, target, request_ts,
                                     response_converter=chat_to_anthropic)
-    else:
-        self._forward_non_streaming(chat_body, request_id, model_name, target, request_ts)
 ```
 
-> 或将 `_handle_responses` 重命名为 `_handle_request` 并接受 converter 参数——更简洁。此处选择内联分发以最小化改动。
+> **错误处理区分**: JSON 解析失败 → 400；转换抛异常 → 500。`anthropic_to_chat` 内部对字段缺失/类型错误使用默认值继续（不抛异常），仅调用侧出现不可恢复错误时才 500。
 
 - [ ] **Step 4: request_logger.py _extract_agent 增加 claude 检测**
 
