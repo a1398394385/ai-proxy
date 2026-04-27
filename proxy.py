@@ -15,6 +15,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from pathlib import Path
 
+from config_manager import ConfigCache
+
 from transform import (
     generate_response_id,
     responses_to_chat,
@@ -114,15 +116,18 @@ def _yaml_scalar(val: str):
 CONFIG = {}
 CONFIG_PATH = Path(__file__).parent / "proxy_config.yaml"
 
+# ─── 动态配置缓存（替代静态 model_map）───────────────────────────
+CONFIG_DB_PATH = Path.home() / ".hermes" / "config.db"
+YAML_SEED_PATH = Path(__file__).parent / "proxy_config.yaml"
+config_cache = ConfigCache(CONFIG_DB_PATH, yaml_seed_path=YAML_SEED_PATH)
+
 
 def load_config(config_path: Path = None):
-    """加载 proxy_config.yaml，校验后写入全局 CONFIG。
+    """加载 proxy_config.yaml 的 proxy 段（日志配置等），校验动态配置 * fallback。
 
     config_path: 可选，覆盖默认配置文件路径（用于测试）。
 
-    校验规则：
-    - 必须包含 model_map
-    - model_map 必须包含 "*" fallback 键，否则 sys.exit(1) 打印明确错误
+    model_map 校验已移除，改由 ConfigCache 从 config.db 动态加载。
     """
     global CONFIG
     path = config_path or CONFIG_PATH
@@ -133,14 +138,9 @@ def load_config(config_path: Path = None):
     with open(path, "r") as f:
         CONFIG = _parse_yaml(f.read())
 
-    # 校验 model_map 存在
-    if "model_map" not in CONFIG:
-        print("FATAL: 配置文件缺少 model_map", file=sys.stderr)
-        sys.exit(1)
-
-    # 校验 "*" fallback 键 — 启动时必须存在
-    if "*" not in CONFIG["model_map"]:
-        print('FATAL: model_map 必须包含 "*" fallback 键', file=sys.stderr)
+    # 启动校验：动态配置 * fallback 必须可用
+    if config_cache.resolve("*") is None:
+        print('FATAL: 动态配置中 "*" fallback 路由不可用（不存在或上游已禁用）', file=sys.stderr)
         sys.exit(1)
 
     # 设置日志：同时写 proxy.log 文件和 stdout，遵循 log_level 配置
@@ -160,11 +160,20 @@ def load_config(config_path: Path = None):
 
 
 def resolve_model(model_name: str) -> dict:
-    """根据 model_name 从 model_map 查找配置，支持 * fallback。"""
-    model_map = CONFIG.get("model_map", {})
-    if model_name in model_map:
-        return model_map[model_name]
-    return model_map.get("*", {"target": model_name, "multimodal": False})
+    """使用动态配置缓存查找模型路由。
+
+    返回格式与旧版兼容：
+    {"target": str, "multimodal": bool}
+    -> 新增 {"target": str, "multimodal": bool, "_upstream": dict}
+    """
+    cfg = config_cache.resolve(model_name)
+    if cfg is None:
+        return {"target": model_name, "multimodal": False}
+    return {
+        "target": cfg["target_name"],
+        "multimodal": bool(cfg["multimodal"]),
+        "_upstream": cfg["upstream"],
+    }
 
 
 # ─── ThreadedHTTPServer ────────────────────────────────────────────
@@ -278,9 +287,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "not found"})
 
     def _handle_models(self):
-        """返回 model_map 中所有非 * 的 key。"""
-        model_map = CONFIG.get("model_map", {})
-        models = [k for k in model_map if k != "*"]
+        """返回动态配置中所有非 * 的源模型列表。"""
+        routes = config_cache.get_all()
+        models = [k for k in routes if k != "*"]
         self._send_json(200, {"data": [{"id": m, "object": "model"} for m in models]})
 
     def _handle_responses(self):
@@ -307,6 +316,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
         model_name = body.get("model", "*")
         model_cfg = resolve_model(model_name)
         target = model_cfg["target"]
+        upstream_cfg = model_cfg.get("_upstream")
+        if upstream_cfg is None:
+            logging.error(f"模型 {model_name} 无法解析上游配置")
+            self._send_json(500, {"error": {"type": "internal_error", "message": "模型路由不可用"}})
+            return
         is_stream = body.get("stream", False)
 
         logging.info(f"请求: model={model_name}, stream={is_stream}, target={target}")
@@ -345,13 +359,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     logging.warning(f"previous_response_id={prev_id!r} 不存在或已过期，忽略历史")
 
         # 转发到上游（传入 request_id, model_name, target, request_ts）
+        # upstream_cfg 优先从 model_cfg 获取（动态配置），fallback 到 CONFIG（静态配置）
+        upstream_cfg = model_cfg.get("_upstream") or CONFIG.get("upstream", {})
         store_enabled = body.get("store", True)
         if is_stream:
             self._forward_streaming(chat_body, model_cfg, request_id, model_name, target, request_ts,
-                                    store_enabled=store_enabled)
+                                    store_enabled=store_enabled, upstream_cfg=upstream_cfg)
         else:
             self._forward_non_streaming(chat_body, request_id, model_name, target, request_ts,
-                                        store_enabled=store_enabled, is_responses_api=True)
+                                        store_enabled=store_enabled, is_responses_api=True,
+                                        upstream_cfg=upstream_cfg)
 
     def _handle_messages(self):
         """核心：Anthropic Messages → Chat → Anthropic Messages 转换。"""
@@ -392,30 +409,33 @@ class ProxyHandler(BaseHTTPRequestHandler):
             logger.log_converted_request(request_id, model_name, target, chat_body)
 
         # 转发（response_converter 始终为 chat_to_anthropic，store_enabled=False 防止 kwargs 注入给 create_anthropic_sse_stream）
+        upstream_cfg = model_cfg.get("_upstream") or CONFIG.get("upstream", {})
         if is_stream:
             self._forward_streaming(chat_body, model_cfg, request_id, model_name, target, request_ts,
                                     response_converter=chat_to_anthropic,
                                     sse_stream_factory=create_anthropic_sse_stream,
-                                    store_enabled=False)
+                                    store_enabled=False, upstream_cfg=upstream_cfg)
         else:
             self._forward_non_streaming(chat_body, request_id, model_name, target, request_ts,
-                                        response_converter=chat_to_anthropic)
+                                        response_converter=chat_to_anthropic,
+                                        upstream_cfg=upstream_cfg)
 
-    def _forward_non_streaming(self, chat_body: dict, request_id: str, model: str, target: str, request_ts: str, response_converter=None, store_enabled: bool = True, is_responses_api: bool = False):
+    def _forward_non_streaming(self, chat_body: dict, request_id: str, model: str, target: str, request_ts: str, response_converter=None, store_enabled: bool = True, is_responses_api: bool = False, upstream_cfg: dict = None):
         """非流式：转发到上游，转换响应，返回。
 
         response_converter: callable, chat_response -> format_response
         is_responses_api: True 时在 response_converter() 后存入 store（防止 _handle_messages 误触发）
-                           默认 chat_to_responses（与当前行为一致）
+        upstream_cfg: 上游配置 dict；None 时从 CONFIG fallback（向后兼容静态配置）
 
         超时处理：
         - connect_timeout: 连接超时（独立设置）
         - timeout: 读超时（总超时，包含 connect + read）
         实现方式：先用 connect_timeout 建立连接，再设 socket timeout 为总超时
         """
+        if upstream_cfg is None:
+            upstream_cfg = CONFIG.get("upstream", {})
         if response_converter is None:
             from transform_responses import chat_to_responses as response_converter
-        upstream_cfg = CONFIG.get("upstream", {})
         base_url = upstream_cfg["base_url"]
         api_key = upstream_cfg["api_key"]
         timeout = upstream_cfg.get("timeout", 120)
@@ -521,16 +541,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
 
-    def _forward_streaming(self, chat_body: dict, model_cfg: dict, request_id: str, model: str, target: str, request_ts: str, response_converter=None, sse_stream_factory=None, store_enabled: bool = True):
+    def _forward_streaming(self, chat_body: dict, model_cfg: dict, request_id: str, model: str, target: str, request_ts: str, response_converter=None, sse_stream_factory=None, store_enabled: bool = True, upstream_cfg: dict = None):
         """流式：直连上游 SSE，通过 sse_stream_factory 转换后逐事件返回。
 
         response_converter: callable（本函数内用于 token_stats 的 context，不直接调用）
         sse_stream_factory: callable, upstream_response -> Generator[str]
                            默认 create_codex_sse_stream（与当前行为一致）
+        upstream_cfg: 上游配置 dict；None 时从 CONFIG fallback（向后兼容静态配置）
         """
         if sse_stream_factory is None:
             from transform_responses import create_codex_sse_stream as sse_stream_factory
-        upstream_cfg = CONFIG.get("upstream", {})
+        if upstream_cfg is None:
+            upstream_cfg = CONFIG.get("upstream", {})
         base_url = upstream_cfg["base_url"]
         api_key = upstream_cfg["api_key"]
         timeout = upstream_cfg.get("timeout", 120)
