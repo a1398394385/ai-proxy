@@ -283,6 +283,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._handle_responses()
         elif self.path == "/v1/messages":
             self._handle_messages()
+        elif self.path == "/admin/reload":
+            self._handle_admin_reload()
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -291,6 +293,24 @@ class ProxyHandler(BaseHTTPRequestHandler):
         routes = config_cache.get_all()
         models = [k for k in routes if k != "*"]
         self._send_json(200, {"data": [{"id": m, "object": "model"} for m in models]})
+
+    def _handle_admin_reload(self):
+        """重新加载动态配置。仅允许本地请求。"""
+        client_ip = self.client_address[0]
+        if client_ip not in ("127.0.0.1", "::1"):
+            self._send_json(403, {"error": "forbidden", "message": "仅允许本地请求"})
+            return
+
+        try:
+            config_cache.reload()
+            logging.info(f"配置已重载 (来自 {client_ip})")
+            self._send_json(200, {
+                "status": "ok",
+                "reloaded_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            })
+        except Exception as e:
+            logging.exception("配置重载失败")
+            self._send_json(500, {"status": "error", "message": str(e)})
 
     def _handle_responses(self):
         """核心：Responses → Chat → Responses 转换。"""
