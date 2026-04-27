@@ -606,7 +606,7 @@ def _emit_completion(state: StreamState) -> list:
         usage["output_tokens_details"] = output_details
     # 透传 Anthropic 格式顶层缓存字段
     for k in ("cache_read_input_tokens", "cache_creation_input_tokens"):
-        if k in raw:
+        if k in raw and raw[k] is not None:
             usage[k] = raw[k]
     completed_response = {
         "id": state.response_id,
