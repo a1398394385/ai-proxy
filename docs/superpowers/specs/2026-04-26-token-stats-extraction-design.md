@@ -11,9 +11,38 @@
 
 1. `proxy.py` 非流式路径 — 从 Chat Completions 响应的 `usage` 提取
 2. `proxy.py` 流式路径 — 从 SSE `response.completed` 事件的 `response.usage` 提取
-3. `transform.py` `_emit_completion` — 将上游 usage 归一化为 Responses API 格式
+3. `transform.py` `_emit_completion` — 将上游 usage 归一化为 Responses API 格式，同时做 Anthropic cache 适配
 
 每次新增一种格式（如 Anthropic cache 字段）需要改动多个文件。需要将格式检测和提取逻辑集中到一个地方。
+
+---
+
+## 数据库
+
+写入目标：`data/access_log.db` 中的 `token_stats` 表（与 `debug_log` 同库不同表，已由 `request_logger.py` 初始化）：
+
+```sql
+CREATE TABLE token_stats (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id          TEXT NOT NULL,
+    agent               TEXT NOT NULL,
+    model               TEXT NOT NULL,
+    target_model        TEXT NOT NULL,
+    request_ts          TEXT NOT NULL,
+    duration_ms         INTEGER,
+    input_tokens        INTEGER DEFAULT 0,
+    output_tokens       INTEGER DEFAULT 0,
+    cached_read_tokens  INTEGER DEFAULT 0,
+    cached_write_tokens INTEGER DEFAULT 0,
+    status              TEXT DEFAULT 'completed',
+    created_at          TEXT NOT NULL
+);
+```
+
+与 `request_logger.py` 的关系：
+- `request_logger.py` 负责 `debug_log` 表的记录（raw_request、converted_request、upstream_response、converted_response）
+- `token_stats.py` 负责 `token_stats` 表的写入，替代 `RequestLogger.log_token_stats()` 方法
+- 两者写入同一数据库，各自操作自己负责的表，无重复记录
 
 ---
 
@@ -26,11 +55,11 @@ proxy.py                              token_stats.py
                                                │
 transform.py                                   │
   └─ _emit_completion: state.usage  ──→ SSE──→─┘
-     (简化为直通，不再做 Anthropic 适配)
+     (usage 块完全透传原始字段，不做 Anthropic 适配)
 ```
 
 **原则**:
-- `transform.py` 负责 SSE 格式转换（Responses API 事件结构），不再做 Anthropic 字段适配
+- `transform.py` 负责 SSE 事件格式（Responses API 结构），不关心 usage 内部字段含义
 - `token_stats.py` 统一负责：格式检测 → 字段提取 → DB 写入
 - proxy.py 只需收集 usage dict 和 context，调用一个函数即可
 
@@ -42,129 +71,129 @@ transform.py                                   │
 
 ```python
 def record_token_stats(usage: dict, context: dict) -> None:
-    """解析 usage 并写入 token_stats 表。失败静默，不抛异常。
-
-    usage:  上游返回的原始 usage dict，支持 3 种格式自动检测
-    context: {
-        "request_id": str,
-        "agent": str,
-        "model": str,
-        "target_model": str,
-        "request_ts": str,
-        "duration_ms": int,
-    }
-    """
 ```
 
-### 格式检测策略
+参数说明：
 
-每个提取项按优先级尝试 Anthropic → OpenAI Chat → OpenAI Responses，取到为止：
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `usage` | dict | 上游返回的原始 usage dict，null/空 dict 时直接 return |
+| `context` | dict | 见下方 |
 
-| 提取项 | Anthropic (优先) | OpenAI Chat (回退) | OpenAI Responses (回退) |
-|--------|------------------|--------------------|-----------------------|
-| input_tokens | — | `prompt_tokens` | `input_tokens` |
-| output_tokens | — | `completion_tokens` | `output_tokens` |
+context 必需字段：
+
+| 字段 | 类型 | 缺少时行为 |
+|------|------|-----------|
+| `request_id` | str | **无此字段则 warning + return**（无法写入有意义记录） |
+| `agent` | str | 默认 `"unknown"` |
+| `model` | str | 默认 `"unknown"` |
+| `target_model` | str | 默认 `"unknown"` |
+| `request_ts` | str | 默认空字符串 |
+| `duration_ms` | int | 默认 0 |
+
+### 格式检测策略 — 按优先级提取，非"非零优先"
+
+每个提取项有固定的 key 优先级列表。**按顺序查找，取第一个存在且 > 0 的值**。如果都为 0 或不存在，返回 0。不使用 "非零优先" 是因为两个格式的字段可能同时非 0 但值不同。
+
+| 提取项 | 优先级 1 | 优先级 2 | 优先级 3 |
+|--------|----------|----------|----------|
+| input_tokens | `prompt_tokens` | `input_tokens` | — |
+| output_tokens | `completion_tokens` | `output_tokens` | — |
 | cache_read | `cache_read_input_tokens` | `prompt_tokens_details.cached_tokens` | `input_tokens_details.cached_tokens` |
-| cache_write | `cache_creation_input_tokens` | — | `input_tokens_details.cache_creation_input_tokens` |
+| cache_write | `cache_creation_input_tokens` | `input_tokens_details.cache_creation_input_tokens` | — |
 
-**关键场景**: qwen 请求格式是 OpenAI Chat（`prompt_tokens`），但 LiteLLM 以 Anthropic 格式返回 cache 字段（`cache_read_input_tokens`）。优先级设计确保格式混合时自动命中正确的字段。
+**设计理由**: Anthropic 的 cache 字段（`cache_read_input_tokens`）在 usage 顶层，与 OpenAI Chat 的 `prompt_tokens` 同级。qwen 通过 LiteLLM 返回时，usage 中同时存在 `prompt_tokens`（Chat 格式）和 `cache_read_input_tokens`（Anthropic 格式）。按优先级查找确保正确命中。
 
-### 检测逻辑
+### 核心辅助函数
 
 ```python
-def _extract(usage, key, default=0):
-    """从 usage 中按优先级查找 key，未找到返回 default。"""
-    # 内联查找，避免多次 dict.get() 调用
+def _find_first(usage: dict, keys: list, default=0) -> int:
+    """按 keys 顺序查找 usage，返回第一个值 > 0 的 key 的值。"""
+    for k in keys:
+        v = usage.get(k)
+        if v is not None and v > 0:
+            return v
+    return default
 ```
 
-每个提取项独立检测，不依赖"格式判定"。
-- input_tokens: 取 `prompt_tokens` 或 `input_tokens` 中非 0 的那个
-- output_tokens: 同理
-- cache_read: 取 `cache_read_input_tokens` 或 `details.cached_tokens` 中非 0 的那个
-- cache_write: 取 `cache_creation_input_tokens` 或 `details.cache_creation_input_tokens` 中非 0 的那个
-
-这样即使 usage 同时包含多种格式的字段（LiteLLM 偶尔会这样），也能正确提取。
+每个提取项调用 `_find_first(usage, [p1, p2, p3])`，逻辑简洁统一。
 
 ---
 
 ## proxy.py 变更
 
-### 非流式路径
+两处调用点替换为 `record_token_stats(usage, context)`：
 
-```python
-# 前: 15 行内联提取 + log_token_stats
-# 后:
-from token_stats import record_token_stats
+**非流式路径**：`chat_response["usage"]` 直接传入
+**流式路径**：从 `response.completed` SSE 事件解析出的 `response.usage` 传入（已经是 `_emit_completion` 透传的原始字段集合）
 
-usage = chat_response.get("usage", {})
-if usage:
-    record_token_stats(usage, {
-        "request_id": request_id,
-        "agent": _extract_agent(self.headers.get("User-Agent", "")),
-        "model": model,
-        "target_model": target,
-        "request_ts": request_ts,
-        "duration_ms": duration_ms,
-    })
-```
-
-### 流式路径
-
-```python
-# 前: 10 行从 final_usage 提取字段 + log_token_stats
-# 后:
-if final_usage:
-    record_token_stats(final_usage, {...})
-```
+`request_logger.log_token_stats()` 方法保留但从 proxy.py 中不再调用。
 
 ---
 
 ## transform.py 变更
 
-`_emit_completion` 中的 usage 构建简化为：不再做 cache 字段兼容，直接把 `state.usage` 的各字段映射到 Responses API 格式即可。Anthropic 格式的 cache 字段会在 `token_stats.py` 侧统一处理。
+`_emit_completion` 中的 `usage` 构建简化为：**透传 `state.usage` 的所有原始字段，仅补充 Responses API 规范字段名**。
+
+`state.usage` 的来源：在 `create_codex_sse_stream` 中，从上游 Chat Completions SSE 流的最终 chunk（含 `finish_reason`）中捕获。**它是一次性设置的，不是逐步累积的。** 格式取决于上游 LiteLLM 返回的实际字段（可能是纯 Chat 格式，也可能是 Chat + Anthropic cache 混合）。
 
 ```python
-# 前：显式提取 cached_read / cache_write 并适配格式
-# 后：只做 Chat → Responses 字段重命名，原始字段透传
-"usage": {
-    "input_tokens": usage.get("prompt_tokens", 0),
-    "output_tokens": usage.get("completion_tokens", 0),
-    "total_tokens": usage.get("total_tokens", 0),
-    "input_tokens_details": usage.get("prompt_tokens_details", {}),
-    "output_tokens_details": usage.get("completion_tokens_details", {}),
-    # 保留 Anthropic 格式原始字段以备 token_stats 侧提取
-    **{k: v for k, v in usage.items() if k.startswith("cache_")},
-},
+# 后：透传原始字段 + Responses API 重命名
+raw = state.usage
+usage = {
+    "input_tokens": raw.get("prompt_tokens") or raw.get("input_tokens", 0),
+    "output_tokens": raw.get("completion_tokens") or raw.get("output_tokens", 0),
+    "total_tokens": raw.get("total_tokens", 0),
+}
+# 透传原始 details + Anthropic cache 字段，不做格式适配
+input_details = raw.get("prompt_tokens_details") or raw.get("input_tokens_details")
+if input_details:
+    usage["input_tokens_details"] = input_details
+output_details = raw.get("completion_tokens_details") or raw.get("output_tokens_details")
+if output_details:
+    usage["output_tokens_details"] = output_details
+for k in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+    if k in raw:
+        usage[k] = raw[k]
 ```
+
+这样 `token_stats.py` 拿到的 `final_usage` 会包含所有原始字段（Anthropic cache 字段被保留在顶层），格式检测逻辑能正常工作。
 
 ---
 
 ## 错误处理
 
-- 整个 `record_token_stats` 包裹在 try/except 中
+- `record_token_stats` 整体包裹在 try/except 中
 - 异常只 `logging.warning`，不抛出
-- usage 为 `None` 或空 dict 时：直接 return
-- DB 写入失败：warning 日志，不重试
+- usage 为 `None` 或空 dict → 直接 return
+- context 缺少 `request_id` → `logging.warning` + return
+- DB 写入失败 → warning 日志，不重试
+- 所有路径均不阻断 proxy 正常请求处理
 
 ---
 
 ## 测试计划
 
 1. **单元测试** — `test/test_token_stats.py`
-   - 4 种格式各 1 个测试：Anthropic / OpenAI Chat / OpenAI Responses / 混合格式（qwen）
-   - cache_read/cache_write 正确提取
+   - Anthropic 格式：input/output + cache_read/cache_write 正确提取
+   - OpenAI Chat 格式：prompt/completion + cached_tokens 正确提取
+   - OpenAI Responses 格式：input/output + input_tokens_details 正确提取
+   - 混合格式（qwen）：Chat 的 prompt_tokens + Anthropic 的 cache 字段共存，各自命中
    - 空 usage → 不写 DB
+   - context 缺 request_id → 不写 DB + warning
+   - usage 所有值为 0 → 写 DB（0 值也是有效记录）
    - DB 写入异常 → 不抛出
 
 2. **集成测试** — 更新 `test/test_proxy_logger_integration.py`
-   - 确保流式/非流式路径 token_stats 仍正确写入
+   - 流式/非流式路径 token_stats 仍正确写入
 
 ---
 
 ## 性能
 
-- 纯 dict key 查找（`O(k)` where k ≈ 10），无网络 IO
-- DB 写入是唯一的阻塞操作，与当前逻辑一致
+- 纯 dict key 查找，`_find_first` 每个提取项最多 3 次 `dict.get()`
+- DB 写入是唯一阻塞操作，与当前逻辑一致
+- 在整个函数错误处理包裹下，任何异常 < 1ms 返回
 - 调用点在 SSE 流结束后（非关键路径），不影响用户响应延迟
 
 ---
@@ -172,7 +201,7 @@ if final_usage:
 ## 成功标准
 
 1. proxy.py 中不再有 format-specific 的 usage 字段提取逻辑
-2. `token_stats.py` 正确处理 3 种格式 + 混合格式
+2. `token_stats.py` 正确处理 3 种格式 + 混合格式（qwen）
 3. 异常不影响 proxy 正常请求处理
-4. 所有现有测试通过
-5. 新增 `test/test_token_stats.py` 覆盖 4 种格式场景
+4. 所有现有测试通过（111 tests）
+5. 新增 `test/test_token_stats.py` 覆盖上述测试计划中的场景
