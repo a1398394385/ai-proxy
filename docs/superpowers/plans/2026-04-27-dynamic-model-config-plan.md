@@ -116,11 +116,18 @@ from typing import Optional
 
 
 class ConfigDB:
-    """config.db 数据库操作。每次查询打开新连接（无连接池）。"""
+    """config.db 数据库操作。每次查询打开新连接（无连接池）。
+    
+    参数:
+        db_path: config.db 路径
+        yaml_seed_path: 可选，proxy_config.yaml 路径，仅在首次启动且数据库为空时导入
+    """
 
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, yaml_seed_path: Path = None):
         self.db_path = db_path
         self._ensure_db()
+        if yaml_seed_path:
+            self._seed_from_yaml(yaml_seed_path)
 
     def _connect(self):
         conn = sqlite3.connect(str(self.db_path))
@@ -257,6 +264,10 @@ class ConfigDB:
 
                 conn.execute("INSERT INTO schema_version (version) VALUES (1)")
                 conn.commit()
+                # 导入后校验 * fallback
+                if conn.execute("SELECT COUNT(*) FROM model_routes WHERE source='*'").fetchone()[0] == 0:
+                    print("FATAL: 种子导入完成后 * fallback 路由仍然缺失", file=sys.stderr)
+                    sys.exit(1)
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
@@ -877,6 +888,13 @@ class TestModelCRUD(unittest.TestCase):
         self.db.add_route({"source": "gpt-4", "target_model_id": mid})
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.delete_model(mid)
+        # 显式二次验证：用独立连接 + 手动 PRAGMA 确认外键约束生效
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute("PRAGMA foreign_keys = ON")
+        with self.assertRaises(sqlite3.IntegrityError):
+            conn.execute("DELETE FROM target_models WHERE id = ?", (mid,))
+            conn.commit()
+        conn.close()
 
     def test_model_referenced_routes(self):
         mid = self.db.add_model({"name": "qwen", "upstream_id": "up-a"})
@@ -1137,7 +1155,7 @@ class ConfigCache:
         with self._lock:
             if now - self._loaded_at < self._ttl and self._cache:
                 return  # double-check
-            db = ConfigDB(self._db_path)
+            db = ConfigDB(self._db_path, yaml_seed_path=self._yaml_seed_path)
             try:
                 all_routes = db.get_all_routes()
                 # 预解析所有 source_name：对每个 source 做 resolve
@@ -1250,9 +1268,10 @@ Simpler approach: store the `ConfigDB.resolve_model` result for each key, and al
 class ConfigCache:
     """内存缓存，供 proxy.py 使用。"""
 
-    def __init__(self, db_path: Path, ttl: float = 5):
+    def __init__(self, db_path: Path, ttl: float = 5, yaml_seed_path: Path = None):
         self._db_path = db_path
         self._ttl = ttl
+        self._yaml_seed_path = yaml_seed_path
         self._lock = threading.Lock()
         self._routes: dict = {}     # {source: config_dict}
         self._loaded_at: float = 0
@@ -1280,14 +1299,17 @@ class ConfigCache:
         if self._loaded_at > 0 and now - self._loaded_at < self._ttl:
             return
         try:
-            db = ConfigDB(self._db_path)
+            db = ConfigDB(self._db_path, yaml_seed_path=self._yaml_seed_path)
             try:
                 new_routes = {}
                 all_routes = db.get_all_routes()
+                # 使用 _resolve_one（无 fallback）做精确匹配，避免 resolve_model 的 fallback
+                # 把不同 source 的结果归一化到 * 的语义错误
                 for source in all_routes:
-                    cfg = db.resolve_model(source)
+                    cfg = db._resolve_one(source)
                     if cfg:
                         new_routes[source] = cfg
+                # * fallback 单独处理
                 star_cfg = db.resolve_model("*")
                 if star_cfg:
                     new_routes["*"] = star_cfg
@@ -1365,8 +1387,7 @@ model_map:
     target: "qwen-plus"
     multimodal: true
 """)
-        db = ConfigDB(self.db_path)
-        db._seed_from_yaml(self.yaml_path)
+        db = ConfigDB(self.db_path, yaml_seed_path=self.yaml_path)  # __init__ 自动调用 _seed_from_yaml
         # 验证上游
         u = db.get_upstream("default")
         self.assertIsNotNone(u)
@@ -1385,23 +1406,20 @@ model_map:
 
     def test_seed_skip_if_already_seeded(self):
         self._make_yaml("upstream:\n  base_url: \"http://a:4000\"\nmodel_map:\n  \"*\":\n    target: \"m1\"\n    multimodal: false\n")
-        db1 = ConfigDB(self.db_path)
-        db1._seed_from_yaml(self.yaml_path)
+        db1 = ConfigDB(self.db_path, yaml_seed_path=self.yaml_path)
         db1.close()
 
         # 修改 yaml
         self._make_yaml("upstream:\n  base_url: \"http://b:5000\"\nmodel_map:\n  \"*\":\n    target: \"m2\"\n    multimodal: false\n")
-        db2 = ConfigDB(self.db_path)
-        db2._seed_from_yaml(self.yaml_path)  # 应跳过
+        db2 = ConfigDB(self.db_path, yaml_seed_path=self.yaml_path)  # 应跳过
         u = db2.get_upstream("default")
         self.assertEqual(u["base_url"], "http://a:4000")  # 未被覆盖
         db2.close()
 
     def test_seed_yaml_missing_writes_version(self):
         """yaml 不存在时写入空版本，不崩溃。"""
-        db = ConfigDB(self.db_path)
         missing_path = Path(self.tmp.name) / "nonexistent.yaml"
-        db._seed_from_yaml(missing_path)
+        db = ConfigDB(self.db_path, yaml_seed_path=missing_path)
         # 不应抛异常
         upstreams = db.list_upstreams()
         self.assertEqual(len(upstreams), 0)
@@ -1448,7 +1466,8 @@ from config_manager import ConfigCache
 ```python
 # ─── 动态配置缓存（替代静态 model_map）───────────────────────────
 CONFIG_DB_PATH = Path.home() / ".hermes" / "config.db"
-config_cache = ConfigCache(CONFIG_DB_PATH)
+YAML_SEED_PATH = Path(__file__).parent / "proxy_config.yaml"
+config_cache = ConfigCache(CONFIG_DB_PATH, yaml_seed_path=YAML_SEED_PATH)
 ```
 
 - [ ] **Step 2: 替换 resolve_model()**
@@ -1520,21 +1539,32 @@ def load_config(config_path: Path = None):
 
 - [ ] **Step 5: 调整转发逻辑（upstream 动态切换）**
 
-`_forward_non_streaming` 和 `_forward_streaming` 中，当前固定使用 `CONFIG["upstream"]`。改为优先使用模型配置中的 `_upstream`，fallback 到 CONFIG：
+`_forward_non_streaming` 和 `_forward_streaming` 中，当前固定使用 `CONFIG["upstream"]`。改为完全从模型配置中读取：
 
 ```python
 # 在 _handle_responses() 中
 model_cfg = resolve_model(model_name)
 target = model_cfg["target"]
-upstream_cfg = model_cfg.get("_upstream") or CONFIG.get("upstream", {})
+upstream_cfg = model_cfg.get("_upstream")
+if upstream_cfg is None:
+    # 兜底：config_cache 失败时模型名自身作为 target，无 upstream 可用 → 500
+    logging.error(f"模型 {model_name} 无法解析上游配置")
+    self._send_json(500, {"error": {"type": "internal_error", "message": "模型路由不可用"}})
+    return
 ```
 
 ```python
-# _forward_non_streaming 和 _forward_streaming 签名增加 upstream_override
-def _forward_non_streaming(self, chat_body, request_id, model, target, request_ts, upstream_override=None):
-    upstream_cfg = upstream_override or CONFIG.get("upstream", {})
-    # 其余不变...
+# _forward_non_streaming 和 _forward_streaming 签名改为接收 upstream_cfg
+def _forward_non_streaming(self, chat_body, request_id, model, target, request_ts, upstream_cfg=None):
+    if upstream_cfg is None:
+        self._send_json(500, {"error": {"type": "internal_error", "message": "上游配置缺失"}})
+        return
+    base_url = upstream_cfg["base_url"]
+    api_key = upstream_cfg["api_key"]
+    # 其余使用 upstream_cfg 的字段代替 CONFIG["upstream"]...
 ```
+
+**注意**：`CONFIG["upstream"]` 不再作为转发时的 fallback，仅可能在启动日志配置等非转发路径使用。种子导入后 proxy 的所有转发路由信息都从 `config_cache` 获取。
 
 - [ ] **Step 6: 运行现有测试**
 
@@ -1622,10 +1652,11 @@ from config_manager import ConfigDB
 
 # 模块级全局
 CONFIG_DB_PATH = Path.home() / ".hermes" / "config.db"
+YAML_SEED_PATH = Path(__file__).parent / "proxy_config.yaml"
 
 
 def get_config_db():
-    return ConfigDB(CONFIG_DB_PATH)
+    return ConfigDB(CONFIG_DB_PATH, yaml_seed_path=YAML_SEED_PATH)
 ```
 
 - [ ] **Step 2: 在 do_GET 中添加上游路由**
@@ -1771,11 +1802,12 @@ def _test_upstream_connectivity(upstream: dict) -> dict:
         result["error"] = str(e)
         return result
 
-    # HTTP 测试
+    # HTTP 测试（使用 base_url 的 path 部分，保留路径前缀如 /v1）
+    http_path = parsed.path.rstrip("/") + "/" if parsed.path else "/"
     start = time.time()
     conn = http.client.HTTPConnection(host, port, timeout=5)
     try:
-        conn.request("GET", "/")
+        conn.request("GET", http_path)
         resp = conn.getresponse()
         result["reachable"] = True
         result["http_status"] = resp.status
@@ -2196,14 +2228,19 @@ git commit -m "feat: 前端新增模型管理页面 — HTML 骨架 + CSS 样式
 - [ ] **Step 1: 添加导航切换（model 页面）**
 
 ```javascript
-// 在导航切换监听中追加
+// 在导航切换监听中追加（修改现有 switchTab 逻辑，新增 model 分支）
 document.querySelectorAll('.nav-tab').forEach(tab => {
   tab.addEventListener('click', () => {
     const page = tab.dataset.page;
     currentPage = page;
-    // ... 现有逻辑 ...
+    document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('page-facts').classList.toggle('hidden', page !== 'facts');
+    document.getElementById('page-tokens').classList.toggle('hidden', page !== 'tokens');
     document.getElementById('page-models').classList.toggle('hidden', page !== 'models');
-    // ... 现有逻辑 ...
+    document.getElementById('page-settings').classList.add('hidden');
+    if (page === 'facts') loadFacts();
+    if (page === 'tokens') loadTokenStats();
     if (page === 'models') loadModelConfig();
   });
 });
@@ -2212,7 +2249,8 @@ document.querySelectorAll('.nav-tab').forEach(tab => {
 - [ ] **Step 2: 实现事件总线**
 
 ```javascript
-// ===== 工具函数 =====
+// ===== 工具函数（全局定义一次，复用现有或新增）=====
+// 注意：若 static/index.html 已有 escHtml 定义，删除旧的，保留此全局定义
 function escHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
@@ -2749,6 +2787,8 @@ class TestConfigIntegration(unittest.TestCase):
         self.db.add_route({"source": "gpt-4", "target_model_id": self.m1})
         self.db.add_route({"source": "codex-mini", "target_model_id": self.m1})
         self.db.add_route({"source": "*", "target_model_id": self.m2})
+        # 注：get_route_by_source() 和 validate_star_fallback() 是 ConfigDB 内部方法，
+        # 在此仅用于测试，不属于公开 API（设计文稿未列出，但实现中包含）
 
     def tearDown(self):
         self.db.close()
