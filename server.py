@@ -592,6 +592,55 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 return json_response(self, u)
             return json_response(self, {"error": "Not found"}, 404)
 
+        if path == "/api/models":
+            upstream_filter = qs.get("upstream_id", [None])[0]
+            db = get_config_db()
+            models = db.list_models(upstream_id=upstream_filter)
+            db.close()
+            return json_response(self, {"models": models})
+
+        m = re.match(r"/api/models/(\d+)$", path)
+        if m:
+            db = get_config_db()
+            model = db.get_model(int(m.group(1)))
+            db.close()
+            if model:
+                return json_response(self, model)
+            return json_response(self, {"error": "Not found"}, 404)
+
+        if path == "/api/routes":
+            db = get_config_db()
+            routes = db.list_routes()
+            db.close()
+            return json_response(self, {"routes": routes})
+
+        m = re.match(r"/api/routes/(\d+)$", path)
+        if m:
+            db = get_config_db()
+            route = db.get_route(int(m.group(1)))
+            db.close()
+            if route:
+                return json_response(self, route)
+            return json_response(self, {"error": "Not found"}, 404)
+
+        if path == "/api/config/status":
+            db = get_config_db()
+            counts = db.get_counts()
+            db.close()
+            proxy_reachable = False
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", 48743, timeout=2)
+                conn.request("GET", "/health")
+                resp = conn.getresponse()
+                proxy_reachable = resp.status == 200
+                conn.close()
+            except Exception:
+                pass
+            return json_response(self, {
+                "proxy_reachable": proxy_reachable,
+                "config_db": counts,
+            })
+
         # ===== Fact Store API =====
         if path == "/api/facts":
             q = qs.get("q", [None])[0]
@@ -726,6 +775,53 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             result = _test_upstream_connectivity(u)
             return json_response(self, result)
 
+        if parsed.path == "/api/models":
+            data = _read_json(self)
+            if not data:
+                return
+            db = get_config_db()
+            try:
+                mid = db.add_model(data)
+                db.close()
+                return json_response(self, {"id": mid, "message": "Created"}, 201)
+            except sqlite3.IntegrityError as e:
+                db.close()
+                return json_response(self, {"error": str(e)}, 409)
+
+        if parsed.path == "/api/routes":
+            data = _read_json(self)
+            if not data:
+                return
+            db = get_config_db()
+            model = db.get_model(data["target_model_id"])
+            if not model:
+                db.close()
+                return json_response(self, {"error": "target_model_id 不存在"}, 400)
+            if not model.get("upstream_active"):
+                db.close()
+                return json_response(self, {"error": "目标模型所属上游已禁用"}, 400)
+            try:
+                rid = db.add_route(data)
+                db.close()
+                return json_response(self, {"id": rid, "message": "Created"}, 201)
+            except sqlite3.IntegrityError as e:
+                db.close()
+                return json_response(self, {"error": str(e)}, 409)
+
+        if parsed.path == "/api/config/reload":
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", 48743, timeout=5)
+                conn.request("POST", "/admin/reload")
+                resp = conn.getresponse()
+                body = json.loads(resp.read())
+                conn.close()
+                return json_response(self, body, resp.status)
+            except Exception:
+                return json_response(self, {
+                    "status": "error",
+                    "message": "proxy 未运行，配置将在 TTL 过期后自动生效",
+                })
+
         # ===== Fact Store API =====
         if parsed.path == "/api/facts":
             length = int(self.headers.get("Content-Length", 0))
@@ -800,6 +896,34 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 db.close()
                 return json_response(self, {"error": str(e)}, 409)
 
+        m = re.match(r"/api/models/(\d+)$", parsed.path)
+        if m:
+            data = _read_json(self)
+            if not data:
+                return
+            db = get_config_db()
+            try:
+                db.update_model(int(m.group(1)), data)
+                db.close()
+                return json_response(self, {"message": "Updated"})
+            except sqlite3.IntegrityError as e:
+                db.close()
+                return json_response(self, {"error": str(e)}, 409)
+
+        m = re.match(r"/api/routes/(\d+)$", parsed.path)
+        if m:
+            data = _read_json(self)
+            if not data:
+                return
+            db = get_config_db()
+            try:
+                db.update_route(int(m.group(1)), data)
+                db.close()
+                return json_response(self, {"message": "Updated"})
+            except sqlite3.IntegrityError as e:
+                db.close()
+                return json_response(self, {"error": str(e)}, 409)
+
         # ===== Fact Store API =====
         m = re.match(r"/api/facts/(\d+)$", parsed.path)
         if m:
@@ -850,6 +974,40 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             db.disable_upstream(uid)
             db.close()
             return json_response(self, {"message": "Disabled"})
+
+        m = re.match(r"/api/models/(\d+)$", parsed.path)
+        if m:
+            mid = int(m.group(1))
+            db = get_config_db()
+            result = db.delete_model(mid)
+            db.close()
+            if "error" in result:
+                return json_response(self, result, 409)
+            return json_response(self, {"message": "Deleted"})
+
+        m = re.match(r"/api/routes/(\d+)$", parsed.path)
+        if m:
+            rid = int(m.group(1))
+            db = get_config_db()
+            route = db.get_route(rid)
+            if not route:
+                db.close()
+                return json_response(self, {"error": "Not found"}, 404)
+            if route["source"] == "*":
+                routes = db.list_routes()
+                star_count = sum(1 for r in routes if r["source"] == "*")
+                if star_count <= 1:
+                    db.close()
+                    return json_response(self, {
+                        "error": "不能删除最后一条 * fallback 路由",
+                    }, 409)
+            try:
+                db.delete_route(rid)
+                db.close()
+                return json_response(self, {"message": "Deleted"})
+            except sqlite3.IntegrityError as e:
+                db.close()
+                return json_response(self, {"error": str(e)}, 409)
 
         # ===== Fact Store API =====
         m = re.match(r"/api/facts/(\d+)$", parsed.path)
