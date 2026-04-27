@@ -586,9 +586,11 @@ def _emit_completion(state: StreamState) -> list:
 
     # completed
     raw = state.usage
+    # 与 token_stats._find_first 对齐：使用 key 存在性而非值回退。
+    # 如果 prompt_tokens 存在（即使为 0），使用它；不存在才回退到 input_tokens。
     usage = {
-        "input_tokens": raw.get("prompt_tokens") or raw.get("input_tokens", 0),
-        "output_tokens": raw.get("completion_tokens") or raw.get("output_tokens", 0),
+        "input_tokens": raw["prompt_tokens"] if "prompt_tokens" in raw else raw.get("input_tokens", 0),
+        "output_tokens": raw["completion_tokens"] if "completion_tokens" in raw else raw.get("output_tokens", 0),
         "total_tokens": raw.get("total_tokens", 0),
     }
     # 合并两个 details dict。上游通常只返回一种格式，即使同时返回
@@ -599,7 +601,7 @@ def _emit_completion(state: StreamState) -> list:
             details.update(raw[k])
     if details:
         usage["input_tokens_details"] = details
-    output_details = raw.get("completion_tokens_details") or raw.get("output_tokens_details")
+    output_details = raw.get("completion_tokens_details") if "completion_tokens_details" in raw else raw.get("output_tokens_details")
     if output_details:
         usage["output_tokens_details"] = output_details
     # 透传 Anthropic 格式顶层缓存字段

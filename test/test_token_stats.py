@@ -35,6 +35,41 @@ class TestFindFirst(unittest.TestCase):
         self.assertEqual(_find_first(usage, ["prompt_tokens", "input_tokens"]), 0)
 
 
+class TestFindFirst(unittest.TestCase):
+    """_find_first — 按 key 存在性（非值大小）做优先级查找。"""
+
+    def test_returns_first_existing_key(self):
+        from token_stats import _find_first
+        usage = {"prompt_tokens": 100, "input_tokens": 200}
+        self.assertEqual(_find_first(usage, ["prompt_tokens", "input_tokens"]), 100)
+
+    def test_skips_missing_key(self):
+        from token_stats import _find_first
+        usage = {"input_tokens": 200}
+        self.assertEqual(_find_first(usage, ["prompt_tokens", "input_tokens"]), 200)
+
+    def test_skips_none_value(self):
+        """key 存在但值为 None 时跳过，继续查下一个 key。"""
+        from token_stats import _find_first
+        usage = {"prompt_tokens": None, "input_tokens": 200}
+        self.assertEqual(_find_first(usage, ["prompt_tokens", "input_tokens"]), 200)
+
+    def test_zero_is_valid_value(self):
+        from token_stats import _find_first
+        usage = {"prompt_tokens": 0, "input_tokens": 200}
+        self.assertEqual(_find_first(usage, ["prompt_tokens", "input_tokens"]), 0)
+
+    def test_no_match_returns_default(self):
+        from token_stats import _find_first
+        usage = {}
+        self.assertEqual(_find_first(usage, ["prompt_tokens"]), 0)
+
+    def test_all_missing_returns_default(self):
+        from token_stats import _find_first
+        usage = {"other": 999}
+        self.assertEqual(_find_first(usage, ["prompt_tokens", "input_tokens"]), 0)
+
+
 class TestExtractTokens(unittest.TestCase):
     """_extract_tokens 多格式提取测试。"""
 
@@ -113,6 +148,18 @@ class TestExtractTokens(unittest.TestCase):
         self.assertEqual(result["output_tokens"], 500)
         self.assertEqual(result["cached_read"], 2000)
         self.assertEqual(result["cached_write"], 1000)
+
+    def test_null_details_dict(self):
+        """prompt_tokens_details 值为 null 时不抛 TypeError。"""
+        from token_stats import _extract_tokens
+        usage = {
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "prompt_tokens_details": None,
+        }
+        result = _extract_tokens(usage)
+        self.assertEqual(result["input_tokens"], 100)
+        self.assertEqual(result["cached_read"], 0)
 
     def test_anthropic_cache_miss_zero(self):
         """Anthropic cache 未命中（值为 0）时正确返回 0，不回退到其他格式的值。"""

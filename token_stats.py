@@ -36,7 +36,7 @@ def _find_first(usage: dict, keys: list, default=0) -> int:
     只有 key 完全不存在时才检查下一个。
     """
     for k in keys:
-        if k in usage:
+        if k in usage and usage[k] is not None:
             return usage[k]
     return default
 
@@ -59,8 +59,8 @@ def _extract_tokens(usage: dict) -> dict:
     # 假设上游不会在同一响应中同时返回多种格式的 cache 字段 —
     # 如果 Anthropic 的 cache_read_input_tokens 为 0（缓存未命中），
     # 不会回退到 Chat/Responses 格式的值，因为 key 已存在。
-    prompt_details = usage.get("prompt_tokens_details", {})
-    input_details = usage.get("input_tokens_details", {})
+    prompt_details = usage.get("prompt_tokens_details") or {}
+    input_details = usage.get("input_tokens_details") or {}
 
     cached_read = 0
     if "cache_read_input_tokens" in usage:
