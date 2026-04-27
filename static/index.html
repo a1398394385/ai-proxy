@@ -1109,6 +1109,33 @@ tr:hover td {
   color: hsl(var(--foreground));
 }
 
+/* 配置状态栏 */
+.config-status-bar {
+  font-size: 12px;
+}
+
+@keyframes pulse-orange {
+  0%, 100% { box-shadow: 0 0 0 0 hsl(var(--orange) / 0.4); }
+  50% { box-shadow: 0 0 0 8px hsl(var(--orange) / 0); }
+}
+
+#apply-config-btn.pulse-orange {
+  animation: pulse-orange 1.5s infinite;
+  background: hsl(var(--orange));
+  border-color: hsl(var(--orange));
+  color: white;
+}
+
+.api-key-masked {
+  font-family: monospace;
+  color: hsl(var(--muted-foreground));
+}
+
+.format-with-tooltip {
+  cursor: help;
+  border-bottom: 1px dashed hsl(var(--muted-foreground));
+}
+
 /* 响应式 */
 @media (max-width: 768px) {
   .main-content { padding: 16px; }
@@ -1131,6 +1158,9 @@ tr:hover td {
       </button>
       <button class="nav-tab" data-page="tokens">
         <span>📊</span> Token 统计
+      </button>
+      <button class="nav-tab" data-page="models">
+        <span>🔌</span> 模型管理
       </button>
     </div>
     <div class="nav-actions">
@@ -1267,6 +1297,64 @@ tr:hover td {
           <tbody></tbody>
         </table>
       </div>
+    </div>
+  </div>
+
+  <!-- 模型管理页面 -->
+  <div id="page-models" class="main-content hidden">
+    <div class="config-status-bar" id="config-status" style="display:flex;align-items:center;gap:12px;padding:10px 16px;margin-bottom:16px;background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:var(--radius);font-size:12px;">
+      <span id="status-proxy-indicator" style="width:8px;height:8px;border-radius:50%;background:hsl(var(--red));display:inline-block;"></span>
+      <span id="status-proxy-text">检查中...</span>
+      <span style="margin-left:auto;color:hsl(var(--muted-foreground))" id="status-counts"></span>
+    </div>
+
+    <div class="table-card" style="margin-bottom:20px">
+      <div class="table-header">
+        <span class="table-title">📡 上游配置</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-size:12px;color:hsl(var(--muted-foreground))" id="upstream-count"></span>
+          <button class="btn btn-primary btn-sm" onclick="showUpstreamModal()">+ 新增上游</button>
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table id="upstream-table">
+          <thead><tr><th>状态</th><th>名称</th><th>地址</th><th>超时(s)</th><th>默认</th><th>操作</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="table-card" style="margin-bottom:20px">
+      <div class="table-header">
+        <span class="table-title">🤖 目标模型</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="model-filter-upstream" style="padding:4px 8px;border-radius:6px;border:1px solid hsl(var(--border));background:hsl(var(--secondary));color:hsl(var(--foreground));font-size:12px;"><option value="">全部上游</option></select>
+          <button class="btn btn-primary btn-sm" onclick="showModelModal()">+ 新增模型</button>
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table id="model-table">
+          <thead><tr><th>模型名</th><th>所属上游</th><th>Format</th><th>Multimodal</th><th>操作</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="table-card" style="margin-bottom:20px">
+      <div class="table-header">
+        <span class="table-title">🔀 路由映射</span>
+        <button class="btn btn-primary btn-sm" onclick="showRouteModal()">+ 新增路由</button>
+      </div>
+      <div class="table-scroll">
+        <table id="route-table">
+          <thead><tr><th>源模型</th><th>→ 目标模型</th><th>上游</th><th>状态</th><th>操作</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div style="display:flex;justify-content:flex-end;gap:12px;margin-top:16px;">
+      <button class="btn btn-primary" id="apply-config-btn" onclick="applyConfig()">✅ 应用配置</button>
     </div>
   </div>
 
