@@ -257,3 +257,133 @@ class TestRouteCRUD(unittest.TestCase):
             conn = self.db._connect()
             conn.execute("DELETE FROM upstreams WHERE id = ?", ("up-a",))
             conn.close()
+
+
+class TestResolveModel(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "config.db"
+        from config_manager import ConfigDB
+        self.db = ConfigDB(self.db_path)
+        self.db.add_upstream({"id": "up-a", "base_url": "http://a", "api_key": "sk-a"})
+        self.db.add_upstream({"id": "up-b", "base_url": "http://b", "api_key": "sk-b"})
+        self.m1 = self.db.add_model({"name": "qwen", "upstream_id": "up-a"})
+        self.m2 = self.db.add_model({"name": "claude", "upstream_id": "up-b"})
+
+    def tearDown(self):
+        self.db.close()
+        self.tmp.cleanup()
+
+    def test_resolve_exact_match(self):
+        self.db.add_route({"source": "gpt-4", "target_model_id": self.m1})
+        cfg = self.db.resolve_model("gpt-4")
+        self.assertEqual(cfg["target_name"], "qwen")
+        self.assertEqual(cfg["upstream"]["base_url"], "http://a")
+
+    def test_resolve_fallback_to_star(self):
+        self.db.add_route({"source": "*", "target_model_id": self.m2})
+        cfg = self.db.resolve_model("unknown-model")
+        self.assertEqual(cfg["target_name"], "claude")
+
+    def test_resolve_skip_disabled_upstream(self):
+        self.db.add_route({"source": "gpt-4", "target_model_id": self.m1})
+        self.db.add_route({"source": "*", "target_model_id": self.m2})
+        self.db.disable_upstream("up-a")
+        cfg = self.db.resolve_model("gpt-4")
+        self.assertEqual(cfg["target_name"], "claude")
+
+    def test_resolve_none_when_no_match(self):
+        cfg = self.db.resolve_model("no-route-anywhere")
+        self.assertIsNone(cfg)
+
+    def test_resolve_none_when_star_also_disabled(self):
+        self.db.add_route({"source": "*", "target_model_id": self.m1})
+        self.db.disable_upstream("up-a")
+        cfg = self.db.resolve_model("anything")
+        self.assertIsNone(cfg)
+
+    def test_get_all_routes(self):
+        self.db.add_route({"source": "gpt-4", "target_model_id": self.m1})
+        self.db.add_route({"source": "*", "target_model_id": self.m2})
+        all_routes = self.db.get_all_routes()
+        self.assertIn("gpt-4", all_routes)
+        self.assertIn("*", all_routes)
+        self.assertEqual(all_routes["gpt-4"]["target_name"], "qwen")
+
+    def test_get_all_routes_skips_disabled_upstream(self):
+        self.db.add_route({"source": "gpt-4", "target_model_id": self.m1})
+        self.db.add_route({"source": "*", "target_model_id": self.m2})
+        self.db.disable_upstream("up-a")
+        all_routes = self.db.get_all_routes()
+        self.assertNotIn("gpt-4", all_routes)
+        self.assertIn("*", all_routes)
+
+    def test_validate_star_fallback(self):
+        self.db.add_route({"source": "*", "target_model_id": self.m1})
+        self.assertTrue(self.db.validate_star_fallback())
+
+    def test_matched_source_field(self):
+        self.db.add_route({"source": "gpt-4", "target_model_id": self.m1})
+        self.db.add_route({"source": "*", "target_model_id": self.m2})
+        cfg = self.db.resolve_model("gpt-4")
+        self.assertEqual(cfg["matched_source"], "gpt-4")
+        cfg2 = self.db.resolve_model("nonexistent")
+        self.assertEqual(cfg2["matched_source"], "*")
+
+
+class TestConfigCache(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "config.db"
+        from config_manager import ConfigDB, ConfigCache
+        self.db = ConfigDB(self.db_path)
+        self.db.add_upstream({"id": "up-a", "base_url": "http://a"})
+        self.m1 = self.db.add_model({"name": "qwen", "upstream_id": "up-a"})
+        self.db.add_route({"source": "*", "target_model_id": self.m1})
+
+    def tearDown(self):
+        self.db.close()
+        self.tmp.cleanup()
+
+    def test_cache_resolve_returns_config(self):
+        from config_manager import ConfigCache
+        cache = ConfigCache(self.db_path, ttl=5)
+        cfg = cache.resolve("unknown")
+        self.assertEqual(cfg["target_name"], "qwen")
+
+    def test_cache_hit_avoids_db_read(self):
+        from config_manager import ConfigCache
+        cache = ConfigCache(self.db_path, ttl=99)
+        cfg1 = cache.resolve("*")
+        m2 = self.db.add_model({"name": "claude", "upstream_id": "up-a"})
+        star_rid = self.db.get_route_by_source("*")["id"]
+        self.db.update_route(star_rid, {"target_model_id": m2})
+        cfg2 = cache.resolve("*")
+        self.assertEqual(cfg1["target_name"], cfg2["target_name"])
+
+    def test_reload_refreshes_cache(self):
+        from config_manager import ConfigCache
+        cache = ConfigCache(self.db_path, ttl=99)
+        cfg1 = cache.resolve("*")
+        m2 = self.db.add_model({"name": "claude", "upstream_id": "up-a"})
+        star_rid = self.db.get_route_by_source("*")["id"]
+        self.db.update_route(star_rid, {"target_model_id": m2})
+        cache.reload()
+        cfg2 = cache.resolve("*")
+        self.assertEqual(cfg2["target_name"], "claude")
+
+    def test_ttl_expiry_refreshes(self):
+        from config_manager import ConfigCache
+        cache = ConfigCache(self.db_path, ttl=0)
+        cfg1 = cache.resolve("*")
+        m2 = self.db.add_model({"name": "claude", "upstream_id": "up-a"})
+        star_rid = self.db.get_route_by_source("*")["id"]
+        self.db.update_route(star_rid, {"target_model_id": m2})
+        cfg2 = cache.resolve("*")
+        self.assertEqual(cfg2["target_name"], "claude")
+
+    def test_get_all(self):
+        from config_manager import ConfigCache
+        cache = ConfigCache(self.db_path, ttl=5)
+        all_routes = cache.get_all()
+        self.assertIn("*", all_routes)
