@@ -1,0 +1,83 @@
+"""动态模型配置 — ConfigDB → ConfigCache → resolve 完整链路集成测试。"""
+import unittest
+import tempfile
+from pathlib import Path
+
+from config_manager import ConfigDB, ConfigCache
+
+
+class TestConfigIntegration(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "config.db"
+        self.db = ConfigDB(self.db_path)
+        self.db.add_upstream({"id": "up-a", "base_url": "http://a:4000", "api_key": "sk-a"})
+        self.db.add_upstream({"id": "up-b", "base_url": "http://b:5000", "api_key": "sk-b"})
+        self.m1 = self.db.add_model({"name": "qwen", "upstream_id": "up-a", "multimodal": 1})
+        self.m2 = self.db.add_model({"name": "claude", "upstream_id": "up-b", "multimodal": 0})
+        self.db.add_route({"source": "gpt-4", "target_model_id": self.m1})
+        self.db.add_route({"source": "codex-mini", "target_model_id": self.m1})
+        self.db.add_route({"source": "*", "target_model_id": self.m2})
+        # 注：get_route_by_source() 和 validate_star_fallback() 是 ConfigDB 内部方法，在此仅用于测试
+
+    def tearDown(self):
+        self.db.close()
+        self.tmp.cleanup()
+
+    def test_config_cache_resolve(self):
+        cache = ConfigCache(self.db_path, ttl=5)
+        cfg = cache.resolve("gpt-4")
+        self.assertEqual(cfg["target_name"], "qwen")
+        self.assertEqual(cfg["upstream"]["base_url"], "http://a:4000")
+
+    def test_config_cache_fallback(self):
+        cache = ConfigCache(self.db_path, ttl=5)
+        cfg = cache.resolve("unknown-model")
+        self.assertEqual(cfg["target_name"], "claude")
+
+    def test_disable_upstream_affects_resolve(self):
+        self.db.disable_upstream("up-a")
+        cache = ConfigCache(self.db_path, ttl=0)
+        cfg = cache.resolve("gpt-4")
+        self.assertEqual(cfg["target_name"], "claude")
+
+    def test_star_fallback_validation(self):
+        self.db.disable_upstream("up-b")
+        self.assertFalse(self.db.validate_star_fallback())
+
+    def test_model_referenced_routes_precheck(self):
+        refs = self.db.model_referenced_routes(self.m1)
+        self.assertEqual(set(refs), {"gpt-4", "codex-mini"})
+        self.assertGreater(len(refs), 0)
+
+    def test_upstream_active_routes(self):
+        refs = self.db.upstream_active_routes("up-a")
+        self.assertIn("gpt-4", refs)
+
+    def test_get_counts(self):
+        counts = self.db.get_counts()
+        self.assertEqual(counts["upstreams"], 2)
+        self.assertEqual(counts["models"], 2)
+        self.assertEqual(counts["routes"], 3)
+
+    def test_cache_reload(self):
+        cache = ConfigCache(self.db_path, ttl=99)
+        cfg1 = cache.resolve("gpt-4")
+        rid = self.db.get_route_by_source("gpt-4")["id"]
+        self.db.update_route(rid, {"target_model_id": self.m2})
+        cache.reload()
+        cfg2 = cache.resolve("gpt-4")
+        self.assertEqual(cfg2["target_name"], "claude")
+
+    def test_cache_get_all(self):
+        cache = ConfigCache(self.db_path, ttl=5)
+        all_routes = cache.get_all()
+        self.assertIn("gpt-4", all_routes)
+        self.assertIn("codex-mini", all_routes)
+        self.assertIn("*", all_routes)
+
+    def test_delete_model_with_check_refs(self):
+        """预检查功能：被引用的模型 delete 返回 error dict。"""
+        result = self.db.delete_model(self.m1)
+        self.assertIn("error", result)
+        self.assertIn("referenced_routes", result)
