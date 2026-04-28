@@ -32,8 +32,6 @@ from transform_responses import (  # noqa: F401 — re-export
     StreamState,
     CodexStreamConverter,
     ToolBlockState,
-    _process_delta,
-    _emit_completion,
     _map_tools,
     _map_response_format,
 )

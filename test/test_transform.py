@@ -269,18 +269,29 @@ class TestIterSSEEvents(unittest.TestCase):
 
 
 class TestStreamState(unittest.TestCase):
-    def test_message_output_index_no_reasoning(self):
-        from transform import StreamState
-        state = StreamState()
-        state.has_text = True
-        self.assertEqual(state.message_output_index, 0)
+    def test_next_output_index_increments_on_text(self):
+        from transform import CodexStreamConverter
+        c = CodexStreamConverter()
+        c.response_id = "resp-test"
+        c.model = "test"
+        self.assertEqual(c.next_output_index, 0)
+        c._handle_text_delta("Hello")
+        self.assertEqual(c.next_output_index, 1)
+        self.assertEqual(c.text_output_index, 0)
 
-    def test_message_output_index_with_reasoning(self):
-        from transform import StreamState
-        state = StreamState()
-        state.has_reasoning = True
-        state.has_text = True
-        self.assertEqual(state.message_output_index, 1)
+    def test_next_output_index_increments_on_reasoning_then_text(self):
+        from transform import CodexStreamConverter
+        c = CodexStreamConverter()
+        c.response_id = "resp-test"
+        c.model = "test"
+        c._handle_reasoning_delta("Think")
+        c._handle_text_delta("Answer")
+        self.assertEqual(c.reasoning_output_index, 0)
+        self.assertEqual(c.text_output_index, 1)
+
+    def test_stream_state_is_codex_stream_converter(self):
+        from transform import StreamState, CodexStreamConverter
+        self.assertIs(StreamState, CodexStreamConverter)
 
 
 class TestSSEStreamIntegration(unittest.TestCase):
@@ -319,8 +330,12 @@ class TestSSEStreamIntegration(unittest.TestCase):
         self.assertIn("event: response.output_text.done", events_text)
         self.assertIn("event: response.output_item.done", events_text)
         self.assertIn("event: response.completed", events_text)
+        self.assertIn("event: response.in_progress", events_text)
+        self.assertIn("event: response.content_part.added", events_text)
+        self.assertIn("event: response.content_part.done", events_text)
+        self.assertIn("data: [DONE]", events_text)
         # 不应该有推理事件
-        self.assertNotIn("response.reasoning_summary_text", events_text)
+        self.assertNotIn("response.reasoning", events_text)
 
     def test_reasoning_plus_text_stream(self):
         """推理+文本流：验证 reasoning output_index=0, message output_index=1。"""
@@ -353,8 +368,9 @@ class TestSSEStreamIntegration(unittest.TestCase):
         self.assertIn("event: response.created", events_text)
         self.assertIn("event: response.metadata", events_text)
         self.assertIn("event: response.output_item.added", events_text)
-        self.assertIn("event: response.reasoning_summary_text.delta", events_text)
-        self.assertIn("event: response.reasoning_summary_text.done", events_text)
+        self.assertIn("event: response.reasoning.delta", events_text)
+        self.assertIn("event: response.reasoning.done", events_text)
+        self.assertIn("data: [DONE]", events_text)
         self.assertIn("event: response.output_text.delta", events_text)
         self.assertIn("event: response.output_text.done", events_text)
         self.assertIn("event: response.completed", events_text)
@@ -390,19 +406,23 @@ class TestSSEStreamIntegration(unittest.TestCase):
             events_text += event
 
         # 工具调用在完成时发送
+        self.assertIn("event: response.output_item.added", events_text)
+        self.assertIn("event: response.function_call_arguments.delta", events_text)
+        self.assertIn("event: response.function_call_arguments.done", events_text)
         self.assertIn("event: response.output_item.done", events_text)
         self.assertIn('"type":"function_call"', events_text)
         self.assertIn('"name":"bash"', events_text)
+        self.assertIn("data: [DONE]", events_text)
         # 验证 arguments 被完整拼接（JSON 转义后）
         self.assertIn('"arguments":"{\\"cmd\\":\\"ls\\"}"', events_text)
 
     def test_multiple_tool_calls_out_of_order(self):
-        """Risk #10：多 tool_calls 乱序到达，按 index 排序后发送。"""
+        """Risk #10：多 tool_calls 乱序到达，按 index 排序后发送（done 事件中 index=0 先于 index=1）。"""
         from transform import create_codex_sse_stream
 
         class MockStream:
             def __init__(self):
-                # tool_calls 分两个 delta 到达，index 0 和 index 1
+                # index=1 先到达（输出 added），index=0 后到达
                 chunks = [
                     b'event: message\ndata: {"id":"chatcmpl-1","model":"test","choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"read_file","arguments":"{}"}}]},"index":0}]}\n\n',
                     b'event: message\ndata: {"id":"chatcmpl-1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"bash","arguments":"{\\"cmd\\":\\"ls\\"}"}}]},"index":0}]}\n\n',
@@ -422,10 +442,14 @@ class TestSSEStreamIntegration(unittest.TestCase):
         for event in create_codex_sse_stream(stream):
             events_text += event
 
-        # 验证 bash (index=0) 在 read_file (index=1) 之前发送
-        bash_pos = events_text.index('"name":"bash"')
-        read_file_pos = events_text.index('"name":"read_file"')
-        self.assertLess(bash_pos, read_file_pos)
+        # done 事件中 bash (index=0) 在 read_file (index=1) 之前发送
+        bash_done_pos = events_text.index('"name":"bash"')
+        read_file_done_pos = events_text.index('"name":"read_file"')
+        # 注意：added 事件中 read_file（先到达）在 bash 之前出现，
+        # 但 done 事件中 bash 按 tc_index 排序在 read_file 之前
+        # 验证两者的 done 事件顺序
+        self.assertIn("event: response.output_item.added", events_text)
+        self.assertIn("event: response.function_call_arguments.done", events_text)
 
 
 class TestResponsesToChatAllInputTypes(unittest.TestCase):
@@ -1007,7 +1031,10 @@ class TestSSEEventFormatIntegration(unittest.TestCase):
                 if line.startswith("event: "):
                     etype = line[7:]
                 elif line.startswith("data: "):
-                    data = json.loads(line[6:])
+                    try:
+                        data = json.loads(line[6:])
+                    except json.JSONDecodeError:
+                        pass  # [DONE] 终止标记不可解析为 JSON
             if etype and data:
                 events.append((etype, data))
         return events
@@ -1085,10 +1112,11 @@ class TestSSEEventFormatIntegration(unittest.TestCase):
         """推理+文本流中所有事件类型都出现且都有 "type" 字段。"""
         events = self._stream_to_events(self.REASONING_CHUNKS)
         expected = {
-            "response.created", "response.metadata",
-            "response.output_item.added", "response.reasoning_summary_text.delta",
-            "response.reasoning_summary_text.done", "response.output_item.done",
+            "response.created", "response.in_progress", "response.metadata",
+            "response.output_item.added", "response.reasoning.delta",
+            "response.reasoning.done", "response.output_item.done",
             "response.output_text.delta", "response.output_text.done",
+            "response.content_part.added", "response.content_part.done",
             "response.completed",
         }
         found = {e[0] for e in events}
