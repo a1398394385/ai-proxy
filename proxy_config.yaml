@@ -4,29 +4,34 @@ proxy:
   log_level: "INFO" # DEBUG / INFO / WARNING
 
 upstream:
-  base_url: "http://172.40.2.162:4000/"
-  api_key: "sk-wmnNcIIodpdmfu_yuyJs6Q"
-  timeout: 120 # SSE 流总超时（秒）
-  connect_timeout: 10
-  ssl_verify: true # 内网自签证书时可设为 false
+  base_url: "https://llm-open-api.cargoware.com/v1"
+  api_key: "sk-1f5H4uYz1mKZvEONUuQrQw"
+  timeout: 1800 # SSE 流总超时（秒）
+  connect_timeout: 60
+  ssl_verify: false # 内网自签证书时可设为 false
   retry: 1 # 上游 5xx/超时时自动重试次数（0 = 不重试）
-  proxy: "http://127.0.0.1:9090" # 上游请求代理（HTTP 格式，留空则直连）
+  proxy: "http://192.168.20.18:9090" # 上游请求代理（HTTP 格式，留空则直连）
+  enable_proxy: false # 是否启用代理（true/false）。http.client 不读取环境变量，须显式路由
 
 model_map:
   "codex-mini-latest":
-    target: "qwen3.6-plus"
+    target: "kimi-k2.5"
     multimodal: true
   "o4-mini":
-    target: "qwen3.6-plus"
+    target: "kimi-k2.5"
     multimodal: true
   "gpt-4o":
-    target: "qwen3.6-plus"
+    target: "kimi-k2.5"
     multimodal: true
   "*":
-    target: "qwen3.6-plus"
+    target: "kimi-k2.5"
     multimodal: true
 
 logging:
   debug_retention_days: 7
   log_dir: "data"
   log_file: "access_log.db"
+
+response_store:
+  max_entries: 1000
+  ttl_seconds: 3600

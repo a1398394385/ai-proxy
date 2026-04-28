@@ -755,6 +755,12 @@ def main():
     init_request_logger(Path(__file__).parent / log_dir / db_file, retention_days)
 
     server = ThreadedHTTPServer((host, port), ProxyHandler)
+    from response_store import ResponseStore as _ResponseStore
+    _store_cfg = CONFIG.get("response_store", {})
+    server.response_store = _ResponseStore(
+        max_entries=_store_cfg.get("max_entries", 1000),
+        ttl_seconds=_store_cfg.get("ttl_seconds", 3600),
+    )
     logging.info(f"Codex Proxy 启动: http://{host}:{port}")
 
     # PID 文件

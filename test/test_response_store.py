@@ -105,5 +105,24 @@ class TestResponseStore(unittest.TestCase):
         self.assertIsNotNone(store.get("r3"))
 
 
+class TestResponseStoreServerMount(unittest.TestCase):
+    def test_main_mounts_response_store(self):
+        """proxy.py main() 应在创建 server 后挂载 server.response_store。"""
+        import pathlib
+        src = (pathlib.Path(__file__).parent.parent / "proxy.py").read_text()
+        self.assertIn("server.response_store", src,
+                      "main() 应将 ResponseStore 挂载到 server.response_store")
+        self.assertIn("ResponseStore", src,
+                      "proxy.py 应导入并使用 ResponseStore")
+
+    def test_proxy_config_has_response_store_section(self):
+        import pathlib
+        src = (pathlib.Path(__file__).parent.parent / "proxy_config.yaml").read_text()
+        self.assertIn("response_store", src,
+                      "proxy_config.yaml 应包含 response_store 配置节")
+        self.assertIn("max_entries", src)
+        self.assertIn("ttl_seconds", src)
+
+
 if __name__ == "__main__":
     unittest.main()
