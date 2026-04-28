@@ -488,9 +488,11 @@ git add transform_responses.py transform.py proxy.py test/ plan_tracking.md && g
 
 **目标**: 将 _forward_non_streaming 和 _forward_streaming 中硬编码的转换函数改为参数，为后续 /v1/messages 路由做准备。不改任何行为。
 
+> **当前代码变更**: 最新 commit e89041c 已抽取 `_create_upstream_conn` 辅助函数，`_forward_streaming` 中 getresponse 已移入 try 块，错误路径补充了 response.completed。以下改动基于此代码。
+
 - [ ] **Step 1: _forward_non_streaming 增加 response_converter 参数**
 
-修改 `proxy.py` line 288 的 `_forward_non_streaming` 签名：
+修改 `proxy.py` 的 `_forward_non_streaming` 签名：
 
 ```python
 def _forward_non_streaming(self, chat_body: dict, request_id: str, 
@@ -502,13 +504,13 @@ def _forward_non_streaming(self, chat_body: dict, request_id: str,
     """
     if response_converter is None:
         from transform_responses import chat_to_responses as response_converter
-    # ... 其余逻辑不变，line 367 处：
+    # ... 其余逻辑不变，原 chat_to_responses(chat_response) 处改为：
     responses_response = response_converter(chat_response)
 ```
 
 - [ ] **Step 2: _forward_streaming 增加 response_converter + sse_stream_factory 参数**
 
-修改 `proxy.py` line 404 的 `_forward_streaming` 签名：
+修改 `proxy.py` 的 `_forward_streaming` 签名：
 
 ```python
 def _forward_streaming(self, chat_body: dict, model_cfg: dict, 
@@ -520,32 +522,32 @@ def _forward_streaming(self, chat_body: dict, model_cfg: dict,
     """
     if sse_stream_factory is None:
         from transform_responses import create_codex_sse_stream as sse_stream_factory
-    # ... 其余逻辑不变，line 493 处：
+    # ... 其余逻辑不变，原 create_codex_sse_stream(resp) 处改为：
     for sse_event in sse_stream_factory(resp):
         # ...
 ```
 
-- [ ] **Step 3: 更新 _handle_responses 中的调用**
+- [ ] **Step 3: _handle_responses 中的调用无需修改**
 
-Line 283-286，确保调用传入默认参数（或不传，使用默认值）：
-
-```python
-# 非流式
-self._forward_non_streaming(chat_body, request_id, model_name, target, request_ts)
-# 流式
-self._forward_streaming(chat_body, model_cfg, request_id, model_name, target, request_ts)
-```
-
-这两处无需修改（默认参数为 None 时自动使用现有转换函数）。
+默认参数为 None 时自动使用现有转换函数，保持向后兼容。
 
 - [ ] **Step 4: 更新集成测试中的 mock 调用**
 
-`test/test_proxy_logger_integration.py` — 搜索 `_forward_non_streaming` 和 `_forward_streaming` 的直接 mock/调用，确认签名变更不影响测试。如果测试中显式传参了这些方法，需更新参数名。
+`test/test_proxy_logger_integration.py` — 搜索 `_forward_non_streaming` 和 `_forward_streaming` 的直接调用，确认签名变更不影响测试。
 
 - [ ] **Step 5: 运行全量测试确认**
 
 ```bash
 cd /Users/xys/.hermes/fact-store-browser && python3 -m pytest test/ -q --tb=short
+```
+
+Expected: `123 passed`
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add proxy.py test/test_proxy_logger_integration.py plan_tracking.md && git commit -m "refactor: proxy 转发函数参数化，支持注入 response_converter 和 sse_stream_factory"
+```
 ```
 
 Expected: `132 passed`
