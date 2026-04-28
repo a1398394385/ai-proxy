@@ -37,13 +37,13 @@ Task 0: 准备 plan_tracking.md + 验证基线（130 passed）
 - **Status:** done
 
 ### Task 3: proxy.py 转发函数参数化
-- [ ] Step 1: _forward_non_streaming 增加 response_converter 参数
-- [ ] Step 2: _forward_streaming 增加 response_converter + sse_stream_factory 参数
-- [ ] Step 3: 更新 _handle_responses 中的两处调用
-- [ ] Step 4: 更新集成测试中的 mock 调用
-- [ ] Step 5: 运行全量测试确认（139 passed）
-- [ ] Step 6: Commit
-- **Status:** pending
+- [x] Step 1: _forward_non_streaming 增加 response_converter 参数
+- [x] Step 2: _forward_streaming 增加 response_converter + sse_stream_factory 参数
+- [x] Step 3: 更新 _handle_responses 中的两处调用
+- [x] Step 4: 更新集成测试中的 mock 调用
+- [x] Step 5: 运行全量测试确认（139 passed）
+- [x] Step 6: Commit
+- **Status:** done
 
 ### Task 4: anthropic_to_chat — 请求转换 TDD
 - [ ] Step 1-28: 23 个测试用例，逐个 TDD 循环
