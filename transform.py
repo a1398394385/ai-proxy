@@ -9,6 +9,7 @@
 - _parse_sse_event: 来自 transform_responses
 - iter_sse_events: 来自 transform_responses
 - StreamState: 来自 transform_responses
+- CodexStreamConverter: 来自 transform_responses
 - ToolBlockState: 来自 transform_responses
 - _process_delta: 来自 transform_responses
 - _emit_completion: 来自 transform_responses
@@ -29,6 +30,7 @@ from transform_responses import (  # noqa: F401 — re-export
     _parse_sse_event,
     iter_sse_events,
     StreamState,
+    CodexStreamConverter,
     ToolBlockState,
     _process_delta,
     _emit_completion,

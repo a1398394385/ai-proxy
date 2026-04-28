@@ -1117,6 +1117,32 @@ class TestSSEEventFormatIntegration(unittest.TestCase):
         self.assertIn("usage", data["response"])
 
 
+class TestCodexStreamConverterFields(unittest.TestCase):
+    def test_default_fields(self):
+        from transform import CodexStreamConverter
+        c = CodexStreamConverter()
+        self.assertEqual(c.response_id, "")
+        self.assertEqual(c.model, "")
+        self.assertEqual(c.next_output_index, 0)
+        self.assertEqual(c.text_output_index, -1)
+        self.assertFalse(c.text_message_opened)
+        self.assertFalse(c.text_content_part_opened)
+        self.assertEqual(c.accumulated_text, "")
+        self.assertEqual(c.reasoning_output_index, -1)
+        self.assertFalse(c.reasoning_opened)
+        self.assertFalse(c.refusal_opened)
+        self.assertEqual(c.refusal_content_index, 0)
+        self.assertEqual(c.tool_blocks, {})
+        self.assertIsNone(c.final_usage)
+        self.assertEqual(c.output_items, [])
+        self.assertFalse(c.created_sent)
+
+    def test_codex_stream_converter_importable(self):
+        """CodexStreamConverter 可从 transform 导入（别名在删除旧 StreamState 后生效）。"""
+        from transform import CodexStreamConverter
+        self.assertTrue(hasattr(CodexStreamConverter, "response_id"))
+
+
 class TestToolBlockState(unittest.TestCase):
     def test_default_fields(self):
         from transform import ToolBlockState

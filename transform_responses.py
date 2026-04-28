@@ -370,6 +370,44 @@ class ToolBlockState:
 
 
 @dataclass
+class CodexStreamConverter:
+    """完整的 Codex SSE 流转换器，替代旧 StreamState + 三个顶层函数。"""
+
+    response_id: str = ""
+    model: str = ""
+    next_output_index: int = 0
+
+    # 文本消息状态
+    text_message_id: str = ""
+    text_output_index: int = -1
+    text_message_opened: bool = False
+    text_content_part_opened: bool = False
+    accumulated_text: str = ""
+
+    # 推理状态
+    reasoning_id: str = ""
+    reasoning_output_index: int = -1
+    reasoning_opened: bool = False
+    accumulated_reasoning: str = ""
+
+    # 拒绝状态
+    refusal_opened: bool = False
+    refusal_content_index: int = 0   # 在 _handle_refusal_delta 首次打开时保存，避免时序竞态
+    accumulated_refusal: str = ""
+
+    # 工具调用状态（key: tool_calls index → ToolBlockState）
+    tool_blocks: dict = field(default_factory=dict)
+
+    # 完成状态
+    finish_reason: str = ""
+    final_usage: Optional[dict] = None   # None = 未收到 usage chunk
+
+    # output_items 存 (output_index, item) 元组，finish() 中按 output_index 排序
+    output_items: list = field(default_factory=list)
+    created_sent: bool = False
+
+
+@dataclass
 class StreamState:
     response_id: str = ""
     model: str = ""
