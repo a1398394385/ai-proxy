@@ -1,6 +1,12 @@
 """transform_anthropic — Anthropic Messages ↔ Chat Completions 转换测试。"""
+import io
 import json
 import unittest
+
+
+def _mock_upstream_stream(sse_text: str):
+    """构造模拟上游 response — 返回 io.BytesIO。"""
+    return io.BytesIO(sse_text.encode("utf-8"))
 
 
 class TestAnthropicToChat(unittest.TestCase):
@@ -392,6 +398,133 @@ class TestAnthropicToChat(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _parse_sse_string(s: str) -> dict:
+    """解析一个 SSE 事件字符串，返回 {event, data}。"""
+    lines = s.strip().split("\n")
+    event_type = "message"
+    data_str = None
+    for line in lines:
+        if line.startswith("event: "):
+            event_type = line[7:]
+        elif line.startswith("data: "):
+            data_str = line[6:]
+    return {"event": event_type, "data": json.loads(data_str) if data_str else None}
+
+
+class TestAnthropicSSEStream(unittest.TestCase):
+    """create_anthropic_sse_stream — Chat SSE → Anthropic SSE 流式转换。"""
+
+    def test_message_start(self):
+        """首个 chunk 含 id/model → event: message_start。"""
+        from transform_anthropic import create_anthropic_sse_stream
+        sse = (
+            'data: {"id":"chatcmpl-1","model":"qwen","usage":{"prompt_tokens":10,"completion_tokens":2},"choices":[]}\n\n'
+            'data: [DONE]\n\n'
+        )
+        events = list(create_anthropic_sse_stream(_mock_upstream_stream(sse)))
+        parsed = [_parse_sse_string(e) for e in events]
+        self.assertEqual(parsed[0]["event"], "message_start")
+        self.assertEqual(parsed[0]["data"]["message"]["id"], "chatcmpl-1")
+        self.assertEqual(parsed[0]["data"]["message"]["model"], "qwen")
+        self.assertEqual(parsed[0]["data"]["message"]["role"], "assistant")
+        self.assertEqual(parsed[-1]["event"], "message_stop")
+
+    def test_text_stream(self):
+        """delta.content 多次出现 → content_block_start/delta/stop。"""
+        from transform_anthropic import create_anthropic_sse_stream
+        sse = (
+            'data: {"id":"c1","model":"m","choices":[{"delta":{"content":"Hello"}}]}\n\n'
+            'data: {"id":"c1","model":"m","choices":[{"delta":{"content":" world"}}]}\n\n'
+            'data: {"id":"c1","model":"m","choices":[{"delta":{"content":"","finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2}}\n\n'
+            'data: [DONE]\n\n'
+        )
+        events = list(create_anthropic_sse_stream(_mock_upstream_stream(sse)))
+        types = [e.split("\n")[0] for e in events]
+        self.assertIn("event: content_block_start", events[1])
+        # 检查 text_delta
+        text_deltas = [e for e in events if "text_delta" in e]
+        self.assertEqual(len(text_deltas), 2)
+        self.assertIn("Hello", text_deltas[0])
+        self.assertIn(" world", text_deltas[1])
+
+    def test_thinking_stream_reasoning_content(self):
+        """delta.reasoning_content 出现 → content_block_start(thinking)。"""
+        from transform_anthropic import create_anthropic_sse_stream
+        sse = (
+            'data: {"id":"c1","model":"m","choices":[{"delta":{"reasoning_content":"Let me think"}}]}\n\n'
+            'data: {"id":"c1","model":"m","choices":[{"delta":{"reasoning_content":" more"}}]}\n\n'
+            'data: {"id":"c1","model":"m","choices":[{"delta":{"content":"","finish_reason":"stop"}]}\n\n'
+            'data: [DONE]\n\n'
+        )
+        events = list(create_anthropic_sse_stream(_mock_upstream_stream(sse)))
+        thinking_deltas = [e for e in events if "thinking_delta" in e]
+        self.assertEqual(len(thinking_deltas), 2)
+        self.assertIn("Let me think", thinking_deltas[0])
+        self.assertIn(" more", thinking_deltas[1])
+
+    def test_thinking_stream_reasoning(self):
+        """delta.reasoning 出现 → content_block_start(thinking)。"""
+        from transform_anthropic import create_anthropic_sse_stream
+        sse = (
+            'data: {"id":"c1","model":"m","choices":[{"delta":{"reasoning":"thinking..."}}]}\n\n'
+            'data: {"id":"c1","model":"m","choices":[{"delta":{"content":"","finish_reason":"stop"}]}\n\n'
+            'data: [DONE]\n\n'
+        )
+        events = list(create_anthropic_sse_stream(_mock_upstream_stream(sse)))
+        thinking = [e for e in events if "thinking_delta" in e]
+        self.assertEqual(len(thinking), 1)
+        self.assertIn("thinking...", thinking[0])
+
+    def test_message_delta(self):
+        """delta.finish_reason 出现 → event: message_delta + stop_reason + usage。"""
+        from transform_anthropic import create_anthropic_sse_stream
+        sse = (
+            'data: {"id":"c1","model":"m","choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":2}}}\n\n'
+            'data: [DONE]\n\n'
+        )
+        events = list(create_anthropic_sse_stream(_mock_upstream_stream(sse)))
+        delta_events = [e for e in events if "message_delta" in e.split("\n")[0]]
+        self.assertEqual(len(delta_events), 1)
+        parsed = _parse_sse_string(delta_events[0])
+        self.assertEqual(parsed["data"]["delta"]["stop_reason"], "end_turn")
+        self.assertEqual(parsed["data"]["usage"]["output_tokens"], 3)
+        self.assertEqual(parsed["data"]["usage"]["cache_read_input_tokens"], 2)
+
+    def test_message_stop(self):
+        """[DONE] → event: message_stop。"""
+        from transform_anthropic import create_anthropic_sse_stream
+        sse = 'data: [DONE]\n\n'
+        events = list(create_anthropic_sse_stream(_mock_upstream_stream(sse)))
+        self.assertEqual(len(events), 1)
+        parsed = _parse_sse_string(events[0])
+        self.assertEqual(parsed["event"], "message_stop")
+
+    def test_arguments_null_skip(self):
+        """tool_calls[i].function.arguments 为 null → 不发送 input_json_delta。"""
+        from transform_anthropic import create_anthropic_sse_stream
+        sse = (
+            'data: {"id":"c1","model":"m","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"fn"}}]}}]}\n\n'
+            'data: {"id":"c1","model":"m","choices":[{"delta":{"content":"","finish_reason":"stop"}]}\n\n'
+            'data: [DONE]\n\n'
+        )
+        events = list(create_anthropic_sse_stream(_mock_upstream_stream(sse)))
+        # 没有 arguments，所以不应该有 input_json_delta
+        input_json = [e for e in events if "input_json_delta" in e]
+        self.assertEqual(len(input_json), 0)
+
+    def test_finish_reason_mapping(self):
+        """finish_reason: 'stop' → stop_reason: 'end_turn'。"""
+        from transform_anthropic import create_anthropic_sse_stream
+        sse = (
+            'data: {"id":"c1","model":"m","choices":[{"delta":{"content":"hi"},"finish_reason":"length"}]}\n\n'
+            'data: [DONE]\n\n'
+        )
+        events = list(create_anthropic_sse_stream(_mock_upstream_stream(sse)))
+        deltas = [e for e in events if "message_delta" in e.split("\n")[0]]
+        parsed = _parse_sse_string(deltas[0])
+        self.assertEqual(parsed["data"]["delta"]["stop_reason"], "max_tokens")
 
 
 class TestChatToAnthropic(unittest.TestCase):

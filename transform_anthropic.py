@@ -1,6 +1,10 @@
 """Anthropic Messages API ↔ Chat Completions 转换模块。"""
 import json
 import logging
+from dataclasses import dataclass, field
+
+from sse_utils import _format_sse_event
+from transform_responses import _parse_sse_event, iter_sse_events
 
 logger = logging.getLogger(__name__)
 
@@ -273,3 +277,204 @@ def chat_to_anthropic(response: dict) -> dict:
         result["usage"]["cache_creation_input_tokens"] = usage["cache_creation_input_tokens"]
 
     return result
+
+
+# ─── Chat Completions SSE → Anthropic Messages SSE 流式转换 ───
+
+@dataclass
+class ToolBlockState:
+    """单个 tool_use content block 的缓冲状态。"""
+    id: str = ""
+    name: str = ""
+    pending_args: str = ""
+
+
+@dataclass
+class AnthropicStreamState:
+    message_id: str = ""
+    model: str = ""
+    content_index: int = 0
+    current_block_type: str = ""
+    tool_blocks: dict = field(default_factory=dict)  # int → ToolBlockState
+    finish_reason: str = ""
+    usage: dict = field(default_factory=dict)
+    message_start_sent: bool = False
+    open_blocks: set = field(default_factory=set)  # 未关闭的 content block 索引
+
+
+_STREAM_FINISH_MAP = {
+    "stop": "end_turn",
+    "length": "max_tokens",
+    "tool_calls": "tool_use",
+    "function_call": "tool_use",
+    "content_filter": "end_turn",
+}
+
+
+def _close_open_blocks(state: AnthropicStreamState) -> list:
+    """关闭所有未关闭的 content block，返回事件列表。"""
+    events = []
+    for idx in sorted(state.open_blocks):
+        events.append(_format_sse_event("content_block_stop", {"index": idx}))
+    state.open_blocks.clear()
+    return events
+
+
+def create_anthropic_sse_stream(upstream_response):
+    """读取上游 Chat Completions SSE 流，逐事件 yield Anthropic Messages 格式的 SSE 字符串。
+
+    upstream_response: 有 read(size) 方法的对象
+    """
+    state = AnthropicStreamState()
+
+    try:
+        for event in iter_sse_events(upstream_response):
+            if event["event"] == "[DONE]":
+                break
+
+            data = event.get("data", {})
+            if not data:
+                continue
+
+            # 捕获 model / id → 发送 message_start
+            if not state.message_id:
+                state.message_id = data.get("id", "")
+                state.model = data.get("model", "")
+                for event_str in _send_message_start(state):
+                    yield event_str
+
+            # 捕获 usage
+            if "usage" in data and data["usage"]:
+                state.usage = data["usage"]
+
+            # 捕获 finish_reason
+            choices = data.get("choices", [])
+            if choices:
+                choice = choices[0]
+                if choice.get("finish_reason"):
+                    state.finish_reason = choice["finish_reason"]
+
+                delta = choice.get("delta", {})
+                if delta:
+                    for event_str in _process_anthropic_delta(delta, state):
+                        yield event_str
+    except Exception as e:
+        # 流中断 → error 事件
+        error_data = {
+            "error": {
+                "type": "stream_error",
+                "message": f"Stream error: {e}",
+            },
+        }
+        yield _format_sse_event("error", error_data)
+        return
+
+    # 读完所有 chunk，发送 message_stop
+    yield _format_sse_event("message_stop", {})
+
+
+def _send_message_start(state: AnthropicStreamState) -> list:
+    """发送 message_start 事件（首次 chunk 含 id/model 时）。"""
+    if state.message_start_sent:
+        return []
+    state.message_start_sent = True
+    msg_start = {
+        "message": {
+            "id": state.message_id,
+            "model": state.model,
+            "role": "assistant",
+            "content": [],
+        },
+    }
+    return [_format_sse_event("message_start", msg_start)]
+
+
+def _process_anthropic_delta(delta: dict, state: AnthropicStreamState) -> list:
+    """处理单个 Chat delta，返回 Anthropic SSE 事件字符串列表。"""
+    events = []
+
+    # 发送 message_start
+    events.extend(_send_message_start(state))
+
+    # 推理 delta（双字段兼容：reasoning_content + reasoning）
+    for key in ("reasoning_content", "reasoning"):
+        if delta.get(key):
+            reasoning_text = delta[key]
+            if state.current_block_type != "thinking":
+                idx = state.content_index
+                events.append(_format_sse_event("content_block_start", {
+                    "index": idx,
+                    "content_block": {"type": "thinking", "thinking": ""},
+                }))
+                state.current_block_type = "thinking"
+                state.open_blocks.add(idx)
+            events.append(_format_sse_event("content_block_delta", {
+                "index": state.content_index,
+                "delta": {"type": "thinking_delta", "thinking": reasoning_text},
+            }))
+            break
+
+    # 文本 delta
+    content = delta.get("content", "")
+    if content:
+        if state.current_block_type != "text":
+            events.extend(_close_open_blocks(state))
+            idx = state.content_index
+            events.append(_format_sse_event("content_block_start", {
+                "index": idx,
+                "content_block": {"type": "text", "text": ""},
+            }))
+            state.current_block_type = "text"
+            state.open_blocks.add(idx)
+        events.append(_format_sse_event("content_block_delta", {
+            "index": state.content_index,
+            "delta": {"type": "text_delta", "text": content},
+        }))
+
+    # 工具调用 delta
+    tool_calls = delta.get("tool_calls")
+    if tool_calls:
+        for tc in tool_calls:
+            idx = tc.get("index", 0)
+            if idx not in state.tool_blocks:
+                state.tool_blocks[idx] = ToolBlockState()
+
+            ts = state.tool_blocks[idx]
+
+            # id 到达
+            tc_id = tc.get("id", "")
+            if tc_id and not ts.id:
+                ts.id = tc_id
+
+            # name 到达
+            tc_name = tc.get("function", {}).get("name", "")
+            if tc_name and not ts.name:
+                ts.name = tc_name
+
+            # arguments 到达
+            tc_args = tc.get("function", {}).get("arguments")
+            if tc_args:
+                ts.pending_args += tc_args
+
+    # finish_reason → message_delta
+    if state.finish_reason:
+        events.extend(_close_open_blocks(state))
+
+        stop_reason = _STREAM_FINISH_MAP.get(state.finish_reason, "end_turn")
+
+        delta_event = {
+            "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+        }
+        # 仅在 finish_reason 出现时携带 usage
+        if state.usage:
+            usage_out = {
+                "output_tokens": state.usage.get("completion_tokens", 0),
+            }
+            cached = state.usage.get("prompt_tokens_details", {}).get("cached_tokens")
+            if cached is not None:
+                usage_out["cache_read_input_tokens"] = cached
+            delta_event["usage"] = usage_out
+
+        events.append(_format_sse_event("message_delta", delta_event))
+
+    return events
