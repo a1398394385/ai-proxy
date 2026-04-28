@@ -293,6 +293,7 @@ class ToolBlockState:
     id: str = ""
     name: str = ""
     pending_args: str = ""
+    content_index: int = -1  # 分配后记录 index，用于后续 delta 发送
 
 
 @dataclass
@@ -457,10 +458,32 @@ def _process_anthropic_delta(delta: dict, state: AnthropicStreamState) -> list:
             if tc_name and not ts.name:
                 ts.name = tc_name
 
-            # arguments 到达
+            # arguments 到达 — 缓冲
             tc_args = tc.get("function", {}).get("arguments")
             if tc_args:
                 ts.pending_args += tc_args
+
+            # id/name 到齐了但还没发 content_block_start → 先发 start + 缓冲的参数
+            if ts.id and ts.name and ts.content_index < 0:
+                ts.content_index = state.content_index
+                events.append(_format_sse_event("content_block_start", {
+                    "index": ts.content_index,
+                    "content_block": {"type": "tool_use", "id": ts.id, "name": ts.name, "input": {}},
+                }))
+                state.open_blocks.add(ts.content_index)
+                # 发送已缓冲的参数片段
+                if ts.pending_args:
+                    events.append(_format_sse_event("content_block_delta", {
+                        "index": ts.content_index,
+                        "delta": {"type": "input_json_delta", "partial_json": ts.pending_args},
+                    }))
+                state.content_index += 1
+            elif ts.content_index >= 0 and tc_args:
+                # start 已发，后续 arguments 片段直接发 delta
+                events.append(_format_sse_event("content_block_delta", {
+                    "index": ts.content_index,
+                    "delta": {"type": "input_json_delta", "partial_json": tc_args},
+                }))
 
     # finish_reason → message_delta
     if state.finish_reason:
