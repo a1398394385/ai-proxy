@@ -344,7 +344,7 @@ def iter_sse_events(upstream_response):
     """
     buf = b""
     while True:
-        chunk = upstream_response.read(256)
+        chunk = upstream_response.read(4096)
         if not chunk:
             break
         buf += chunk

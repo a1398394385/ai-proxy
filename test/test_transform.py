@@ -1440,6 +1440,44 @@ class TestHandleToolCallDelta(_SSETestBase):
         self.assertEqual(names.index("read_file"), 1)
 
 
+class TestProxyErrorPathsDone(unittest.TestCase):
+    """验证三处错误路径各包含 data: [DONE]。"""
+
+    def _read_forward_streaming_source(self):
+        import pathlib
+        return pathlib.Path("/Users/xys/.hermes/fact-store-browser/proxy.py").read_text()
+
+    def test_non_200_error_path_has_done(self):
+        """上游非 200 错误路径在 completed 后补发 [DONE]。"""
+        src = self._read_forward_streaming_source()
+        # 找到非 200 分支代码段（"Upstream returned HTTP {resp.status}"附近）
+        idx = src.index("Upstream returned HTTP")
+        segment = src[idx:idx+1500]
+        self.assertIn("[DONE]", segment,
+            "非 200 错误路径缺少 data: [DONE] 终止标记")
+
+    def test_non_sse_content_type_error_path_has_done(self):
+        src = self._read_forward_streaming_source()
+        idx = src.index("non-SSE Content-Type")
+        segment = src[idx:idx+1500]
+        self.assertIn("[DONE]", segment,
+            "非 SSE Content-Type 错误路径缺少 data: [DONE]")
+
+    def test_exception_error_path_has_done(self):
+        src = self._read_forward_streaming_source()
+        idx = src.index("流式转发异常")
+        segment = src[idx:idx+2000]
+        self.assertIn("[DONE]", segment,
+            "流式转发异常路径缺少 data: [DONE]")
+
+    def test_iter_sse_buffer_size(self):
+        """iter_sse_events 读缓冲区应为 4096 字节。"""
+        import pathlib
+        src = pathlib.Path("/Users/xys/.hermes/fact-store-browser/transform_responses.py").read_text()
+        self.assertIn("read(4096)", src, "iter_sse_events 缓冲区应从 256 增大到 4096")
+        self.assertNotIn("read(256)", src, "旧 256 字节缓冲区应已删除")
+
+
 class TestChatToResponsesRefusalMerge(unittest.TestCase):
     def test_text_and_refusal_merged_into_single_message_item(self):
         """text + refusal 应合并进同一个 message output item 的 content 数组。"""
