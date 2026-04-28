@@ -50,10 +50,11 @@ def _test_upstream_connectivity(upstream: dict) -> dict:
     try:
         sock.connect((host, port))
         result["latency_ms"] = int((time.time() - start) * 1000)
-        sock.close()
     except (socket.timeout, OSError) as e:
         result["error"] = str(e)
         return result
+    finally:
+        sock.close()
 
     http_path = parsed.path.rstrip("/") + "/" if parsed.path else "/"
     start = time.time()

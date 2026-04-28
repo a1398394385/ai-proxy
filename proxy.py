@@ -15,7 +15,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from pathlib import Path
 
-from config_manager import ConfigCache
+from config_manager import ConfigCache, _parse_yaml, _yaml_scalar
 
 from transform import (
     generate_response_id,
@@ -36,80 +36,6 @@ from request_logger import (
 )
 
 from token_stats import record_token_stats
-
-# ─── 最小 YAML 解析器（仅支持 3 层嵌套，标量值）───────────────────────────
-
-def _parse_yaml(text: str) -> dict:
-    """极简 YAML 解析器，仅支持本项目 proxy_config.yaml 的结构。
-    嵌套 dict 最多 3 层，值为 str/int/float/bool。
-    """
-    result = {}
-    stack = [(result, -1)]  # (current_dict, indent_level)
-
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-
-        indent = len(line) - len(line.lstrip())
-
-        # 弹出比当前 indent 深的栈帧
-        while len(stack) > 1 and stack[-1][1] >= indent:
-            stack.pop()
-
-        current_dict = stack[-1][0]
-
-        if ":" in stripped:
-            key, _, val = stripped.partition(":")
-            key = key.strip().strip('"').strip("'")
-            val = val.strip()
-
-            if val == "" or val.startswith("#"):
-                # 嵌套 dict
-                new_dict = {}
-                current_dict[key] = new_dict
-                stack.append((new_dict, indent))
-            elif val.startswith("[") and val.endswith("]"):
-                # 内联列表
-                items = [
-                    _yaml_scalar(item.strip())
-                    for item in val[1:-1].split(",")
-                    if item.strip()
-                ]
-                current_dict[key] = items
-            else:
-                current_dict[key] = _yaml_scalar(val)
-
-    return result
-
-
-def _yaml_scalar(val: str):
-    """将 YAML 标量值转为 Python 类型。"""
-    if not val:
-        return ""
-    # 去除注释
-    if " #" in val:
-        val = val[: val.index(" #")].strip()
-    # 去除引号
-    if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
-        return val[1:-1]
-    # bool
-    if val.lower() in ("true", "yes"):
-        return True
-    if val.lower() in ("false", "no"):
-        return False
-    # int
-    try:
-        return int(val)
-    except ValueError:
-        pass
-    # float
-    try:
-        return float(val)
-    except ValueError:
-        pass
-    return val
-
 
 # ─── 配置加载 ───────────────────────────────────────────────────────
 
@@ -163,7 +89,7 @@ def resolve_model(model_name: str) -> dict:
 
     返回格式与旧版兼容：
     {"target": str, "multimodal": bool}
-    -> 新增 {"target": str, "multimodal": bool, "_upstream": dict}
+    -> 新增 {"target": str, "multimodal": bool, "upstream": dict}
     """
     cfg = config_cache.resolve(model_name)
     if cfg is None:
@@ -171,7 +97,7 @@ def resolve_model(model_name: str) -> dict:
     return {
         "target": cfg["target_name"],
         "multimodal": bool(cfg["multimodal"]),
-        "_upstream": cfg["upstream"],
+        "upstream": cfg["upstream"],
     }
 
 
@@ -335,7 +261,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         model_name = body.get("model", "*")
         model_cfg = resolve_model(model_name)
         target = model_cfg["target"]
-        upstream_cfg = model_cfg.get("_upstream")
+        upstream_cfg = model_cfg.get("upstream")
         if upstream_cfg is None:
             logging.error(f"模型 {model_name} 无法解析上游配置")
             self._send_json(500, {"error": {"type": "internal_error", "message": "模型路由不可用"}})
