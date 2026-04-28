@@ -71,9 +71,9 @@ def anthropic_to_chat(body: dict, model_cfg: dict) -> dict:
 
 
 def _is_o_series(model: str) -> bool:
-    """检测 o-series 模型（o + 数字开头）。"""
+    """检测 o-series 模型（o + 数字开头），大小写不敏感。"""
     import re
-    return bool(re.match(r'^o\d', model))
+    return bool(re.match(r'^o\d', model.lower()))
 
 
 def supports_reasoning_effort(model: str) -> bool:
@@ -91,6 +91,7 @@ def _convert_message_to_chat(role: str, content) -> list:
     """将单个 Anthropic 消息转换为 Chat messages（可能多条）。
 
     返回顺序：assistant/user 消息在前，tool 消息在后。
+    空 content list 时跳过（不产生空消息）。
     """
     if isinstance(content, str):
         return [{"role": role, "content": content}]
@@ -138,16 +139,17 @@ def _convert_message_to_chat(role: str, content) -> list:
                 })
             elif block_type in ("thinking", "redacted_thinking"):
                 pass  # 丢弃
+        # 空 content list 且无 tool_messages → 跳过（不产生空消息）
+        if not chat_content and not tool_calls and not tool_messages:
+            return []
         result = []
         if role == "assistant" and tool_calls:
-            msg = {"role": "assistant", "tool_calls": tool_calls}
+            msg: dict = {"role": "assistant", "tool_calls": tool_calls, "content": None}
             if chat_content:
                 msg["content"] = chat_content
             result.append(msg)
         elif chat_content:
             result.append({"role": role, "content": chat_content})
-        elif not tool_messages:
-            result.append({"role": role, "content": ""})
         result.extend(tool_messages)
         return result
     return [{"role": role, "content": str(content)}]
@@ -170,7 +172,11 @@ def _map_tool_choice(tc) -> str | dict:
 
 
 def _resolve_reasoning_effort(body: dict) -> str | None:
-    """将 Anthropic thinking/output_config 映射为 reasoning_effort 值。"""
+    """将 Anthropic thinking/output_config 映射为 reasoning_effort 值。
+
+    output_config.effort 非 Anthropic 官方字段，来自 Claude Code 内部扩展（Beta API），
+    优先级高于 thinking.type。
+    """
     output_config = body.get("output_config", {})
     if isinstance(output_config, dict) and "effort" in output_config:
         effort_map = {"low": "low", "medium": "medium", "high": "high", "max": "xhigh"}
@@ -468,6 +474,7 @@ def _process_anthropic_delta(delta: dict, state: AnthropicStreamState) -> list:
         # 仅在 finish_reason 出现时携带 usage
         if state.usage:
             usage_out = {
+                "input_tokens": state.usage.get("prompt_tokens", 0),
                 "output_tokens": state.usage.get("completion_tokens", 0),
             }
             cached = state.usage.get("prompt_tokens_details", {}).get("cached_tokens")
