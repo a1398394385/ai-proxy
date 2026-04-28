@@ -105,6 +105,156 @@ class TestResponseStore(unittest.TestCase):
         self.assertIsNotNone(store.get("r3"))
 
 
+class TestConversationChain(unittest.TestCase):
+    """验证 previous_response_id 多轮对话链核心逻辑（不启动真实代理）。"""
+
+    @staticmethod
+    def _make_mock_stream(chunks):
+        class MockStream:
+            def __init__(self):
+                self.data = b"".join(chunks)
+                self.pos = 0
+            def read(self, size):
+                chunk = self.data[self.pos:self.pos + size]
+                self.pos += size
+                return chunk
+        return MockStream()
+
+    def test_round1_stores_and_round2_can_inject(self):
+        """
+        轮次1: user→"Hi", assistant→"Hello" → 存入 store
+        轮次2: 从 store 取 conversation → 注入到新 messages → system 在首位、历史在中间、新 user 在末尾
+        """
+        import json
+        from transform_responses import create_codex_sse_stream
+        from response_store import ResponseStore
+
+        store = ResponseStore()
+
+        # 轮次 1
+        round1_chunks = [
+            b'data: {"id":"c1","model":"test","choices":[{"delta":{"content":"Hello"},"index":0}]}\n\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}\n\n',
+            b'data: [DONE]\n\n',
+        ]
+        round1_messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Hi"},
+        ]
+        events1 = list(create_codex_sse_stream(
+            self._make_mock_stream(round1_chunks),
+            request_messages=round1_messages,
+            response_store=store,
+        ))
+
+        # 从流事件提取 response_id
+        resp_id = None
+        for e in events1:
+            for line in e.split("\n"):
+                if line.startswith("data: "):
+                    try:
+                        data = json.loads(line[6:])
+                        if data.get("type") == "response.created":
+                            resp_id = data["response"]["id"]
+                    except json.JSONDecodeError:
+                        pass
+        self.assertIsNotNone(resp_id, "轮次 1 应生成 response_id")
+
+        # 验证 store 中有该 record
+        record = store.get(resp_id)
+        self.assertIsNotNone(record)
+        self.assertEqual(record.status, "completed")
+
+        # conversation 不含 system，含 user + assistant
+        conv_roles = [m["role"] for m in record.conversation]
+        self.assertNotIn("system", conv_roles, "conversation 不应含 system 消息")
+        self.assertIn("user", conv_roles)
+        self.assertIn("assistant", conv_roles)
+
+        # 轮次 2：模拟 _handle_responses() 中的注入逻辑
+        previous_conv = store.get_conversation(resp_id)
+        round2_messages = [
+            {"role": "system", "content": "You are helpful."},   # 新 system
+            {"role": "user", "content": "What?"},
+        ]
+        system_msgs = [m for m in round2_messages if m.get("role") == "system"]
+        non_system_msgs = [m for m in round2_messages if m.get("role") != "system"]
+        injected = system_msgs + previous_conv + non_system_msgs
+
+        # 顺序验证
+        self.assertEqual(injected[0]["role"], "system", "system 消息必须在首位")
+        self.assertEqual(injected[-1]["content"], "What?", "新 user 消息应在末尾")
+        # 历史 "Hi" 在中间
+        all_contents = [m.get("content") for m in injected]
+        self.assertIn("Hi", all_contents, "历史 user 消息应在中间")
+        # 消息角色顺序验证：system → user(历史) → assistant(历史) → user(新)
+        roles = [m["role"] for m in injected]
+        self.assertEqual(roles, ["system", "user", "assistant", "user"],
+                         f"消息顺序错误，实际: {roles}")
+        # assistant 消息不重复
+        assistant_count = sum(1 for r in roles if r == "assistant")
+        self.assertEqual(assistant_count, 1, "conversation 中 assistant 消息不应重复")
+
+    def test_pure_refusal_non_streaming_store_uses_empty_string(self):
+        """非流式路径：chat_to_responses 纯拒绝输出存入 store 后，content 为空字符串。"""
+        from transform import chat_to_responses, _output_items_to_messages
+        from response_store import ResponseStore, ResponseRecord
+
+        store = ResponseStore()
+        chat_resp = {
+            "id": "chatcmpl-refonly",
+            "model": "test",
+            "choices": [{
+                "message": {"content": None, "refusal": "I cannot help with that."},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+        }
+        responses_resp = chat_to_responses(chat_resp)
+        output = responses_resp.get("output", [])
+        assistant_msgs = _output_items_to_messages(output)
+
+        messages_for_conv = [{"role": "user", "content": "Bad request"}] + assistant_msgs
+        record = ResponseRecord(
+            response_id=responses_resp.get("id", "ref_test"),
+            model="test", output=output, conversation=messages_for_conv,
+            usage={}, status="completed", created_at=time.time(),
+            expires_at=time.time() + 3600,
+        )
+        store.put(record.response_id, record)
+
+        conv = store.get_conversation(record.response_id)
+        assistant_convs = [m for m in conv if m["role"] == "assistant"]
+        self.assertEqual(len(assistant_convs), 1)
+        self.assertIsNotNone(assistant_convs[0]["content"])
+        self.assertEqual(assistant_convs[0]["content"], "")
+
+    def test_pure_refusal_streaming_conversation_uses_empty_string(self):
+        """流式路径：纯拒绝响应存入 store 后，conversation 的 assistant content 为空字符串（不是 None）。"""
+        from transform_responses import create_codex_sse_stream
+        from response_store import ResponseStore
+
+        store = ResponseStore()
+        refusal_chunks = [
+            b'data: {"id":"c1","model":"test","choices":[{"delta":{"refusal":"I cannot help"},"index":0}]}\n\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}\n\n',
+            b'data: [DONE]\n\n',
+        ]
+        list(create_codex_sse_stream(
+            self._make_mock_stream(refusal_chunks),
+            request_messages=[{"role": "user", "content": "Do bad thing"}],
+            response_store=store,
+        ))
+
+        record = list(store._store.values())[0]
+        assistant_msgs = [m for m in record.conversation if m["role"] == "assistant"]
+        self.assertEqual(len(assistant_msgs), 1)
+        self.assertIsNotNone(assistant_msgs[0]["content"],
+                             "assistant content 不能为 None（上游会报 400）")
+        self.assertEqual(assistant_msgs[0]["content"], "",
+                         "纯拒绝时 content 应为空字符串")
+
+
 class TestStreamingStorePath(unittest.TestCase):
     @staticmethod
     def _make_mock_stream(chunks):
