@@ -34,6 +34,31 @@
 
 ---
 
+## Current Focus: Response Store Phase 2（2026-04-28）
+
+> 基于 `docs/superpowers/plans/2026-04-28-response-store-phase2.md` 实施计划。
+
+**Status: COMPLETE** — 全部 6 个 Task 完成，205 passed，待用户审阅。
+
+### Tasks
+
+- [x] Task 1: ResponseRecord + ResponseStore 实现
+- [x] Task 2: proxy_config.yaml + server 挂载
+- [x] Task 3: previous_response_id 注入
+- [x] Task 4: 非流式存储路径（_store_response 辅助函数）
+- [x] Task 5: 流式存储路径（create_codex_sse_stream 新参数）
+- [x] Task 6: 对话链集成测试 + 全量验收
+
+### Decisions Made
+
+| Decision | Rationale |
+|----------|-----------|
+| 懒导入 response_store | 避免 proxy.py → transform → response_store 循环依赖 |
+| is_responses_api 显式标记 | 防止 _handle_messages 不传参数时误触发存储 |
+| conversation 不含 system | 避免多轮拼接时上游收到多条 system 消息 |
+
+---
+
 # Plan Tracking: Anthropic Messages API 转换 实现进度跟踪
 
 > 基于 `docs/superpowers/plans/2026-04-27-anthropic-messages-conversion.md` 实施计划。
