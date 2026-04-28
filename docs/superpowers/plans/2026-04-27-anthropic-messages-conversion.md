@@ -654,11 +654,13 @@ def anthropic_to_chat(body: dict, model_cfg: dict) -> dict:
     # temperature, top_p, stop, stream
     # stop_sequences → stop: 数组直接透传（Chat API 同时接受 string/array），
     # 与 cc-switch transform.rs line 153 行为一致。
-    # 空数组 [] 也透传——Chat API 可接受但行为取决于上游实现。
-    for key in ("temperature", "top_p", "stop_sequences", "stream"):
+    # 空数组 [] 不传——避免上游 Chat API 拒绝空 stop 列表。
+    stops = body.get("stop_sequences")
+    if stops:
+        chat["stop"] = stops
+    for key in ("temperature", "top_p", "stream"):
         if key in body:
-            target_key = "stop" if key == "stop_sequences" else key
-            chat[target_key] = body[key]
+            chat[key] = body[key]
     
     if body.get("stream"):
         chat["stream_options"] = {"include_usage": True}
