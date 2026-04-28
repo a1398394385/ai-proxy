@@ -563,6 +563,124 @@ class CodexStreamConverter:
             "item": item,
         })]
 
+    def _handle_tool_call_delta(self, tc_delta: dict) -> list:
+        events = []
+        tc_index = tc_delta.get("index", 0)
+        if tc_index not in self.tool_blocks:
+            self.tool_blocks[tc_index] = ToolBlockState()
+        block = self.tool_blocks[tc_index]
+
+        tc_id = tc_delta.get("id", "")
+        if tc_id:
+            block.call_id = tc_id
+
+        func = tc_delta.get("function", {})
+        func_name = func.get("name", "")
+        if func_name:
+            block.name = func_name
+
+        func_args = func.get("arguments", "")
+        if func_args:
+            block.accumulated_args += func_args
+
+        # 延迟启动：call_id 和 name 都就绪时才发 output_item.added
+        if not block.started and block.call_id and block.name:
+            block.output_index = self.next_output_index
+            self.next_output_index += 1
+            block.item_id = f"fc_{uuid.uuid4().hex[:8]}"
+            block.started = True
+            events.append(self._format_sse("response.output_item.added", {
+                "output_index": block.output_index,
+                "item": {
+                    "type": "function_call",
+                    "id": block.item_id,
+                    "call_id": block.call_id,
+                    "name": block.name,
+                    "arguments": "",
+                    "status": "in_progress",
+                },
+            }))
+            # 一次性发出之前积累的 args
+            if block.accumulated_args:
+                events.append(self._format_sse("response.function_call_arguments.delta", {
+                    "output_index": block.output_index,
+                    "call_id": block.call_id,
+                    "delta": block.accumulated_args,
+                }))
+        elif block.started and func_args:
+            events.append(self._format_sse("response.function_call_arguments.delta", {
+                "output_index": block.output_index,
+                "call_id": block.call_id,
+                "delta": func_args,
+            }))
+        return events
+
+    def _close_tool_blocks(self) -> list:
+        events = []
+        # 已就绪的块按 tc_index 排序（保持与上游 tool_calls 数组顺序一致）
+        started = sorted(
+            [(idx, b) for idx, b in self.tool_blocks.items() if b.started],
+            key=lambda x: x[0],
+        )
+        unstarted = sorted(
+            [(idx, b) for idx, b in self.tool_blocks.items() if not b.started],
+            key=lambda x: x[0],
+        )
+
+        for tc_index, block in started:
+            events.extend(self._emit_tool_block_done(block))
+
+        for tc_index, block in unstarted:
+            # Fallback
+            block.call_id = block.call_id or f"tool_call_{tc_index}"
+            block.name = block.name or "unknown_tool"
+            block.output_index = self.next_output_index
+            self.next_output_index += 1
+            block.item_id = f"fc_{uuid.uuid4().hex[:8]}"
+            block.started = True
+            events.append(self._format_sse("response.output_item.added", {
+                "output_index": block.output_index,
+                "item": {
+                    "type": "function_call",
+                    "id": block.item_id,
+                    "call_id": block.call_id,
+                    "name": block.name,
+                    "arguments": "",
+                    "status": "in_progress",
+                },
+            }))
+            if block.accumulated_args:
+                events.append(self._format_sse("response.function_call_arguments.delta", {
+                    "output_index": block.output_index,
+                    "call_id": block.call_id,
+                    "delta": block.accumulated_args,
+                }))
+            events.extend(self._emit_tool_block_done(block))
+
+        return events
+
+    def _emit_tool_block_done(self, block: "ToolBlockState") -> list:
+        item = {
+            "type": "function_call",
+            "id": block.item_id,
+            "call_id": block.call_id,
+            "name": block.name,
+            "arguments": block.accumulated_args,
+            "status": "completed",
+        }
+        self.output_items.append((block.output_index, item))
+        return [
+            self._format_sse("response.function_call_arguments.done", {
+                "output_index": block.output_index,
+                "call_id": block.call_id,
+                "arguments": block.accumulated_args,
+            }),
+            self._format_sse("response.output_item.done", {
+                "output_index": block.output_index,
+                "item": item,
+            }),
+        ]
+
     def _handle_reasoning_delta(self, reasoning: str) -> list:
         events = []
         if not self.reasoning_opened:

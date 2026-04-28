@@ -1205,6 +1205,119 @@ class TestHandleReasoningDelta(_SSETestBase):
         self.assertEqual(item["summary"][0]["text"], "deep thought")
 
 
+class TestHandleToolCallDelta(_SSETestBase):
+    def _make_converter(self):
+        from transform import CodexStreamConverter
+        c = CodexStreamConverter()
+        c.response_id = "resp-test"
+        c.model = "test"
+        return c
+
+    def test_delayed_start_fires_after_id_and_name_ready(self):
+        c = self._make_converter()
+        # First delta: has id but no name yet
+        result1 = c._handle_tool_call_delta({
+            "index": 0, "id": "call_abc", "type": "function",
+            "function": {"name": "", "arguments": ""},
+        })
+        events1 = self._parse_events(result1)
+        self.assertFalse(any(e[0] == "response.output_item.added" for e in events1),
+                         "id 没有 name 时不应触发 output_item.added")
+        # Second delta: name arrives
+        result2 = c._handle_tool_call_delta({
+            "index": 0,
+            "function": {"name": "bash", "arguments": '{"cmd":'},
+        })
+        events2 = self._parse_events(result2)
+        self.assertTrue(any(e[0] == "response.output_item.added" for e in events2),
+                        "id+name 都就绪时应触发 output_item.added")
+
+    def test_output_item_added_structure_for_tool(self):
+        c = self._make_converter()
+        result = c._handle_tool_call_delta({
+            "index": 0, "id": "call_abc", "type": "function",
+            "function": {"name": "bash", "arguments": ""},
+        })
+        events = self._parse_events(result)
+        added = next(e for e in events if e[0] == "response.output_item.added")
+        item = added[1]["item"]
+        self.assertEqual(item["type"], "function_call")
+        self.assertEqual(item["call_id"], "call_abc")
+        self.assertEqual(item["name"], "bash")
+        self.assertEqual(item["arguments"], "")
+        self.assertEqual(item["status"], "in_progress")
+
+    def test_accumulated_args_flushed_on_start(self):
+        """延迟启动：启动前积累的 args 在 output_item.added 后一次性通过 delta 发出。"""
+        c = self._make_converter()
+        # args arrive before name
+        c._handle_tool_call_delta({"index": 0, "id": "call_abc", "function": {"name": "", "arguments": '{"a":'}})
+        c._handle_tool_call_delta({"index": 0, "function": {"name": "", "arguments": '"b"}'}})
+        # now name arrives
+        result = c._handle_tool_call_delta({"index": 0, "function": {"name": "bash", "arguments": ""}})
+        events = self._parse_events(result)
+        # Should have output_item.added and then function_call_arguments.delta with accumulated args
+        types = [e[0] for e in events]
+        self.assertIn("response.output_item.added", types)
+        self.assertIn("response.function_call_arguments.delta", types)
+        delta_event = next(e for e in events if e[0] == "response.function_call_arguments.delta")
+        self.assertEqual(delta_event[1]["delta"], '{"a":"b"}')
+
+    def test_close_tool_blocks_emits_done_events(self):
+        c = self._make_converter()
+        c._handle_tool_call_delta({
+            "index": 0, "id": "call_abc", "type": "function",
+            "function": {"name": "bash", "arguments": '{"cmd":"ls"}'},
+        })
+        result = c._close_tool_blocks()
+        events = self._parse_events(result)
+        types = [e[0] for e in events]
+        self.assertIn("response.function_call_arguments.done", types)
+        self.assertIn("response.output_item.done", types)
+
+    def test_close_tool_blocks_item_done_status_completed(self):
+        c = self._make_converter()
+        c._handle_tool_call_delta({
+            "index": 0, "id": "call_abc", "type": "function",
+            "function": {"name": "bash", "arguments": '{}'},
+        })
+        result = c._close_tool_blocks()
+        events = self._parse_events(result)
+        item_done = next(e for e in events if e[0] == "response.output_item.done")
+        self.assertEqual(item_done[1]["item"]["status"], "completed")
+
+    def test_close_tool_blocks_fallback_for_unstarted_block(self):
+        """强制启动：call_id/name 从未就绪时使用 fallback。"""
+        c = self._make_converter()
+        c._handle_tool_call_delta({"index": 0, "function": {"name": "", "arguments": '{}'}})
+        result = c._close_tool_blocks()
+        events = self._parse_events(result)
+        added = next(e for e in events if e[0] == "response.output_item.added")
+        item = added[1]["item"]
+        self.assertEqual(item["call_id"], "tool_call_0")
+        self.assertEqual(item["name"], "unknown_tool")
+
+    def test_multiple_tools_ordered_by_index(self):
+        c = self._make_converter()
+        # index=1 arrives first
+        c._handle_tool_call_delta({
+            "index": 1, "id": "call_2", "type": "function",
+            "function": {"name": "read_file", "arguments": "{}"},
+        })
+        # index=0 arrives second
+        c._handle_tool_call_delta({
+            "index": 0, "id": "call_1", "type": "function",
+            "function": {"name": "bash", "arguments": '{"cmd":"ls"}'},
+        })
+        result = c._close_tool_blocks()
+        events = self._parse_events(result)
+        item_dones = [e for e in events if e[0] == "response.output_item.done"]
+        names = [e[1]["item"]["name"] for e in item_dones]
+        # bash (index=0) should come before read_file (index=1)
+        self.assertEqual(names.index("bash"), 0)
+        self.assertEqual(names.index("read_file"), 1)
+
+
 class TestHandleRefusalDelta(_SSETestBase):
     def _make_converter(self):
         from transform import CodexStreamConverter
