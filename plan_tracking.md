@@ -19,13 +19,13 @@ Task 0: 准备 plan_tracking.md + 验证基线（130 passed）
 - **Status:** done
 
 ### Task 1: 创建 sse_utils.py — 提取 _format_sse_event
-- [ ] Step 1: 创建 test/test_sse_utils.py（TDD: 验证 _format_sse_event 行为）
-- [ ] Step 2: 验证测试失败（import 不到的 sse_utils）
-- [ ] Step 3: 创建 sse_utils.py + 从 transform.py 移动 _format_sse_event
-- [ ] Step 4: 更新 transform.py 从 sse_utils import
-- [ ] Step 5: 运行全量测试确认（139 passed）
-- [ ] Step 6: Commit
-- **Status:** pending
+- [x] Step 1: 创建 test/test_sse_utils.py（TDD: 验证 _format_sse_event 行为）
+- [x] Step 2: 验证测试失败（import 不到的 sse_utils）
+- [x] Step 3: 创建 sse_utils.py + 从 transform.py 移动 _format_sse_event
+- [x] Step 4: 更新 transform.py 从 sse_utils import
+- [x] Step 5: 运行全量测试确认（139 passed）
+- [x] Step 6: Commit
+- **Status:** done
 
 ### Task 2: 创建 transform_responses.py — 提取 Responses 转换逻辑
 - [ ] Step 1: 从 transform.py 复制全部内容到 transform_responses.py
