@@ -256,23 +256,20 @@ def chat_to_responses(response: dict) -> dict:
 
     output = []
 
-    # 文本内容
+    # 文本和拒绝内容合并到同一 message item
     content = message.get("content")
-    if content:
-        output.append({
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "output_text", "text": content}],
-            "status": FINISH_REASON_MAP.get(finish_reason, "completed"),
-        })
-
-    # 拒绝内容
     refusal = message.get("refusal")
-    if refusal:
+    if content or refusal:
+        msg_content = []
+        if content:
+            msg_content.append({"type": "output_text", "text": content, "annotations": []})
+        if refusal:
+            msg_content.append({"type": "refusal", "refusal": refusal})
         output.append({
             "type": "message",
+            "id": f"msg_{uuid.uuid4().hex[:8]}",
             "role": "assistant",
-            "content": [{"type": "refusal", "refusal": refusal}],
+            "content": msg_content,
             "status": FINISH_REASON_MAP.get(finish_reason, "completed"),
         })
 

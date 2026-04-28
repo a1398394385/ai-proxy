@@ -1440,6 +1440,60 @@ class TestHandleToolCallDelta(_SSETestBase):
         self.assertEqual(names.index("read_file"), 1)
 
 
+class TestChatToResponsesRefusalMerge(unittest.TestCase):
+    def test_text_and_refusal_merged_into_single_message_item(self):
+        """text + refusal 应合并进同一个 message output item 的 content 数组。"""
+        from transform import chat_to_responses
+        chat_resp = {
+            "id": "chatcmpl-merge",
+            "model": "test",
+            "choices": [{
+                "message": {
+                    "content": "I can help with some things.",
+                    "refusal": "But not with this.",
+                },
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        result = chat_to_responses(chat_resp)
+        msg_items = [o for o in result["output"] if o["type"] == "message"]
+        self.assertEqual(len(msg_items), 1, "text+refusal 必须合并为单个 message item")
+        content = msg_items[0]["content"]
+        types = [b["type"] for b in content]
+        self.assertIn("output_text", types)
+        self.assertIn("refusal", types)
+
+    def test_refusal_only_creates_single_message_item(self):
+        from transform import chat_to_responses
+        chat_resp = {
+            "id": "chatcmpl-refonly",
+            "model": "test",
+            "choices": [{
+                "message": {"content": None, "refusal": "I cannot help with that."},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        result = chat_to_responses(chat_resp)
+        msg_items = [o for o in result["output"] if o["type"] == "message"]
+        self.assertEqual(len(msg_items), 1)
+        self.assertEqual(msg_items[0]["content"][0]["type"], "refusal")
+
+    def test_text_only_still_works(self):
+        from transform import chat_to_responses
+        chat_resp = {
+            "id": "chatcmpl-txtonly",
+            "model": "test",
+            "choices": [{"message": {"content": "Hello"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        result = chat_to_responses(chat_resp)
+        msg_items = [o for o in result["output"] if o["type"] == "message"]
+        self.assertEqual(len(msg_items), 1)
+        self.assertEqual(msg_items[0]["content"][0]["text"], "Hello")
+
+
 class TestHandleRefusalDelta(_SSETestBase):
     def _make_converter(self):
         from transform import CodexStreamConverter
