@@ -117,6 +117,9 @@ def _map_message(item: dict, model_cfg: dict) -> dict:
             part_type = part.get("type")
             if part_type == "input_text":
                 mapped.append({"type": "text", "text": part.get("text", "")})
+            elif part_type == "output_text":
+                # assistant 消息的标准 content 类型
+                mapped.append({"type": "text", "text": part.get("text", "")})
             elif part_type == "input_image":
                 mapped.append(_map_input_image(part, model_cfg))
             elif part_type == "input_file":
@@ -151,7 +154,7 @@ def _map_input_file(part: dict) -> dict:
 
 def _map_function_call(item: dict) -> dict:
     """映射 function_call → assistant + tool_calls。"""
-    call_id = item.get("id", "")
+    call_id = item.get("call_id") or item.get("id", "")
     name = item.get("name", "")
     arguments = item.get("arguments", "")
     if isinstance(arguments, dict):
@@ -170,7 +173,7 @@ def _map_function_call_output(item: dict) -> dict:
     """映射 function_call_output → tool message。"""
     return {
         "role": "tool",
-        "tool_call_id": item.get("tool_call_id", ""),
+        "tool_call_id": item.get("call_id") or item.get("tool_call_id", ""),
         "content": item.get("output", ""),
     }
 
@@ -179,7 +182,7 @@ def _map_computer_call_output(item: dict) -> dict:
     """映射 computer_call_output → tool message。"""
     return {
         "role": "tool",
-        "tool_call_id": item.get("tool_call_id", ""),
+        "tool_call_id": item.get("call_id") or item.get("tool_call_id", ""),
         "content": item.get("output", ""),
     }
 
@@ -353,6 +356,17 @@ def iter_sse_events(upstream_response):
             event = _parse_sse_event(raw.decode("utf-8", errors="replace"))
             if event:
                 yield event
+
+
+@dataclass
+class ToolBlockState:
+    """工具调用块的中间状态，每个 tool_calls index 对应一个实例。"""
+    output_index: int = -1
+    call_id: str = ""
+    name: str = ""
+    accumulated_args: str = ""
+    started: bool = False
+    item_id: str = ""          # added/done 必须复用同一 ID
 
 
 @dataclass

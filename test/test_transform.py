@@ -480,6 +480,41 @@ class TestResponsesToChatAllInputTypes(unittest.TestCase):
         content = result["messages"][0]["content"]
         self.assertEqual(content[0]["text"], "[file: doc.pdf]")
 
+    def test_output_text_content(self):
+        """验证 assistant 消息的 output_text content 类型被正确映射为文本。"""
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Hello from assistant"}],
+            }],
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        content = result["messages"][0]["content"]
+        self.assertEqual(content[0]["type"], "text")
+        self.assertEqual(content[0]["text"], "Hello from assistant")
+
+    def test_mixed_input_and_output_text(self):
+        """验证 user 的 input_text 和 assistant 的 output_text 混用场景。"""
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hi"}]},
+                {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Hello!"}]},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "How are you?"}]},
+            ],
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        self.assertEqual(len(result["messages"]), 3)
+        self.assertEqual(result["messages"][0]["content"][0]["text"], "Hi")
+        self.assertEqual(result["messages"][1]["content"][0]["text"], "Hello!")
+        self.assertEqual(result["messages"][2]["content"][0]["text"], "How are you?")
+
     def test_reasoning_dropped(self):
         from transform import responses_to_chat
         body = {
@@ -705,6 +740,60 @@ class TestAdvancedFeatures(unittest.TestCase):
         self.assertEqual(len(result["messages"]), 1)
         self.assertEqual(result["messages"][0]["role"], "tool")
         self.assertEqual(result["messages"][0]["content"], '{"screenshot": "base64..."}')
+
+    def test_function_call_uses_call_id(self):
+        """验证 function_call 使用 call_id 字段（Codex 实际发送格式）。"""
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{
+                "type": "function_call",
+                "call_id": "toolu_abc123",
+                "name": "exec_command",
+                "arguments": '{"cmd": "ls"}',
+            }],
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        msg = result["messages"][0]
+        self.assertEqual(msg["role"], "assistant")
+        self.assertEqual(msg["tool_calls"][0]["id"], "toolu_abc123")
+        self.assertEqual(msg["tool_calls"][0]["function"]["name"], "exec_command")
+
+    def test_function_call_output_uses_call_id(self):
+        """验证 function_call_output 使用 call_id 字段（Codex 实际发送格式）。"""
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{
+                "type": "function_call_output",
+                "call_id": "toolu_abc123",
+                "output": "result",
+            }],
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        msg = result["messages"][0]
+        self.assertEqual(msg["role"], "tool")
+        self.assertEqual(msg["tool_call_id"], "toolu_abc123")
+        self.assertEqual(msg["content"], "result")
+
+    def test_computer_call_output_uses_call_id(self):
+        """验证 computer_call_output 也支持 call_id 字段。"""
+        from transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{
+                "type": "computer_call_output",
+                "call_id": "call_comp",
+                "output": '{"action": "done"}',
+            }],
+        }
+        model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        msg = result["messages"][0]
+        self.assertEqual(msg["role"], "tool")
+        self.assertEqual(msg["tool_call_id"], "call_comp")
 
     def test_tool_name_namespace_preserved(self):
         """验证 tool name 中的 . 命名空间保留。"""
@@ -1026,6 +1115,30 @@ class TestSSEEventFormatIntegration(unittest.TestCase):
         self.assertIn("response", data)
         self.assertIn("output", data["response"])
         self.assertIn("usage", data["response"])
+
+
+class TestToolBlockState(unittest.TestCase):
+    def test_default_fields(self):
+        from transform import ToolBlockState
+        b = ToolBlockState()
+        self.assertEqual(b.output_index, -1)
+        self.assertEqual(b.call_id, "")
+        self.assertEqual(b.name, "")
+        self.assertEqual(b.accumulated_args, "")
+        self.assertFalse(b.started)
+        self.assertEqual(b.item_id, "")
+
+    def test_mutation(self):
+        from transform import ToolBlockState
+        b = ToolBlockState()
+        b.call_id = "call_abc"
+        b.name = "bash"
+        b.accumulated_args = '{"cmd":"ls"}'
+        b.started = True
+        b.item_id = "fc_00000001"
+        b.output_index = 2
+        self.assertEqual(b.call_id, "call_abc")
+        self.assertEqual(b.output_index, 2)
 
 
 if __name__ == "__main__":
