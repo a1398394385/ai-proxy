@@ -852,7 +852,7 @@ git add test/test_transform_anthropic.py transform_anthropic.py && git commit -m
 | 11 | `test_tool_result_conversion` | `tool_result` → 独立 `{role:"tool", tool_call_id, content}` | 已在 Step 3 包含 |
 | 12 | `test_tool_result_array_content` | tool_result content 为数组 → `json.dumps` | 已在 Step 3 包含 |
 | 13 | `test_tool_result_null_content` | tool_result content 为 null → `content: ""` | 边界防护 |
-| 14 | `test_tool_result_complex_content` | content 含 image 块 → 取第一个 text 块 | 降级策略 |
+| 14 | `test_tool_result_complex_content` | content 含 image 块等非文本 → 取第一个 `type:"text"` 块的 `text` 字段作为 content 值 | 降级策略：遍历数组，取首个 text 块文本 |
 | 15 | `test_thinking_discarded` | 消息中的 `thinking` block → 不出现在 Chat messages 中 | `pass` 即正确 |
 | 16 | `test_o_series_max_completion_tokens` | o3 模型 → `max_completion_tokens`，普通模型 → `max_tokens` | `_is_o_series` 判断 |
 | 17 | `test_tool_definitions_conversion` | Anthropic tools → `{type:"function", function:{name,description,parameters}}` | `_map_anthropic_tools`（已在 Step 3 包含） |
@@ -900,7 +900,7 @@ git add test/test_transform_anthropic.py transform_anthropic.py plan_tracking.md
 
 **目标**: 实现 OpenAI Chat Completions → Anthropic Messages 非流式响应转换。
 
-- [ ] **Step 1-10: TDD 循环，每个测试一个 commit**
+- [ ] **Step 1-11: TDD 循环，commit 频率：每 2-3 个测试一个 commit**
 
 | # | 测试名 | Chat 响应输入 | 预期 Anthropic 输出 |
 |---|--------|-------------|-------------------|
@@ -967,7 +967,7 @@ events = list(create_anthropic_sse_stream(upstream))
 
 | # | 测试名 | Mock 上游事件 | 预期 Anthropic 事件序列 |
 |---|--------|-------------|------------------------|
-| 1 | `test_message_start` | 首个 chunk `{id, model, choices:[]}` | `event: message_start` + message 含 id/model/role |
+| 1 | `test_message_start` | 首个 chunk `{id, model, usage: {...}, choices:[]}` | `event: message_start` + message 含 id/model/role/usage（与 cc-switch streaming.rs line 188-210 一致） |
 | 2 | `test_text_stream` | `delta.content` 多次出现 | `content_block_start(text)` + `content_block_delta(text_delta)` × N + `content_block_stop` |
 | 3 | `test_thinking_stream_reasoning_content` | `delta.reasoning_content` 出现 | `content_block_start(thinking)` + `content_block_delta(thinking_delta)` + `content_block_stop` |
 | 4 | `test_thinking_stream_reasoning` | `delta.reasoning` 出现 | 同上（双字段兼容） |
@@ -992,7 +992,7 @@ def mock_sse_stream(events):
     yield {"event": "[DONE]", "data": None}
 ```
 
-每个测试写完后实现，commit 频率：每 2-3 个测试一个 commit。
+每个测试写完后实现，commit 频率：**每 2-3 个测试一个 commit**（与 Task 5、Task 6 保持一致）。
 
 - [ ] **Step 15: 运行全量测试**
 
