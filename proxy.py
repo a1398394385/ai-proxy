@@ -345,10 +345,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     logging.warning(f"previous_response_id={prev_id!r} 不存在或已过期，忽略历史")
 
         # 转发到上游（传入 request_id, model_name, target, request_ts）
+        store_enabled = body.get("store", True)
         if is_stream:
-            self._forward_streaming(chat_body, model_cfg, request_id, model_name, target, request_ts)
+            self._forward_streaming(chat_body, model_cfg, request_id, model_name, target, request_ts,
+                                    store_enabled=store_enabled)
         else:
-            self._forward_non_streaming(chat_body, request_id, model_name, target, request_ts)
+            self._forward_non_streaming(chat_body, request_id, model_name, target, request_ts,
+                                        store_enabled=store_enabled, is_responses_api=True)
 
     def _handle_messages(self):
         """核心：Anthropic Messages → Chat → Anthropic Messages 转换。"""
@@ -397,10 +400,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._forward_non_streaming(chat_body, request_id, model_name, target, request_ts,
                                         response_converter=chat_to_anthropic)
 
-    def _forward_non_streaming(self, chat_body: dict, request_id: str, model: str, target: str, request_ts: str, response_converter=None):
+    def _forward_non_streaming(self, chat_body: dict, request_id: str, model: str, target: str, request_ts: str, response_converter=None, store_enabled: bool = True, is_responses_api: bool = False):
         """非流式：转发到上游，转换响应，返回。
 
         response_converter: callable, chat_response -> format_response
+        is_responses_api: True 时在 response_converter() 后存入 store（防止 _handle_messages 误触发）
                            默认 chat_to_responses（与当前行为一致）
 
         超时处理：
@@ -488,6 +492,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         logger.log_converted_response(request_id, model, target, {"error": str(e)})
                     self._send_json(500, {"error": {"type": "internal_error", "message": str(e)}})
                     return
+
+                # 存储 response（仅当 store_enabled=True 且 is_responses_api=True 时）
+                # 使用 is_responses_api 显式标记（而非根据 response_converter 类型推断），
+                # 防止 _handle_messages（Anthropic 路径）不传参数时误触发存储
+                if store_enabled and is_responses_api:
+                    from transform_responses import _output_items_to_messages as _oitm
+                    assistant_msgs = _oitm(responses_response.get("output", []))
+                    messages_for_conv = [
+                        m for m in chat_body.get("messages", []) if m.get("role") != "system"
+                    ] + assistant_msgs
+                    _store_response(self.server, responses_response, messages_for_conv)
 
                 self._send_json(200, responses_response)
                 return
@@ -745,6 +760,34 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         """重定向到 logger。"""
         logging.info("%s - - [%s] %s" % (self.client_address[0], self.log_date_time_string(), format % args))
+
+
+# ─── 存储辅助 ──────────────────────────────────────────────────────
+
+def _store_response(server, responses_response: dict, messages_for_conv: list):
+    """将 responses_response 存入 server.response_store（如已挂载）。
+
+    messages_for_conv: 已包含完整对话历史的消息列表（调用方负责构建，含 assistant 输出；
+                       不包含 system，避免多轮时重复叠加）。
+    """
+    # 懒导入 response_store 类（避免 proxy.py 模块级导入时的循环依赖，proxy.py
+    # 导入 transform，transform 导入 response_store，response_store 不导入 proxy.py）
+    response_store = getattr(server, "response_store", None)
+    if response_store is None:
+        return
+    from response_store import ResponseRecord as _RR
+    output = responses_response.get("output", [])
+    record = _RR(
+        response_id=responses_response.get("id", ""),
+        model=responses_response.get("model", ""),
+        output=output,
+        conversation=messages_for_conv,
+        usage=responses_response.get("usage", {}),
+        status=responses_response.get("status", "completed"),
+        created_at=time.time(),
+        expires_at=time.time() + response_store.ttl_seconds,
+    )
+    response_store.put(record.response_id, record)
 
 
 # ─── 主入口 ────────────────────────────────────────────────────────

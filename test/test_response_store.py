@@ -105,6 +105,27 @@ class TestResponseStore(unittest.TestCase):
         self.assertIsNotNone(store.get("r3"))
 
 
+class TestNonStreamingStorePath(unittest.TestCase):
+    def _get_non_streaming_body(self):
+        import pathlib
+        src = (pathlib.Path(__file__).parent.parent / "proxy.py").read_text()
+        start = src.index("def _forward_non_streaming(")
+        end = src.index("\n    def _forward_streaming(", start)
+        return src[start:end]
+
+    def test_stores_response_after_conversion(self):
+        body = self._get_non_streaming_body()
+        self.assertIn("_store_response(", body,
+                      "_forward_non_streaming 应调用 _store_response 存储")
+
+    def test_store_response_helper_exists(self):
+        import pathlib
+        src = (pathlib.Path(__file__).parent.parent / "proxy.py").read_text()
+        self.assertIn("def _store_response(", src,
+                      "proxy.py 应有 _store_response 辅助函数")
+        self.assertIn("_output_items_to_messages", src)
+
+
 class TestPreviousResponseIdInjection(unittest.TestCase):
     def _get_handle_responses_body(self):
         import pathlib
