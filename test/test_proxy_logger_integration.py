@@ -246,6 +246,72 @@ class TestConversionException(unittest.TestCase):
         self.assertIn("error", json.loads(cr["data"]))
 
 
+class TestMessagesIntegration(unittest.TestCase):
+    """POST /v1/messages — Anthropic Messages 路径集成测试。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmpdir.name) / "test.db"
+        request_logger._logger = RequestLogger(self.db_path)
+        self._orig_token_db = token_stats.DB_PATH
+        token_stats.DB_PATH = self.db_path
+        self.mod = _load_proxy()
+        _configure(self.mod)
+
+    def tearDown(self):
+        token_stats.DB_PATH = self._orig_token_db
+        request_logger._logger = None
+        self.tmpdir.cleanup()
+
+    def test_non_streaming_messages_path(self):
+        """POST /v1/messages 非流式路径 — Anthropic request → Chat → Anthropic response。"""
+        chat_resp = {
+            "id": "chatcmpl-test123",
+            "model": "qwen3.6-plus",
+            "choices": [{"message": {"content": "Hello"}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150,
+                "prompt_tokens_details": {"cached_tokens": 20},
+            },
+        }
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps(chat_resp).encode()
+        mock_conn = MagicMock()
+        mock_conn.getresponse.return_value = mock_resp
+        mock_conn.sock = MagicMock()
+
+        with patch("http.client.HTTPConnection", return_value=mock_conn):
+            body = json.dumps({
+                "model": "claude-sonnet-4-6",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "max_tokens": 100,
+            }).encode()
+            handler, sent = _make_handler(self.mod, body)
+            self.mod.ProxyHandler._handle_messages(handler)
+
+        stages = [r["stage"] for r in _query_debug_log(self.db_path)]
+        self.assertIn("raw_request", stages)
+        self.assertIn("converted_request", stages)
+        self.assertIn("upstream_response", stages)
+        self.assertIn("converted_response", stages)
+
+        # 验证返回 Anthropic 格式
+        self.assertEqual(sent["status"], 200)
+        self.assertEqual(sent["data"]["type"], "message")
+        self.assertEqual(sent["data"]["role"], "assistant")
+        self.assertEqual(sent["data"]["stop_reason"], "end_turn")
+        self.assertEqual(sent["data"]["content"], [{"type": "text", "text": "Hello"}])
+
+    def test_messages_json_parse_failure(self):
+        """JSON 解析失败 → 400。"""
+        body = b"not valid json"
+        handler, sent = _make_handler(self.mod, body)
+        handler.path = "/v1/messages"
+        self.mod.ProxyHandler._handle_messages(handler)
+        self.assertEqual(sent["status"], 400)
+
+
 class TestStreamingFlow(unittest.TestCase):
     """流式 SSE 场景：验证 _forward_streaming 路径的日志记录。"""
 

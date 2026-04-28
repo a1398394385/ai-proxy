@@ -20,6 +20,9 @@ from transform import (
     responses_to_chat,
     chat_to_responses,
     create_codex_sse_stream,
+    anthropic_to_chat,
+    chat_to_anthropic,
+    create_anthropic_sse_stream,
     _format_sse_event,
 )
 
@@ -269,6 +272,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path in ("/v1/responses", "/v1/responses/compact"):
             self._handle_responses()
+        elif self.path == "/v1/messages":
+            self._handle_messages()
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -330,6 +335,53 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._forward_streaming(chat_body, model_cfg, request_id, model_name, target, request_ts)
         else:
             self._forward_non_streaming(chat_body, request_id, model_name, target, request_ts)
+
+    def _handle_messages(self):
+        """核心：Anthropic Messages → Chat → Anthropic Messages 转换。"""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body_raw = self.rfile.read(content_length)
+        request_id = _generate_request_id()
+        request_ts = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        try:
+            body = json.loads(body_raw)
+        except json.JSONDecodeError as e:
+            logging.error(f"JSON 解析失败: {e}")
+            self._send_json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
+            return
+
+        model_name = body.get("model", "*")
+        model_cfg = resolve_model(model_name)
+        target = model_cfg["target"]
+        is_stream = body.get("stream", False)
+
+        logging.info(f"请求[/v1/messages]: model={model_name}, stream={is_stream}, target={target}")
+
+        logger = get_logger()
+        if logger:
+            logger.log_raw_request(request_id, model_name, target, body)
+
+        # 请求转换
+        try:
+            chat_body = anthropic_to_chat(body, model_cfg)
+        except Exception as e:
+            logging.exception("anthropic_to_chat 转换失败")
+            if logger:
+                logger.log_converted_request(request_id, model_name, target, {"error": str(e)})
+            self._send_json(500, {"error": {"type": "internal_error", "message": str(e)}})
+            return
+
+        if logger:
+            logger.log_converted_request(request_id, model_name, target, chat_body)
+
+        # 转发（response_converter 始终为 chat_to_anthropic）
+        if is_stream:
+            self._forward_streaming(chat_body, model_cfg, request_id, model_name, target, request_ts,
+                                    response_converter=chat_to_anthropic,
+                                    sse_stream_factory=create_anthropic_sse_stream)
+        else:
+            self._forward_non_streaming(chat_body, request_id, model_name, target, request_ts,
+                                        response_converter=chat_to_anthropic)
 
     def _forward_non_streaming(self, chat_body: dict, request_id: str, model: str, target: str, request_ts: str, response_converter=None):
         """非流式：转发到上游，转换响应，返回。

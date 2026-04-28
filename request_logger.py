@@ -185,7 +185,10 @@ def _generate_request_id() -> str:
 
 
 def _extract_agent(user_agent: str) -> str:
-    if "codex" in user_agent.lower():
+    ua_lower = user_agent.lower()
+    if "claude" in ua_lower:
+        return "claude"
+    if "codex" in ua_lower:
         return "codex"
     return "unknown"
 

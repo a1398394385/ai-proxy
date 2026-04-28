@@ -34,5 +34,5 @@ from transform_responses import (  # noqa: F401 — re-export
     _map_response_format,
 )
 
-# 以下在 Task 4-6 中逐步激活：
-# from transform_anthropic import anthropic_to_chat, chat_to_anthropic, create_anthropic_sse_stream  # noqa: F401
+# Task 4-6 完成，激活 Anthropic re-export：
+from transform_anthropic import anthropic_to_chat, chat_to_anthropic, create_anthropic_sse_stream  # noqa: F401
