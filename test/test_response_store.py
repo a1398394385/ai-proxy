@@ -1,0 +1,109 @@
+import sys, time, unittest
+sys.path.insert(0, "/Users/xys/.hermes/fact-store-browser")
+
+
+class TestResponseRecord(unittest.TestCase):
+    def test_fields(self):
+        from response_store import ResponseRecord
+        now = time.time()
+        r = ResponseRecord(
+            response_id="resp_1", model="gpt-4o",
+            output=[{"type": "message"}],
+            conversation=[{"role": "user", "content": "Hi"}],
+            usage={"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+            status="completed",
+            created_at=now, expires_at=now + 3600,
+        )
+        self.assertEqual(r.response_id, "resp_1")
+        self.assertEqual(r.model, "gpt-4o")
+        self.assertEqual(r.status, "completed")
+
+
+class TestResponseStore(unittest.TestCase):
+    def _make_record(self, resp_id="r1", ttl=3600):
+        from response_store import ResponseRecord
+        now = time.time()
+        return ResponseRecord(
+            response_id=resp_id, model="test",
+            output=[{"type": "message", "content": [{"type": "output_text", "text": "Hello"}]}],
+            conversation=[
+                {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": "Hello"},
+            ],
+            usage={"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+            status="completed",
+            created_at=time.time(), expires_at=time.time() + ttl,
+        )
+
+    def test_put_and_get(self):
+        from response_store import ResponseStore
+        store = ResponseStore()
+        store.put("resp_1", self._make_record("resp_1"))
+        result = store.get("resp_1")
+        self.assertIsNotNone(result)
+        self.assertEqual(result.response_id, "resp_1")
+
+    def test_get_missing_returns_none(self):
+        from response_store import ResponseStore
+        self.assertIsNone(ResponseStore().get("nonexistent"))
+
+    def test_ttl_expiry(self):
+        from response_store import ResponseStore, ResponseRecord
+        store = ResponseStore()
+        now = time.time()
+        expired = ResponseRecord("r_exp", "t", [], [], {}, "c", now, now - 1)
+        store._store["r_exp"] = expired   # bypass put() 直接注入已过期条目
+        self.assertIsNone(store.get("r_exp"), "TTL 已过期应返回 None")
+
+    def test_lru_eviction(self):
+        from response_store import ResponseStore
+        store = ResponseStore(max_entries=2)
+        store.put("r1", self._make_record("r1"))
+        store.put("r2", self._make_record("r2"))
+        store.get("r1")                           # 标记 r1 为最近使用
+        store.put("r3", self._make_record("r3"))  # 超出 max，淘汰最旧的 r2
+        self.assertIsNotNone(store.get("r1"), "r1 应保留（最近访问）")
+        self.assertIsNone(store.get("r2"),    "r2 应被淘汰（LRU）")
+        self.assertIsNotNone(store.get("r3"), "r3 应保留（新加入）")
+
+    def test_get_updates_lru_order(self):
+        """get() 将条目移到最近端，防止连续 put 时被误淘汰。"""
+        from response_store import ResponseStore
+        store = ResponseStore(max_entries=3)
+        store.put("r1", self._make_record("r1"))
+        store.put("r2", self._make_record("r2"))
+        store.put("r3", self._make_record("r3"))
+        store.get("r1")                           # r1 刷新为最近使用
+        store.put("r4", self._make_record("r4"))  # 淘汰最旧的 r2
+        self.assertIsNotNone(store.get("r1"))
+        self.assertIsNone(store.get("r2"))
+
+    def test_get_conversation(self):
+        from response_store import ResponseStore
+        store = ResponseStore()
+        store.put("r1", self._make_record("r1"))
+        conv = store.get_conversation("r1")
+        self.assertEqual(len(conv), 2)
+        self.assertEqual(conv[0]["role"], "user")
+
+    def test_get_conversation_missing_returns_empty(self):
+        from response_store import ResponseStore
+        self.assertEqual(ResponseStore().get_conversation("nonexistent"), [])
+
+    def test_expired_evicted_on_put(self):
+        """put() 先清理已过期条目，避免 max_entries 被占满后再淘汰有效条目。"""
+        from response_store import ResponseStore, ResponseRecord
+        store = ResponseStore(max_entries=2)
+        now = time.time()
+        r_exp = ResponseRecord("r_exp", "t", [], [], {}, "c", now, now - 1)
+        store._store["r_exp"] = r_exp           # 注入过期条目（绕过 put）
+        store.put("r2", self._make_record("r2"))
+        # 此时 _store 有 2 个条目（含过期），put r3 时先 evict r_exp
+        store.put("r3", self._make_record("r3"))
+        self.assertIsNone(store.get("r_exp"))
+        self.assertIsNotNone(store.get("r2"))
+        self.assertIsNotNone(store.get("r3"))
+
+
+if __name__ == "__main__":
+    unittest.main()
