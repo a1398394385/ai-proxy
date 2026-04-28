@@ -5,6 +5,7 @@ import sqlite3
 import sys
 import threading
 import time
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -78,27 +79,29 @@ class ConfigDB:
     def _seed_from_yaml(self, yaml_path: Path):
         """首次启动从 proxy_config.yaml 导入种子数据。
 
-        注：_parse_yaml 和 _yaml_scalar 定义在文件末尾，Python 模块级函数在 import 时全部解析，
-        调用时已可用，顺序无关。
+        使用 IMMEDIATE 事务减少 SELECT → BEGIN 之间的竞态窗口。
         """
         conn = self._connect()
         try:
-            has_version = conn.execute(
-                "SELECT COUNT(*) FROM schema_version"
-            ).fetchone()[0] > 0
-            if has_version:
-                return
-
-            if not yaml_path.exists():
-                conn.execute("INSERT INTO schema_version (version) VALUES (1)")
-                conn.commit()
-                return
-
-            with open(yaml_path) as f:
-                config = _parse_yaml(f.read())
-
-            conn.execute("BEGIN")
+            # IMMEDIATE 事务获取数据库写锁，阻止其他写入者，消除竞态
+            conn.execute("BEGIN IMMEDIATE")
             try:
+                has_version = conn.execute(
+                    "SELECT COUNT(*) FROM schema_version"
+                ).fetchone()[0] > 0
+                if has_version:
+                    conn.execute("ROLLBACK")
+                    return
+
+                if not yaml_path.exists():
+                    conn.execute("INSERT INTO schema_version (version) VALUES (1)")
+                    conn.commit()
+                    return
+
+                with open(yaml_path) as f:
+                    config = _parse_yaml(f.read())
+
+                # BEGIN IMMEDIATE 已在上面执行，无需重复
                 upstream_data = config.get("upstream", {})
                 if upstream_data:
                     conn.execute(
@@ -575,7 +578,9 @@ class ConfigCache:
             finally:
                 db.close()
         except Exception:
-            pass
+            # 数据库异常时保留旧缓存，不更新 _loaded_at
+            # TTL 机制下次继续尝试，同时记录日志方便排查
+            logging.warning("[ConfigCache] 配置缓存刷新失败，保留旧缓存", exc_info=True)
 
 
 # ─── YAML 解析（内联，避免依赖 proxy.py）───────────────────────────

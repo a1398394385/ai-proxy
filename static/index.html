@@ -2307,9 +2307,7 @@ document.getElementById('search').addEventListener('input', e => {
 });
 
 // ===== 模型管理 =====
-function escHtml(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
+// escHtml 已在 line 1681 定义，复用
 
 const bus = {
   emit(name, detail) { document.dispatchEvent(new CustomEvent(name, { detail })); },

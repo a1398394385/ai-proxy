@@ -23,7 +23,13 @@ YAML_SEED_PATH = Path(__file__).parent / "proxy_config.yaml"
 
 
 def get_config_db():
-    return ConfigDB(CONFIG_DB_PATH, yaml_seed_path=YAML_SEED_PATH)
+    """日常 CRUD 调用：仅返回 ConfigDB 实例，不触发种子导入（仅首次启动时由模块级代码执行）。"""
+    return ConfigDB(CONFIG_DB_PATH)
+
+
+# 模块级种子导入：仅在首次 import server 时执行一次
+_config_db = ConfigDB(CONFIG_DB_PATH, yaml_seed_path=YAML_SEED_PATH)
+del _config_db
 
 
 def _read_json(handler):
