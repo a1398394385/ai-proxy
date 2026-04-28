@@ -11,7 +11,7 @@
 - StreamState: 来自 transform_responses
 - CodexStreamConverter: 来自 transform_responses
 - ToolBlockState: 来自 transform_responses
-- _output_items_to_messages: 来自 transform_responses
+- output_items_to_messages: 来自 transform_responses
 - _map_tools: 来自 transform_responses
 - _map_response_format: 来自 transform_responses
 - anthropic_to_chat: 来自 transform_anthropic（/v1/messages 路径）— Task 4 后可用
@@ -33,10 +33,9 @@ from transform_responses import (  # noqa: F401 — re-export
     ToolBlockState,
     _map_tools,
     _map_response_format,
-    _output_items_to_messages,
+    output_items_to_messages,
 )
 
 # Task 4-6 完成，激活 Anthropic re-export：
 from transform_anthropic import anthropic_to_chat, chat_to_anthropic, create_anthropic_sse_stream  # noqa: F401
 
-from response_store import ResponseStore, ResponseRecord  # noqa: F401 — re-export

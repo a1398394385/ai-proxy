@@ -1,5 +1,6 @@
 import sys, time, unittest
-sys.path.insert(0, "/Users/xys/.hermes/fact-store-browser")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 class TestResponseRecord(unittest.TestCase):
@@ -197,7 +198,7 @@ class TestConversationChain(unittest.TestCase):
 
     def test_pure_refusal_non_streaming_store_uses_empty_string(self):
         """非流式路径：chat_to_responses 纯拒绝输出存入 store 后，content 为空字符串。"""
-        from transform import chat_to_responses, _output_items_to_messages
+        from transform import chat_to_responses, output_items_to_messages
         from response_store import ResponseStore, ResponseRecord
 
         store = ResponseStore()
@@ -212,7 +213,7 @@ class TestConversationChain(unittest.TestCase):
         }
         responses_resp = chat_to_responses(chat_resp)
         output = responses_resp.get("output", [])
-        assistant_msgs = _output_items_to_messages(output)
+        assistant_msgs = output_items_to_messages(output)
 
         messages_for_conv = [{"role": "user", "content": "Bad request"}] + assistant_msgs
         record = ResponseRecord(
@@ -347,7 +348,7 @@ class TestNonStreamingStorePath(unittest.TestCase):
         src = (pathlib.Path(__file__).parent.parent / "proxy.py").read_text()
         self.assertIn("def _store_response(", src,
                       "proxy.py 应有 _store_response 辅助函数")
-        self.assertIn("_output_items_to_messages", src)
+        self.assertIn("output_items_to_messages", src)
 
 
 class TestPreviousResponseIdInjection(unittest.TestCase):

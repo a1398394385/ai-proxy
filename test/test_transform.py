@@ -1591,43 +1591,43 @@ class TestNewSSEFeatures(_SSETestBase):
 
 
 class TestOutputItemsToMessages(unittest.TestCase):
-    """_output_items_to_messages 独立单元测试（设计文稿 §4.3）。"""
+    """output_items_to_messages 独立单元测试（设计文稿 §4.3）。"""
 
     def test_text_message(self):
-        from transform import _output_items_to_messages
+        from transform import output_items_to_messages
         items = [{"type": "message", "content": [{"type": "output_text", "text": "Hello"}]}]
-        result = _output_items_to_messages(items)
+        result = output_items_to_messages(items)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["role"], "assistant")
         self.assertEqual(result[0]["content"], "Hello")
 
     def test_pure_refusal_message_fallback_empty_string(self):
         """纯拒绝消息：content 没有 output_text，fallback 为空字符串，不能是 None 或 KeyError。"""
-        from transform import _output_items_to_messages
+        from transform import output_items_to_messages
         items = [{"type": "message", "content": [{"type": "refusal", "refusal": "No"}]}]
-        result = _output_items_to_messages(items)
+        result = output_items_to_messages(items)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["content"], "")   # fallback，不是 None
 
     def test_multiple_function_calls_merged(self):
         """多个 function_call 合并为单条 assistant 消息。"""
-        from transform import _output_items_to_messages
+        from transform import output_items_to_messages
         items = [
             {"type": "function_call", "id": "fc1", "call_id": "call_1", "name": "bash", "arguments": '{}'},
             {"type": "function_call", "id": "fc2", "call_id": "call_2", "name": "read_file", "arguments": '{}'},
         ]
-        result = _output_items_to_messages(items)
+        result = output_items_to_messages(items)
         self.assertEqual(len(result), 1, "多个工具调用应合并为单条 assistant 消息")
         self.assertIsNone(result[0]["content"])
         self.assertEqual(len(result[0]["tool_calls"]), 2)
 
     def test_reasoning_skipped(self):
-        from transform import _output_items_to_messages
+        from transform import output_items_to_messages
         items = [
             {"type": "reasoning", "id": "rs1", "summary": [{"type": "summary_text", "text": "think"}]},
             {"type": "message", "content": [{"type": "output_text", "text": "Answer"}]},
         ]
-        result = _output_items_to_messages(items)
+        result = output_items_to_messages(items)
         self.assertEqual(len(result), 1, "reasoning 应被跳过")
         self.assertEqual(result[0]["content"], "Answer")
 

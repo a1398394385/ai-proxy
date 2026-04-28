@@ -833,7 +833,7 @@ def create_codex_sse_stream(upstream_response, request_messages: list = None, re
     if response_store is not None:
         from response_store import ResponseRecord
         output_list = [item for _, item in converter.output_items]
-        assistant_msgs = _output_items_to_messages(output_list)
+        assistant_msgs = output_items_to_messages(output_list)
         conversation = [
             m for m in (request_messages or []) if m.get("role") != "system"
         ] + assistant_msgs
@@ -852,7 +852,7 @@ def create_codex_sse_stream(upstream_response, request_messages: list = None, re
         response_store.put(record.response_id, record)
 
 
-def _output_items_to_messages(output_items: list) -> list:
+def output_items_to_messages(output_items: list) -> list:
     """将 Responses API output items 反转为 Chat Messages 格式（用于 conversation 历史）。
 
     - type=message: 取第一个 output_text block 的 text；纯拒绝时 fallback ""

@@ -391,11 +391,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if logger:
             logger.log_converted_request(request_id, model_name, target, chat_body)
 
-        # 转发（response_converter 始终为 chat_to_anthropic）
+        # 转发（response_converter 始终为 chat_to_anthropic，store_enabled=False 防止 kwargs 注入给 create_anthropic_sse_stream）
         if is_stream:
             self._forward_streaming(chat_body, model_cfg, request_id, model_name, target, request_ts,
                                     response_converter=chat_to_anthropic,
-                                    sse_stream_factory=create_anthropic_sse_stream)
+                                    sse_stream_factory=create_anthropic_sse_stream,
+                                    store_enabled=False)
         else:
             self._forward_non_streaming(chat_body, request_id, model_name, target, request_ts,
                                         response_converter=chat_to_anthropic)
@@ -497,7 +498,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 # 使用 is_responses_api 显式标记（而非根据 response_converter 类型推断），
                 # 防止 _handle_messages（Anthropic 路径）不传参数时误触发存储
                 if store_enabled and is_responses_api:
-                    from transform_responses import _output_items_to_messages as _oitm
+                    from transform_responses import output_items_to_messages as _oitm
                     assistant_msgs = _oitm(responses_response.get("output", []))
                     messages_for_conv = [
                         m for m in chat_body.get("messages", []) if m.get("role") != "system"
@@ -656,13 +657,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
             # 核心：通过 sse_stream_factory 逐事件转换并发送
             # _rstore 非 None 时传入流式存储所需的额外参数（Phase 2），
-            # create_codex_sse_stream 内部通过 response_store is not None 判断是否存储
+            # _rstore 为 None 时不传额外 kwargs（create_anthropic_sse_stream 不接受这些参数）
             _rstore = getattr(self.server, "response_store", None) if store_enabled else None
-            stream_gen = sse_stream_factory(
-                resp,
-                request_messages=chat_body.get("messages") if _rstore else None,
-                response_store=_rstore,
-            )
+            if _rstore is not None:
+                stream_gen = sse_stream_factory(
+                    resp,
+                    request_messages=chat_body.get("messages"),
+                    response_store=_rstore,
+                )
+            else:
+                stream_gen = sse_stream_factory(resp)
             for sse_event in stream_gen:
                 self.wfile.write(sse_event.encode("utf-8"))
                 self.wfile.flush()

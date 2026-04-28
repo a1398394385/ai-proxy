@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-Hermes Data Browser — 本地 Web 工具，用于浏览 Hermes Agent 的 Fact Store 和 Token 使用统计。纯 Python 标准库实现，无外部依赖。
+Hermes Data Browser — 本地 Web 工具，用于浏览 Hermes Agent 的 Fact Store 和 Token 使用统计。
 
 **访问地址**: http://127.0.0.1:18742
 
@@ -144,8 +144,6 @@ test/
 ### 代码原则
 
 - **DRY** — 不重复，提取公共逻辑
-- **YAGNI** — 不做不需要的功能，不预设未来需求
-- **纯标准库** — 无外部依赖，所有代码使用 Python 标准库
 - **函数/类单一职责** — 不写万能函数
 - **修改后必须重启** — 标准 HTTP server 无热重载，改代码后运行 `./restart_server.sh`
 
