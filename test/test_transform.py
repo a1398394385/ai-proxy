@@ -1205,6 +1205,99 @@ class TestHandleReasoningDelta(_SSETestBase):
         self.assertEqual(item["summary"][0]["text"], "deep thought")
 
 
+class TestHandleRefusalDelta(_SSETestBase):
+    def _make_converter(self):
+        from transform import CodexStreamConverter
+        c = CodexStreamConverter()
+        c.response_id = "resp-test"
+        c.model = "test"
+        return c
+
+    def test_pure_refusal_opens_message_item(self):
+        c = self._make_converter()
+        result = c._handle_refusal_delta("I cannot help")
+        events = self._parse_events(result)
+        types = [e[0] for e in events]
+        self.assertIn("response.output_item.added", types)
+        self.assertIn("response.content_part.added", types)
+        self.assertIn("response.refusal.delta", types)
+
+    def test_refusal_content_part_added_structure(self):
+        c = self._make_converter()
+        result = c._handle_refusal_delta("No")
+        events = self._parse_events(result)
+        part_added = next(e for e in events if e[0] == "response.content_part.added")
+        self.assertEqual(part_added[1]["part"]["type"], "refusal")
+        self.assertEqual(part_added[1]["part"]["refusal"], "")
+
+    def test_refusal_content_index_zero_when_no_text(self):
+        c = self._make_converter()
+        c._handle_refusal_delta("No")
+        self.assertEqual(c.refusal_content_index, 0)
+
+    def test_refusal_content_index_one_when_text_opened(self):
+        c = self._make_converter()
+        c._handle_text_delta("Some text")   # opens text content part
+        c._handle_refusal_delta("No")
+        self.assertEqual(c.refusal_content_index, 1)
+
+    def test_refusal_content_index_stored_not_recomputed(self):
+        """关键：_close_refusal_block 用存储的 index，即使 text_content_part_opened 已被置 False。"""
+        c = self._make_converter()
+        c._handle_text_delta("Some text")
+        c._handle_refusal_delta("No")
+        c._close_text_block()   # 置 text_content_part_opened = False
+        # refusal_content_index 应仍为 1
+        result = c._close_refusal_block()
+        events = self._parse_events(result)
+        done = next(e for e in events if e[0] == "response.refusal.done")
+        self.assertEqual(done[1]["content_index"], 1)   # 不能变成 0
+
+    def test_emit_message_item_done_status_completed(self):
+        c = self._make_converter()
+        c._handle_text_delta("Hello")
+        result = c._emit_message_item_done()
+        events = self._parse_events(result)
+        item_done = next(e for e in events if e[0] == "response.output_item.done")
+        self.assertEqual(item_done[1]["item"]["status"], "completed")
+
+    def test_emit_message_item_done_empty_content_fallback(self):
+        """边界：message 被打开但无文本也无拒绝时，兜底补空 output_text 块。"""
+        c = self._make_converter()
+        # Manually open message without any content
+        c.text_output_index = c.next_output_index
+        c.next_output_index += 1
+        c.text_message_id = "msg_test"
+        c.text_message_opened = True
+        result = c._emit_message_item_done()
+        events = self._parse_events(result)
+        item_done = next(e for e in events if e[0] == "response.output_item.done")
+        content = item_done[1]["item"]["content"]
+        self.assertEqual(len(content), 1)
+        self.assertEqual(content[0]["type"], "output_text")
+        self.assertEqual(content[0]["text"], "")
+
+    def test_emit_message_item_done_text_and_refusal_merged(self):
+        c = self._make_converter()
+        c._handle_text_delta("Some text")
+        c._handle_refusal_delta("No")
+        result = c._emit_message_item_done()
+        events = self._parse_events(result)
+        item_done = next(e for e in events if e[0] == "response.output_item.done")
+        content = item_done[1]["item"]["content"]
+        types = [b["type"] for b in content]
+        self.assertIn("output_text", types)
+        self.assertIn("refusal", types)
+
+    def test_emit_message_item_done_appended_to_output_items(self):
+        c = self._make_converter()
+        c._handle_text_delta("Hello")
+        c._emit_message_item_done()
+        self.assertEqual(len(c.output_items), 1)
+        idx, item = c.output_items[0]
+        self.assertEqual(item["type"], "message")
+
+
 class TestHandleTextDelta(_SSETestBase):
     def _make_converter(self):
         from transform import CodexStreamConverter

@@ -489,6 +489,80 @@ class CodexStreamConverter:
         self.text_content_part_opened = False
         return events
 
+    def _handle_refusal_delta(self, refusal: str) -> list:
+        events = []
+        if not self.text_message_opened:
+            self.text_output_index = self.next_output_index
+            self.next_output_index += 1
+            self.text_message_id = f"msg_{uuid.uuid4().hex[:8]}"
+            self.text_message_opened = True       # 必须在 added 后置 True，纯 refusal 场景靠此使 finish() 步骤 4 命中
+            events.append(self._format_sse("response.output_item.added", {
+                "output_index": self.text_output_index,
+                "item": {
+                    "type": "message",
+                    "id": self.text_message_id,
+                    "status": "in_progress",
+                    "role": "assistant",
+                    "content": [],
+                },
+            }))
+        if not self.refusal_opened:
+            self.refusal_content_index = 1 if self.text_content_part_opened else 0
+            self.refusal_opened = True
+            events.append(self._format_sse("response.content_part.added", {
+                "output_index": self.text_output_index,
+                "content_index": self.refusal_content_index,
+                "part": {"type": "refusal", "refusal": ""},
+            }))
+        self.accumulated_refusal += refusal
+        events.append(self._format_sse("response.refusal.delta", {
+            "output_index": self.text_output_index,
+            "content_index": self.refusal_content_index,
+            "delta": refusal,
+        }))
+        return events
+
+    def _close_refusal_block(self) -> list:
+        if not self.refusal_opened:
+            return []
+        return [
+            self._format_sse("response.refusal.done", {
+                "output_index": self.text_output_index,
+                "content_index": self.refusal_content_index,
+                "refusal": self.accumulated_refusal,
+            }),
+            self._format_sse("response.content_part.done", {
+                "output_index": self.text_output_index,
+                "content_index": self.refusal_content_index,
+                "part": {"type": "refusal", "refusal": self.accumulated_refusal},
+            }),
+        ]
+
+    def _emit_message_item_done(self) -> list:
+        content = []
+        if self.accumulated_text:
+            content.append({
+                "type": "output_text",
+                "text": self.accumulated_text,
+                "annotations": [],
+            })
+        if self.accumulated_refusal:
+            content.append({"type": "refusal", "refusal": self.accumulated_refusal})
+        if not content:
+            content.append({"type": "output_text", "text": "", "annotations": []})
+        item = {
+            "type": "message",
+            "id": self.text_message_id,
+            "status": "completed",
+            "role": "assistant",
+            "content": content,
+        }
+        self.output_items.append((self.text_output_index, item))
+        return [self._format_sse("response.output_item.done", {
+            "output_index": self.text_output_index,
+            "item": item,
+        })]
+
     def _handle_reasoning_delta(self, reasoning: str) -> list:
         events = []
         if not self.reasoning_opened:
