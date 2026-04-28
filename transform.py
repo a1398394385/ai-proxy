@@ -34,6 +34,7 @@ from transform_responses import (  # noqa: F401 — re-export
     ToolBlockState,
     _map_tools,
     _map_response_format,
+    _output_items_to_messages,
 )
 
 # Task 4-6 完成，激活 Anthropic re-export：

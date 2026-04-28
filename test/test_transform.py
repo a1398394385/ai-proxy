@@ -1440,6 +1440,207 @@ class TestHandleToolCallDelta(_SSETestBase):
         self.assertEqual(names.index("read_file"), 1)
 
 
+class TestNewSSEFeatures(unittest.TestCase):
+    """Phase 1 新增事件序列的集成测试。"""
+
+    @staticmethod
+    def _make_mock_stream(chunks):
+        class MockStream:
+            def __init__(self):
+                self.data = b"".join(chunks)
+                self.pos = 0
+            def read(self, size):
+                chunk = self.data[self.pos:self.pos + size]
+                self.pos += size
+                return chunk
+        return MockStream()
+
+    @staticmethod
+    def _parse_events(text):
+        import json
+        events = []
+        for block in text.strip().split("\n\n"):
+            lines = block.split("\n")
+            etype, data = None, None
+            for line in lines:
+                if line.startswith("event: "): etype = line[7:]
+                elif line.startswith("data: "):
+                    try: data = json.loads(line[6:])
+                    except json.JSONDecodeError: pass
+            if etype and data:
+                events.append((etype, data))
+        return events
+
+    def _stream_to_text(self, chunks):
+        from transform import create_codex_sse_stream
+        stream = self._make_mock_stream(chunks)
+        return "".join(create_codex_sse_stream(stream))
+
+    def test_created_in_progress_metadata_sequence(self):
+        """流开始事件必须为 created→in_progress→metadata 顺序。"""
+        chunks = [
+            b'data: {"id":"c1","model":"test","choices":[{"delta":{"content":"Hi"},"index":0}]}\n\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',
+            b'data: [DONE]\n\n',
+        ]
+        events = self._parse_events(self._stream_to_text(chunks))
+        types = [e[0] for e in events[:3]]
+        self.assertEqual(types[0], "response.created")
+        self.assertEqual(types[1], "response.in_progress")
+        self.assertEqual(types[2], "response.metadata")
+
+    def test_content_part_lifecycle(self):
+        """text 的 content_part 生命周期：added → delta×N → done。"""
+        chunks = [
+            b'data: {"id":"c1","model":"test","choices":[{"delta":{"content":"Hello"},"index":0}]}\n\n',
+            b'data: {"choices":[{"delta":{"content":" World"},"index":0}]}\n\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}\n\n',
+            b'data: [DONE]\n\n',
+        ]
+        text = self._stream_to_text(chunks)
+        self.assertIn("response.content_part.added", text)
+        self.assertIn("response.content_part.done", text)
+        # 验证 added 在 delta 之前
+        self.assertLess(text.index("content_part.added"), text.index("output_text.delta"))
+
+    def test_function_call_arguments_delta_and_done(self):
+        """工具调用：output_item.added → arguments.delta → arguments.done → output_item.done。"""
+        chunks = [
+            b'data: {"id":"c1","model":"test","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"bash","arguments":"{\\"cmd\\":"}}]},"index":0}]}\n\n',
+            b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"ls\\"}"}}]},"index":0}]}\n\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}\n\n',
+            b'data: [DONE]\n\n',
+        ]
+        text = self._stream_to_text(chunks)
+        self.assertIn("response.output_item.added", text)
+        self.assertIn("response.function_call_arguments.delta", text)
+        self.assertIn("response.function_call_arguments.done", text)
+        # output_item.added 必须在 arguments.delta 之前
+        self.assertLess(text.index("output_item.added"), text.index("function_call_arguments.delta"))
+
+    def test_stream_ends_with_done(self):
+        """流末尾必须有 data: [DONE]。"""
+        chunks = [
+            b'data: {"id":"c1","model":"test","choices":[{"delta":{"content":"Hi"},"index":0}]}\n\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',
+            b'data: [DONE]\n\n',
+        ]
+        text = self._stream_to_text(chunks)
+        self.assertTrue(text.rstrip().endswith("[DONE]"), "流末尾应有 data: [DONE]")
+
+    def test_empty_stream_finish_still_valid(self):
+        """无 delta 的空流：finish() 必须发送 created+in_progress+completed+[DONE]。"""
+        chunks = [b'data: [DONE]\n\n']
+        text = self._stream_to_text(chunks)
+        self.assertIn("response.created", text)
+        self.assertIn("response.in_progress", text)
+        self.assertIn("response.completed", text)
+        self.assertTrue(text.rstrip().endswith("[DONE]"))
+
+    def test_reasoning_event_name_correct(self):
+        """推理事件名为 response.reasoning.delta/done，不是 response.reasoning_summary_text.*。"""
+        chunks = [
+            b'data: {"id":"c1","model":"test","choices":[{"delta":{"reasoning_content":"think"},"index":0}]}\n\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}\n\n',
+            b'data: [DONE]\n\n',
+        ]
+        text = self._stream_to_text(chunks)
+        self.assertIn("response.reasoning.delta", text)
+        self.assertIn("response.reasoning.done", text)
+        self.assertNotIn("reasoning_summary_text", text)
+
+    def test_refusal_stream_sequence(self):
+        """拒绝流：output_item.added → content_part.added → refusal.delta → refusal.done → content_part.done → output_item.done。"""
+        chunks = [
+            b'data: {"id":"c1","model":"test","choices":[{"delta":{"refusal":"I cannot"},"index":0}]}\n\n',
+            b'data: {"choices":[{"delta":{"refusal":" help"},"index":0}]}\n\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}\n\n',
+            b'data: [DONE]\n\n',
+        ]
+        text = self._stream_to_text(chunks)
+        for expected_event in ["response.output_item.added", "response.content_part.added",
+                               "response.refusal.delta", "response.refusal.done",
+                               "response.content_part.done", "response.output_item.done"]:
+            self.assertIn(expected_event, text, f"缺少事件: {expected_event}")
+        # 顺序验证
+        positions = [text.index(e) for e in [
+            "output_item.added", "content_part.added", "refusal.delta",
+            "refusal.done", "content_part.done", "output_item.done"
+        ]]
+        self.assertEqual(positions, sorted(positions), "拒绝事件顺序不正确")
+
+    def test_text_plus_refusal_share_same_message_item(self):
+        """text + refusal 同时出现时，共用同一个 message output item（output_index 相同）。"""
+        chunks = [
+            b'data: {"id":"c1","model":"test","choices":[{"delta":{"content":"Some text","refusal":"No"},"index":0}]}\n\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',
+            b'data: [DONE]\n\n',
+        ]
+        text = self._stream_to_text(chunks)
+        # output_item.added 应只出现一次（共用同一个 message item）
+        self.assertEqual(text.count('"response.output_item.added"'), 1,
+                         "text+refusal 应共用同一个 message output item")
+
+    def test_multi_tool_concurrent_ordered_by_index(self):
+        """多工具并发：index 1 先到，index 0 后到，done 事件中 bash 先于 read_file 发送。"""
+        chunks = [
+            # index=1 先到
+            b'data: {"id":"c1","model":"test","choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"read_file","arguments":"{}"}}]},"index":0}]}\n\n',
+            # index=0 后到
+            b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"bash","arguments":"{\\"cmd\\":\\"ls\\"}"}}]},"index":0}]}\n\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}\n\n',
+            b'data: [DONE]\n\n',
+        ]
+        text = self._stream_to_text(chunks)
+        # done 事件中 bash (index=0) 在 read_file (index=1) 之前
+        self.assertIn("response.output_item.added", text)
+        self.assertIn("response.function_call_arguments.done", text)
+        self.assertIn('"name":"bash"', text)
+        self.assertIn('"name":"read_file"', text)
+
+
+class TestOutputItemsToMessages(unittest.TestCase):
+    """_output_items_to_messages 独立单元测试（设计文稿 §4.3）。"""
+
+    def test_text_message(self):
+        from transform import _output_items_to_messages
+        items = [{"type": "message", "content": [{"type": "output_text", "text": "Hello"}]}]
+        result = _output_items_to_messages(items)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["role"], "assistant")
+        self.assertEqual(result[0]["content"], "Hello")
+
+    def test_pure_refusal_message_fallback_empty_string(self):
+        """纯拒绝消息：content 没有 output_text，fallback 为空字符串，不能是 None 或 KeyError。"""
+        from transform import _output_items_to_messages
+        items = [{"type": "message", "content": [{"type": "refusal", "refusal": "No"}]}]
+        result = _output_items_to_messages(items)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["content"], "")   # fallback，不是 None
+
+    def test_multiple_function_calls_merged(self):
+        """多个 function_call 合并为单条 assistant 消息。"""
+        from transform import _output_items_to_messages
+        items = [
+            {"type": "function_call", "id": "fc1", "call_id": "call_1", "name": "bash", "arguments": '{}'},
+            {"type": "function_call", "id": "fc2", "call_id": "call_2", "name": "read_file", "arguments": '{}'},
+        ]
+        result = _output_items_to_messages(items)
+        self.assertEqual(len(result), 1, "多个工具调用应合并为单条 assistant 消息")
+        self.assertIsNone(result[0]["content"])
+        self.assertEqual(len(result[0]["tool_calls"]), 2)
+
+    def test_reasoning_skipped(self):
+        from transform import _output_items_to_messages
+        items = [
+            {"type": "reasoning", "id": "rs1", "summary": [{"type": "summary_text", "text": "think"}]},
+            {"type": "message", "content": [{"type": "output_text", "text": "Answer"}]},
+        ]
+        result = _output_items_to_messages(items)
+        self.assertEqual(len(result), 1, "reasoning 应被跳过")
+        self.assertEqual(result[0]["content"], "Answer")
+
+
 class TestProxyErrorPathsDone(unittest.TestCase):
     """验证三处错误路径各包含 data: [DONE]。"""
 
