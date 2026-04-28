@@ -19,32 +19,6 @@ def load_proxy_module(config_path_override: Path = None):
 
 
 class TestConfigValidation(unittest.TestCase):
-    def test_missing_star_fallback(self):
-        """* fallback 不可用时 sys.exit(1)。"""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write("""
-proxy:
-  host: "127.0.0.1"
-  port: 48743
-  log_level: "INFO"
-
-upstream:
-  base_url: "https://example.com/v1"
-  api_key: "sk-test"
-""")
-            tmp_path = f.name
-
-        mod = load_proxy_module(Path(tmp_path))
-        # 重定向 config_cache 到空数据库（无 * fallback）
-        with tempfile.TemporaryDirectory() as td:
-            empty_db = Path(td) / "config.db"
-            from config_manager import ConfigCache
-            mod.config_cache = ConfigCache(empty_db)
-            with self.assertRaises(SystemExit):
-                mod.load_config()
-
-        os.unlink(tmp_path)
-
     def test_valid_config_loads(self):
         """有效配置正常加载，resolve_model 从动态缓存读取。"""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:

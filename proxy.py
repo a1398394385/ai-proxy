@@ -63,11 +63,6 @@ def load_config(config_path: Path = None):
     with open(path, "r") as f:
         CONFIG = _parse_yaml(f.read())
 
-    # 启动校验：动态配置 * fallback 必须可用
-    if config_cache.resolve("*") is None:
-        print('FATAL: 动态配置中 "*" fallback 路由不可用（不存在或上游已禁用）', file=sys.stderr)
-        sys.exit(1)
-
     # 设置日志：同时写 proxy.log 文件和 stdout，遵循 log_level 配置
     if not logging.root.handlers:
         log_level = CONFIG.get("proxy", {}).get("log_level", "INFO")
