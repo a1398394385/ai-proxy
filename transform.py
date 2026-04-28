@@ -593,17 +593,14 @@ def _emit_completion(state: StreamState) -> list:
         "output_tokens": _find_first(raw, ["completion_tokens", "output_tokens"]),
         "total_tokens": raw.get("total_tokens", 0),
     }
-    # 合并两个 details dict。上游通常只返回一种格式，即使同时返回
-    # 两者也不会包含同名 key，后者覆盖前者的风险在实际上游行为中不存在。
-    details = {}
+    # 合并两个 details dict，始终确保 cached_tokens 字段存在（Codex CLI 要求）
+    details = {"cached_tokens": 0}
     for k in ("prompt_tokens_details", "input_tokens_details"):
         if raw.get(k):
             details.update(raw[k])
-    if details:
-        usage["input_tokens_details"] = details
+    usage["input_tokens_details"] = details
     output_details = raw.get("completion_tokens_details") if "completion_tokens_details" in raw else raw.get("output_tokens_details")
-    if output_details:
-        usage["output_tokens_details"] = output_details
+    usage["output_tokens_details"] = output_details or {}
     # 透传 Anthropic 格式顶层缓存字段
     for k in ("cache_read_input_tokens", "cache_creation_input_tokens"):
         if k in raw and raw[k] is not None:

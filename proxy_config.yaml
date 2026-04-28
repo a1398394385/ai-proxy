@@ -5,11 +5,12 @@ proxy:
 
 upstream:
   base_url: "http://172.40.2.162:4000/"
-  api_key: "sk-YwxOflqnkAQU3eUpcLVNlw"
+  api_key: "sk-wmnNcIIodpdmfu_yuyJs6Q"
   timeout: 120 # SSE 流总超时（秒）
   connect_timeout: 10
   ssl_verify: true # 内网自签证书时可设为 false
   retry: 1 # 上游 5xx/超时时自动重试次数（0 = 不重试）
+  proxy: "http://127.0.0.1:9090" # 上游请求代理（HTTP 格式，留空则直连）
 
 model_map:
   "codex-mini-latest":

@@ -200,6 +200,52 @@ def rotate_log_if_needed():
     log_file.unlink()
 
 
+# ─── 上游连接创建 ──────────────────────────────────────────────
+
+def _create_upstream_conn(upstream_cfg, parsed, port):
+    """创建到上游的连接，支持 HTTP 代理（含 HTTPS tunneling）。
+
+    使用 http.client 的 set_tunnel() 实现 HTTPS over HTTP 代理。
+    """
+    proxy = upstream_cfg.get("proxy")
+    connect_timeout = upstream_cfg.get("connect_timeout", 10)
+
+    if proxy:
+        proxy_parsed = urllib.parse.urlparse(proxy)
+        proxy_host = proxy_parsed.hostname
+        proxy_port = proxy_parsed.port or 8080
+
+        use_ssl = parsed.scheme == "https"
+        ssl_ctx = ssl.create_default_context() if upstream_cfg.get("ssl_verify", True) else ssl._create_unverified_context()
+
+        if use_ssl:
+            conn = http.client.HTTPSConnection(
+                proxy_host, proxy_port,
+                timeout=connect_timeout, context=ssl_ctx,
+            )
+        else:
+            conn = http.client.HTTPConnection(
+                proxy_host, proxy_port,
+                timeout=connect_timeout,
+            )
+        # 设置 tunnel：CONNECT 目标主机:端口
+        conn.set_tunnel(parsed.hostname, port)
+        return conn
+    else:
+        use_ssl = parsed.scheme == "https"
+        ssl_ctx = ssl.create_default_context() if upstream_cfg.get("ssl_verify", True) else ssl._create_unverified_context()
+        if use_ssl:
+            return http.client.HTTPSConnection(
+                parsed.hostname, port,
+                timeout=connect_timeout, context=ssl_ctx,
+            )
+        else:
+            return http.client.HTTPConnection(
+                parsed.hostname, port,
+                timeout=connect_timeout,
+            )
+
+
 # ─── 请求 Handler ──────────────────────────────────────────────────
 
 class ProxyHandler(BaseHTTPRequestHandler):
@@ -309,20 +355,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         for attempt in range(retries):
             conn = None
             try:
-                # 先用 connect_timeout 建立连接
-                if use_ssl:
-                    conn = http.client.HTTPSConnection(
-                        parsed.hostname,
-                        port,
-                        timeout=connect_timeout,
-                        context=ssl_ctx,
-                    )
-                else:
-                    conn = http.client.HTTPConnection(
-                        parsed.hostname,
-                        port,
-                        timeout=connect_timeout,
-                    )
+                conn = _create_upstream_conn(upstream_cfg, parsed, port)
                 conn.request("POST", path, body=json.dumps(chat_body), headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
@@ -416,14 +449,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         use_ssl = parsed.scheme == "https"
         ssl_ctx = ssl.create_default_context() if ssl_verify else ssl._create_unverified_context()
 
-        if use_ssl:
-            conn = http.client.HTTPSConnection(
-                parsed.hostname, port, timeout=connect_timeout, context=ssl_ctx,
-            )
-        else:
-            conn = http.client.HTTPConnection(
-                parsed.hostname, port, timeout=connect_timeout,
-            )
+        conn = _create_upstream_conn(upstream_cfg, parsed, port)
         conn.request("POST", path, body=json.dumps(chat_body), headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -437,59 +463,95 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
 
-        resp = conn.getresponse()
-        if conn.sock:
-            conn.sock.settimeout(timeout)
-
-        # 验证上游 Content-Type，非 SSE 则包装为 response.failed
-        ct = resp.getheader("Content-Type", "")
-        if resp.status != 200:
-            error_event = _format_sse_event("response.failed", {
-                "response": {
-                    "id": generate_response_id(),
-                    "status": "failed",
-                    "output": [],
-                    "status_details": {
-                        "error": {
-                            "type": "server_error",
-                            "message": f"Upstream returned HTTP {resp.status}",
-                        },
-                    },
-                },
-            })
-            self.wfile.write(error_event.encode("utf-8"))
-            self.wfile.flush()
-            logger = get_logger()
-            if logger:
-                logger.log_upstream_response(request_id, resp.status, resp.read().decode("utf-8", errors="replace"), 0)
-            return
-
-        if "text/event-stream" not in ct:
-            logging.warning(f"上游返回非 SSE Content-Type: {ct}")
-            error_event = _format_sse_event("response.failed", {
-                "response": {
-                    "id": generate_response_id(),
-                    "status": "failed",
-                    "output": [],
-                    "status_details": {
-                        "error": {
-                            "type": "server_error",
-                            "message": f"Upstream returned non-SSE Content-Type: {ct}",
-                        },
-                    },
-                },
-            })
-            self.wfile.write(error_event.encode("utf-8"))
-            self.wfile.flush()
-            return
-
-        # 核心：通过 create_codex_sse_stream 逐事件转换并发送
         start = time.time()
         sse_buffer = []
         final_usage = None
-        upstream_status = resp.status
+        upstream_status = None
 
         try:
+            resp = conn.getresponse()
+            if conn.sock:
+                conn.sock.settimeout(timeout)
+            upstream_status = resp.status
+
+            # 验证上游 Content-Type，非 SSE 则包装为 response.failed
+            ct = resp.getheader("Content-Type", "")
+            if resp.status != 200:
+                error_event = _format_sse_event("response.failed", {
+                    "response": {
+                        "id": generate_response_id(),
+                        "status": "failed",
+                        "output": [],
+                        "status_details": {
+                            "error": {
+                                "type": "server_error",
+                                "message": f"Upstream returned HTTP {resp.status}",
+                            },
+                        },
+                    },
+                })
+                self.wfile.write(error_event.encode("utf-8"))
+                self.wfile.flush()
+                completed_event = _format_sse_event("response.completed", {
+                    "response": {
+                        "id": generate_response_id(),
+                        "status": "failed",
+                        "output": [],
+                        "usage": {
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "total_tokens": 0,
+                            "input_tokens_details": {"cached_tokens": 0},
+                            "output_tokens_details": {},
+                        },
+                    },
+                })
+                self.wfile.write(completed_event.encode("utf-8"))
+                self.wfile.flush()
+                logger = get_logger()
+                if logger:
+                    logger.log_upstream_response(request_id, resp.status, resp.read().decode("utf-8", errors="replace"), 0)
+                return
+
+            if "text/event-stream" not in ct:
+                logging.warning(f"上游返回非 SSE Content-Type: {ct}")
+                error_event = _format_sse_event("response.failed", {
+                    "response": {
+                        "id": generate_response_id(),
+                        "status": "failed",
+                        "output": [],
+                        "status_details": {
+                            "error": {
+                                "type": "server_error",
+                                "message": f"Upstream returned non-SSE Content-Type: {ct}",
+                            },
+                        },
+                    },
+                })
+                self.wfile.write(error_event.encode("utf-8"))
+                self.wfile.flush()
+                completed_event = _format_sse_event("response.completed", {
+                    "response": {
+                        "id": generate_response_id(),
+                        "status": "failed",
+                        "output": [],
+                        "usage": {
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "total_tokens": 0,
+                            "input_tokens_details": {"cached_tokens": 0},
+                            "output_tokens_details": {},
+                        },
+                    },
+                })
+                self.wfile.write(completed_event.encode("utf-8"))
+                self.wfile.flush()
+                logger = get_logger()
+                if logger:
+                    logger.log_upstream_response(request_id, upstream_status, resp.read().decode("utf-8", errors="replace"), 0)
+                return
+
+            # 核心：通过 create_codex_sse_stream 逐事件转换并发送
             for sse_event in create_codex_sse_stream(resp):
                 self.wfile.write(sse_event.encode("utf-8"))
                 self.wfile.flush()
@@ -502,6 +564,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         pass
         except Exception as e:
             logging.exception("流式转发异常")
+            upstream_status = getattr(e, 'code', None) or getattr(e, 'status', None) or 502
             try:
                 error_event = _format_sse_event("response.failed", {
                     "response": {
@@ -527,7 +590,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             "input_tokens": 0,
                             "output_tokens": 0,
                             "total_tokens": 0,
-                            "input_tokens_details": {},
+                            "input_tokens_details": {"cached_tokens": 0},
                             "output_tokens_details": {},
                         },
                     },
@@ -536,6 +599,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.wfile.flush()
             except Exception:
                 pass
+            # 异常路径也记录上游错误到 debug_log
+            logger = get_logger()
+            if logger:
+                logger.log_upstream_response(request_id, upstream_status,
+                    json.dumps({"error": {"type": "server_error", "message": str(e)}}),
+                    int((time.time() - start) * 1000))
 
         duration_ms = int((time.time() - start) * 1000)
         full_sse = "".join(sse_buffer)
