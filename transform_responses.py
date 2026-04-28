@@ -489,6 +489,44 @@ class CodexStreamConverter:
         self.text_content_part_opened = False
         return events
 
+    def _handle_reasoning_delta(self, reasoning: str) -> list:
+        events = []
+        if not self.reasoning_opened:
+            self.reasoning_output_index = self.next_output_index
+            self.next_output_index += 1
+            self.reasoning_id = f"rs_{uuid.uuid4().hex[:8]}"
+            self.reasoning_opened = True
+            events.append(self._format_sse("response.output_item.added", {
+                "output_index": self.reasoning_output_index,
+                "item": {"type": "reasoning", "id": self.reasoning_id, "summary": []},
+            }))
+        self.accumulated_reasoning += reasoning
+        events.append(self._format_sse("response.reasoning.delta", {
+            "output_index": self.reasoning_output_index,
+            "delta": reasoning,
+        }))
+        return events
+
+    def _close_reasoning_block(self) -> list:
+        if not self.reasoning_opened:
+            return []
+        item = {
+            "type": "reasoning",
+            "id": self.reasoning_id,
+            "summary": [{"type": "summary_text", "text": self.accumulated_reasoning}],
+        }
+        self.output_items.append((self.reasoning_output_index, item))
+        return [
+            self._format_sse("response.reasoning.done", {
+                "output_index": self.reasoning_output_index,
+                "text": self.accumulated_reasoning,
+            }),
+            self._format_sse("response.output_item.done", {
+                "output_index": self.reasoning_output_index,
+                "item": item,
+            }),
+        ]
+
 
 @dataclass
 class StreamState:

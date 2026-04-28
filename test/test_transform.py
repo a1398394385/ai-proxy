@@ -1137,6 +1137,74 @@ class _SSETestBase(unittest.TestCase):
         return events
 
 
+class TestHandleReasoningDelta(_SSETestBase):
+    def _make_converter(self):
+        from transform import CodexStreamConverter
+        c = CodexStreamConverter()
+        c.response_id = "resp-test"
+        c.model = "test"
+        return c
+
+    def test_first_delta_emits_output_item_added(self):
+        c = self._make_converter()
+        result = c._handle_reasoning_delta("Let me think")
+        events = self._parse_events(result)
+        types = [e[0] for e in events]
+        self.assertIn("response.output_item.added", types)
+        self.assertIn("response.reasoning.delta", types)
+
+    def test_output_item_added_reasoning_structure(self):
+        c = self._make_converter()
+        result = c._handle_reasoning_delta("Think...")
+        events = self._parse_events(result)
+        added = next(e for e in events if e[0] == "response.output_item.added")
+        self.assertEqual(added[1]["item"]["type"], "reasoning")
+        self.assertEqual(added[1]["item"]["summary"], [])
+        self.assertTrue(added[1]["item"]["id"].startswith("rs_"))
+
+    def test_second_delta_no_added(self):
+        c = self._make_converter()
+        c._handle_reasoning_delta("Think...")
+        result = c._handle_reasoning_delta("more...")
+        events = self._parse_events(result)
+        types = [e[0] for e in events]
+        self.assertNotIn("response.output_item.added", types)
+
+    def test_reasoning_delta_event_name_is_correct(self):
+        """事件名必须是 response.reasoning.delta，不是 response.reasoning_summary_text.delta。"""
+        c = self._make_converter()
+        result = c._handle_reasoning_delta("thinking")
+        events = self._parse_events(result)
+        delta_event = next(e for e in events if "delta" in e[0] and "reasoning" in e[0])
+        self.assertEqual(delta_event[0], "response.reasoning.delta")
+
+    def test_reasoning_delta_has_no_summary_index(self):
+        """response.reasoning.delta 不含 summary_index 字段。"""
+        c = self._make_converter()
+        result = c._handle_reasoning_delta("thinking")
+        events = self._parse_events(result)
+        delta_event = next(e for e in events if e[0] == "response.reasoning.delta")
+        self.assertNotIn("summary_index", delta_event[1])
+
+    def test_accumulated_reasoning(self):
+        c = self._make_converter()
+        c._handle_reasoning_delta("Think ")
+        c._handle_reasoning_delta("harder")
+        self.assertEqual(c.accumulated_reasoning, "Think harder")
+
+    def test_close_reasoning_block_item_structure(self):
+        c = self._make_converter()
+        c._handle_reasoning_delta("deep thought")
+        result = c._close_reasoning_block()
+        events = self._parse_events(result)
+        item_done = next(e for e in events if e[0] == "response.output_item.done")
+        item = item_done[1]["item"]
+        self.assertEqual(item["type"], "reasoning")
+        self.assertEqual(len(item["summary"]), 1)
+        self.assertEqual(item["summary"][0]["type"], "summary_text")
+        self.assertEqual(item["summary"][0]["text"], "deep thought")
+
+
 class TestHandleTextDelta(_SSETestBase):
     def _make_converter(self):
         from transform import CodexStreamConverter
