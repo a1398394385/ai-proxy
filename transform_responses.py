@@ -406,6 +406,39 @@ class CodexStreamConverter:
     output_items: list = field(default_factory=list)
     created_sent: bool = False
 
+    def _format_sse(self, event_type: str, data: dict) -> str:
+        return _format_sse_event(event_type, data)
+
+    def _build_response_obj(
+        self,
+        status: str,
+        usage: dict = None,
+        output: list = None,
+        incomplete_details: dict = None,
+    ) -> dict:
+        obj = {
+            "id": self.response_id,
+            "object": "response",
+            "created_at": int(time.time()),
+            "status": status,
+            "model": self.model,
+            "output": output if output is not None else [],
+            "usage": usage or {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+        }
+        if incomplete_details is not None:
+            obj["incomplete_details"] = incomplete_details
+        return obj
+
+    def _emit_created(self) -> list:
+        resp = self._build_response_obj("in_progress")
+        events = [
+            self._format_sse("response.created",     {"response": resp}),
+            self._format_sse("response.in_progress", {"response": resp}),
+            self._format_sse("response.metadata",    {"headers": {"model": self.model}}),
+        ]
+        self.created_sent = True
+        return events
+
 
 @dataclass
 class StreamState:

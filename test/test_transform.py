@@ -1117,6 +1117,76 @@ class TestSSEEventFormatIntegration(unittest.TestCase):
         self.assertIn("usage", data["response"])
 
 
+class TestCodexStreamConverterCreated(unittest.TestCase):
+    def _make_converter(self):
+        from transform import CodexStreamConverter
+        c = CodexStreamConverter()
+        c.response_id = "resp-test-00000001"
+        c.model = "test-model"
+        return c
+
+    def test_build_response_obj_required_fields(self):
+        c = self._make_converter()
+        obj = c._build_response_obj("in_progress")
+        for key in ("id", "object", "created_at", "status", "model", "output", "usage"):
+            self.assertIn(key, obj, f"缺少必需字段: {key}")
+        self.assertEqual(obj["id"], "resp-test-00000001")
+        self.assertEqual(obj["object"], "response")
+        self.assertEqual(obj["status"], "in_progress")
+        self.assertEqual(obj["model"], "test-model")
+        self.assertEqual(obj["output"], [])
+
+    def test_build_response_obj_usage_none_fallback(self):
+        c = self._make_converter()
+        obj = c._build_response_obj("completed", usage=None)
+        self.assertEqual(obj["usage"], {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+    def test_build_response_obj_incomplete_details(self):
+        c = self._make_converter()
+        obj = c._build_response_obj("incomplete", incomplete_details={"reason": "max_tokens"})
+        self.assertIn("incomplete_details", obj)
+        self.assertEqual(obj["incomplete_details"]["reason"], "max_tokens")
+
+    def test_build_response_obj_no_incomplete_details_when_none(self):
+        c = self._make_converter()
+        obj = c._build_response_obj("completed")
+        self.assertNotIn("incomplete_details", obj)
+
+    def test_emit_created_returns_three_events(self):
+        c = self._make_converter()
+        events = c._emit_created()
+        self.assertEqual(len(events), 3)
+
+    def test_emit_created_sets_created_sent(self):
+        c = self._make_converter()
+        self.assertFalse(c.created_sent)
+        c._emit_created()
+        self.assertTrue(c.created_sent)
+
+    def test_emit_created_event_types(self):
+        import json
+        c = self._make_converter()
+        events = c._emit_created()
+        types = []
+        for e in events:
+            for line in e.split("\n"):
+                if line.startswith("data: "):
+                    types.append(json.loads(line[6:])["type"])
+        self.assertIn("response.created", types)
+        self.assertIn("response.in_progress", types)
+        self.assertIn("response.metadata", types)
+
+    def test_emit_created_response_has_model(self):
+        import json
+        c = self._make_converter()
+        events = c._emit_created()
+        # First event (response.created) response object must have correct model
+        for line in events[0].split("\n"):
+            if line.startswith("data: "):
+                data = json.loads(line[6:])
+                self.assertEqual(data["response"]["model"], "test-model")
+
+
 class TestCodexStreamConverterFields(unittest.TestCase):
     def test_default_fields(self):
         from transform import CodexStreamConverter
