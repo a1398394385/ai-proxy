@@ -2,7 +2,6 @@
 """动态模型配置管理 — ConfigDB（数据库 CRUD）+ ConfigCache（内存缓存）。"""
 
 import sqlite3
-import sys
 import threading
 import time
 import logging
@@ -15,14 +14,11 @@ class ConfigDB:
 
     参数:
         db_path: config.db 路径
-        yaml_seed_path: 可选，proxy_config.yaml 路径，仅在首次启动且数据库为空时导入
     """
 
-    def __init__(self, db_path: Path, yaml_seed_path: Path = None):
+    def __init__(self, db_path: Path):
         self.db_path = db_path
         self._ensure_db()
-        if yaml_seed_path is not None:
-            self._seed_from_yaml(yaml_seed_path)
 
     def _connect(self):
         conn = sqlite3.connect(str(self.db_path))
@@ -76,91 +72,8 @@ class ConfigDB:
         finally:
             conn.close()
 
-    def _seed_from_yaml(self, yaml_path: Path):
-        """首次启动从 proxy_config.yaml 导入种子数据。
-
-        使用 IMMEDIATE 事务减少 SELECT → BEGIN 之间的竞态窗口。
-        """
-        conn = self._connect()
-        try:
-            # IMMEDIATE 事务获取数据库写锁，阻止其他写入者，消除竞态
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                has_version = conn.execute(
-                    "SELECT COUNT(*) FROM schema_version"
-                ).fetchone()[0] > 0
-                if has_version:
-                    conn.execute("ROLLBACK")
-                    return
-
-                if not yaml_path.exists():
-                    conn.execute("INSERT INTO schema_version (version) VALUES (1)")
-                    conn.commit()
-                    return
-
-                with open(yaml_path) as f:
-                    config = _parse_yaml(f.read())
-
-                # BEGIN IMMEDIATE 已在上面执行，无需重复
-                upstream_data = config.get("upstream", {})
-                if upstream_data:
-                    conn.execute(
-                        """INSERT INTO upstreams (id, base_url, api_key, timeout,
-                           connect_timeout, ssl_verify, retry, is_default, is_active)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1)""",
-                        (
-                            "default",
-                            upstream_data.get("base_url", ""),
-                            upstream_data.get("api_key", ""),
-                            upstream_data.get("timeout", 120),
-                            upstream_data.get("connect_timeout", 10),
-                            1 if upstream_data.get("ssl_verify", True) else 0,
-                            upstream_data.get("retry", 1),
-                        ),
-                    )
-
-                model_map = config.get("model_map", {})
-                default_upstream_id = "default" if upstream_data else None
-
-                for source, cfg in model_map.items():
-                    if cfg is None or not isinstance(cfg, dict):
-                        continue
-                    target_name = cfg.get("target", source)
-                    multimodal = 1 if cfg.get("multimodal", False) else 0
-
-                    conn.execute(
-                        """INSERT OR IGNORE INTO target_models (name, upstream_id, multimodal, format)
-                           VALUES (?, ?, ?, 'openai_chat')""",
-                        (target_name, default_upstream_id, multimodal),
-                    )
-                    row = conn.execute(
-                        """SELECT id FROM target_models
-                           WHERE name=? AND upstream_id=?""",
-                        (target_name, default_upstream_id),
-                    ).fetchone()
-                    if row is None:
-                        continue
-                    target_id = row["id"]
-
-                    conn.execute(
-                        """INSERT OR REPLACE INTO model_routes (source, target_model_id)
-                           VALUES (?, ?)""",
-                        (source, target_id),
-                    )
-
-                conn.execute("INSERT INTO schema_version (version) VALUES (1)")
-                conn.commit()
-
-                if conn.execute("SELECT COUNT(*) FROM model_routes WHERE source='*'").fetchone()[0] == 0:
-                    print("FATAL: 种子导入完成后 * fallback 路由仍然缺失", file=sys.stderr)
-                    sys.exit(1)
-            except Exception:
-                conn.execute("ROLLBACK")
-                raise
-        finally:
-            conn.close()
-
     def close(self):
+        """No-op placeholder for API compatibility."""
         pass
 
     # ─── 上游 CRUD ────────────────────────────────────────────────
@@ -395,6 +308,15 @@ class ConfigDB:
     def add_route(self, data: dict) -> int:
         conn = self._connect()
         try:
+            # 校验目标模型所属上游是否活跃
+            active = conn.execute(
+                """SELECT 1 FROM target_models tm
+                   JOIN upstreams u ON tm.upstream_id = u.id
+                   WHERE tm.id = ? AND u.is_active = 1""",
+                (data["target_model_id"],),
+            ).fetchone()
+            if not active:
+                raise ValueError("目标模型不存在或所属上游已禁用")
             cursor = conn.execute(
                 "INSERT INTO model_routes (source, target_model_id) VALUES (?, ?)",
                 (data["source"], data["target_model_id"]),
@@ -452,12 +374,13 @@ class ConfigDB:
         - "*" 也找不到或也禁用 → 返回 None
         """
         for name in (source_name, "*"):
-            row = self._resolve_one(name)
+            row = self.resolve_one(name)
             if row is not None:
                 return row
         return None
 
-    def _resolve_one(self, source_name: str) -> Optional[dict]:
+    def resolve_one(self, source_name: str) -> Optional[dict]:
+        """精确匹配单个 source 的路由配置，无 fallback（供 ConfigCache 内部使用）。"""
         conn = self._connect()
         try:
             row = conn.execute(
@@ -533,10 +456,9 @@ class ConfigDB:
 class ConfigCache:
     """内存缓存，供 proxy.py 使用。"""
 
-    def __init__(self, db_path: Path, ttl: float = 5, yaml_seed_path: Path = None):
+    def __init__(self, db_path: Path, ttl: float = 5):
         self._db_path = db_path
         self._ttl = ttl
-        self._yaml_seed_path = yaml_seed_path
         self._lock = threading.Lock()
         self._routes: dict = {}
         self._loaded_at: float = 0
@@ -562,17 +484,14 @@ class ConfigCache:
         if self._loaded_at > 0 and now - self._loaded_at < self._ttl:
             return
         try:
-            db = ConfigDB(self._db_path, yaml_seed_path=self._yaml_seed_path)
+            db = ConfigDB(self._db_path)
             try:
                 new_routes = {}
                 all_routes = db.get_all_routes()
                 for source in all_routes:
-                    cfg = db._resolve_one(source)
+                    cfg = db.resolve_one(source)
                     if cfg:
                         new_routes[source] = cfg
-                star_cfg = db.resolve_model("*")
-                if star_cfg:
-                    new_routes["*"] = star_cfg
                 self._routes = new_routes
                 self._loaded_at = time.time()
             finally:

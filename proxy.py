@@ -118,8 +118,7 @@ CONFIG_PATH = Path(__file__).parent / "proxy_config.yaml"
 
 # ─── 动态配置缓存（替代静态 model_map）───────────────────────────
 CONFIG_DB_PATH = Path.home() / ".hermes" / "config.db"
-YAML_SEED_PATH = Path(__file__).parent / "proxy_config.yaml"
-config_cache = ConfigCache(CONFIG_DB_PATH, yaml_seed_path=YAML_SEED_PATH)
+config_cache = ConfigCache(CONFIG_DB_PATH)
 
 
 def load_config(config_path: Path = None):
