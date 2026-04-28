@@ -11,8 +11,7 @@
 - StreamState: 来自 transform_responses
 - CodexStreamConverter: 来自 transform_responses
 - ToolBlockState: 来自 transform_responses
-- _process_delta: 来自 transform_responses
-- _emit_completion: 来自 transform_responses
+- _output_items_to_messages: 来自 transform_responses
 - _map_tools: 来自 transform_responses
 - _map_response_format: 来自 transform_responses
 - anthropic_to_chat: 来自 transform_anthropic（/v1/messages 路径）— Task 4 后可用

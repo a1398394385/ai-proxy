@@ -572,8 +572,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 })
                 self.wfile.write(completed_event.encode("utf-8"))
                 self.wfile.flush()
-                self.wfile.write(b"data: [DONE]\n\n")
-                self.wfile.flush()
+                try:
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    self.wfile.flush()
+                except (BrokenPipeError, OSError):
+                    pass
                 logger = get_logger()
                 if logger:
                     logger.log_upstream_response(request_id, resp.status, resp.read().decode("utf-8", errors="replace"), 0)
@@ -612,8 +615,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 })
                 self.wfile.write(completed_event.encode("utf-8"))
                 self.wfile.flush()
-                self.wfile.write(b"data: [DONE]\n\n")
-                self.wfile.flush()
+                try:
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    self.wfile.flush()
+                except (BrokenPipeError, OSError):
+                    pass
                 logger = get_logger()
                 if logger:
                     logger.log_upstream_response(request_id, upstream_status, resp.read().decode("utf-8", errors="replace"), 0)

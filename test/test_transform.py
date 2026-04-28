@@ -1159,7 +1159,10 @@ class _SSETestBase(unittest.TestCase):
                     if line.startswith("event: "):
                         etype = line[7:]
                     elif line.startswith("data: "):
-                        data = json.loads(line[6:])
+                        try:
+                            data = json.loads(line[6:])
+                        except json.JSONDecodeError:
+                            pass  # [DONE] 终止标记
                 if etype and data:
                     events.append((etype, data))
         return events
@@ -1440,7 +1443,7 @@ class TestHandleToolCallDelta(_SSETestBase):
         self.assertEqual(names.index("read_file"), 1)
 
 
-class TestNewSSEFeatures(unittest.TestCase):
+class TestNewSSEFeatures(_SSETestBase):
     """Phase 1 新增事件序列的集成测试。"""
 
     @staticmethod
@@ -1455,21 +1458,7 @@ class TestNewSSEFeatures(unittest.TestCase):
                 return chunk
         return MockStream()
 
-    @staticmethod
-    def _parse_events(text):
-        import json
-        events = []
-        for block in text.strip().split("\n\n"):
-            lines = block.split("\n")
-            etype, data = None, None
-            for line in lines:
-                if line.startswith("event: "): etype = line[7:]
-                elif line.startswith("data: "):
-                    try: data = json.loads(line[6:])
-                    except json.JSONDecodeError: pass
-            if etype and data:
-                events.append((etype, data))
-        return events
+    # 继承 _SSETestBase._parse_events，不重复实现
 
     def _stream_to_text(self, chunks):
         from transform import create_codex_sse_stream
@@ -1483,7 +1472,7 @@ class TestNewSSEFeatures(unittest.TestCase):
             b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',
             b'data: [DONE]\n\n',
         ]
-        events = self._parse_events(self._stream_to_text(chunks))
+        events = self._parse_events([self._stream_to_text(chunks)])
         types = [e[0] for e in events[:3]]
         self.assertEqual(types[0], "response.created")
         self.assertEqual(types[1], "response.in_progress")
@@ -1592,11 +1581,13 @@ class TestNewSSEFeatures(unittest.TestCase):
             b'data: [DONE]\n\n',
         ]
         text = self._stream_to_text(chunks)
-        # done 事件中 bash (index=0) 在 read_file (index=1) 之前
-        self.assertIn("response.output_item.added", text)
-        self.assertIn("response.function_call_arguments.done", text)
-        self.assertIn('"name":"bash"', text)
-        self.assertIn('"name":"read_file"', text)
+        events = self._parse_events([text])
+        done_events = [e for e in events if e[0] == "response.output_item.done"]
+        tool_names = [e[1]["item"]["name"] for e in done_events if e[1]["item"]["type"] == "function_call"]
+        self.assertIn("bash", tool_names)
+        self.assertIn("read_file", tool_names)
+        self.assertLess(tool_names.index("bash"), tool_names.index("read_file"),
+                        "done 事件中 bash (index=0) 应在 read_file (index=1) 之前")
 
 
 class TestOutputItemsToMessages(unittest.TestCase):
@@ -1644,9 +1635,10 @@ class TestOutputItemsToMessages(unittest.TestCase):
 class TestProxyErrorPathsDone(unittest.TestCase):
     """验证三处错误路径各包含 data: [DONE]。"""
 
-    def _read_forward_streaming_source(self):
+    @staticmethod
+    def _read_forward_streaming_source():
         import pathlib
-        return pathlib.Path("/Users/xys/.hermes/fact-store-browser/proxy.py").read_text()
+        return (pathlib.Path(__file__).parent.parent / "proxy.py").read_text()
 
     def test_non_200_error_path_has_done(self):
         """上游非 200 错误路径在 completed 后补发 [DONE]。"""
@@ -1674,7 +1666,7 @@ class TestProxyErrorPathsDone(unittest.TestCase):
     def test_iter_sse_buffer_size(self):
         """iter_sse_events 读缓冲区应为 4096 字节。"""
         import pathlib
-        src = pathlib.Path("/Users/xys/.hermes/fact-store-browser/transform_responses.py").read_text()
+        src = (pathlib.Path(__file__).parent.parent / "transform_responses.py").read_text()
         self.assertIn("read(4096)", src, "iter_sse_events 缓冲区应从 256 增大到 4096")
         self.assertNotIn("read(256)", src, "旧 256 字节缓冲区应已删除")
 
