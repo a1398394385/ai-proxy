@@ -659,6 +659,93 @@ class CodexStreamConverter:
 
         return events
 
+    def _convert_usage(self, raw: dict) -> dict:
+        usage = {
+            "input_tokens": _find_first(raw, ["prompt_tokens", "input_tokens"]),
+            "output_tokens": _find_first(raw, ["completion_tokens", "output_tokens"]),
+            "total_tokens": raw.get("total_tokens", 0),
+        }
+        details = {"cached_tokens": 0}
+        for k in ("prompt_tokens_details", "input_tokens_details"):
+            if raw.get(k):
+                details.update(raw[k])
+        usage["input_tokens_details"] = details
+        out_det = raw.get("completion_tokens_details") or raw.get("output_tokens_details")
+        usage["output_tokens_details"] = out_det or {"reasoning_tokens": 0}
+        for k in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+            if k in raw and raw[k] is not None:
+                usage[k] = raw[k]
+        return usage
+
+    def process_chunk(self, chunk: dict) -> list:
+        events = []
+        # 首个 chunk：更新 model，发 created 三件套
+        if not self.created_sent:
+            model = chunk.get("model", "")
+            if model:
+                self.model = model
+            events.extend(self._emit_created())
+        # 捕获 usage
+        if chunk.get("usage"):
+            self.final_usage = chunk["usage"]
+        # 处理 choices
+        for choice in chunk.get("choices", []):
+            if choice.get("finish_reason"):
+                self.finish_reason = choice["finish_reason"]
+            delta = choice.get("delta", {})
+            if not delta:
+                continue
+            # 顺序：content → refusal → reasoning → tool_calls
+            content = delta.get("content")
+            if content:
+                events.extend(self._handle_text_delta(content))
+            refusal = delta.get("refusal")
+            if refusal:
+                events.extend(self._handle_refusal_delta(refusal))
+            for key in ("reasoning_content", "thinking", "reasoning"):
+                reasoning = delta.get(key)
+                if reasoning:
+                    events.extend(self._handle_reasoning_delta(reasoning))
+                    break
+            tool_calls = delta.get("tool_calls")
+            if tool_calls:
+                for tc in tool_calls:
+                    events.extend(self._handle_tool_call_delta(tc))
+        return events
+
+    def finish(self) -> list:
+        events = []
+        if not self.created_sent:
+            self.model = self.model or ""
+            events.extend(self._emit_created())
+        if self.text_content_part_opened:
+            events.extend(self._close_text_block())
+        if self.refusal_opened:
+            events.extend(self._close_refusal_block())
+        if self.text_message_opened:
+            events.extend(self._emit_message_item_done())
+        if self.reasoning_opened:
+            events.extend(self._close_reasoning_block())
+        events.extend(self._close_tool_blocks())
+        # 按 output_index 排序
+        self.output_items.sort(key=lambda x: x[0])
+        output_list = [item for _, item in self.output_items]
+        # 构建 usage
+        usage = self._convert_usage(self.final_usage) if self.final_usage else None
+        # 构建 response
+        if self.finish_reason in INCOMPLETE_REASON_MAP:
+            incomplete_details = {"reason": INCOMPLETE_REASON_MAP[self.finish_reason]}
+            status = "incomplete"
+            resp = self._build_response_obj(status, usage=usage, output=output_list,
+                                            incomplete_details=incomplete_details)
+            events.append(self._format_sse("response.incomplete", {"response": resp}))
+        else:
+            status = "completed"
+            resp = self._build_response_obj(status, usage=usage, output=output_list)
+        events.append(self._format_sse("response.completed", {"response": resp}))
+        events.append("data: [DONE]\n\n")
+        return events
+
     def _emit_tool_block_done(self, block: "ToolBlockState") -> list:
         item = {
             "type": "function_call",

@@ -1205,6 +1205,100 @@ class TestHandleReasoningDelta(_SSETestBase):
         self.assertEqual(item["summary"][0]["text"], "deep thought")
 
 
+class TestProcessChunkAndFinish(_SSETestBase):
+    def _make_converter(self, response_id="resp-test"):
+        from transform import CodexStreamConverter
+        c = CodexStreamConverter()
+        c.response_id = response_id
+        return c
+
+    def test_first_chunk_triggers_emit_created_and_updates_model(self):
+        c = self._make_converter()
+        result = c.process_chunk({"model": "gpt-4o", "choices": [{"delta": {"content": "Hi"}}]})
+        self.assertTrue(c.created_sent)
+        self.assertEqual(c.model, "gpt-4o")
+        events = self._parse_events(result)
+        types = [e[0] for e in events]
+        self.assertIn("response.created", types)
+        self.assertIn("response.in_progress", types)
+
+    def test_second_chunk_no_duplicate_created(self):
+        c = self._make_converter()
+        c.process_chunk({"model": "test", "choices": [{"delta": {"content": "Hi"}}]})
+        result = c.process_chunk({"choices": [{"delta": {"content": " there"}}]})
+        events = self._parse_events(result)
+        types = [e[0] for e in events]
+        self.assertNotIn("response.created", types)
+
+    def test_process_chunk_captures_finish_reason(self):
+        c = self._make_converter()
+        c.process_chunk({"model": "test", "choices": [{"delta": {}, "finish_reason": "stop"}]})
+        self.assertEqual(c.finish_reason, "stop")
+
+    def test_process_chunk_captures_usage(self):
+        c = self._make_converter()
+        usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        c.process_chunk({"model": "test", "choices": [{"delta": {}}], "usage": usage})
+        self.assertEqual(c.final_usage["prompt_tokens"], 10)
+
+    def test_finish_emits_completed_and_done(self):
+        c = self._make_converter()
+        c.process_chunk({"model": "test", "choices": [{"delta": {"content": "Hello"}}]})
+        c.process_chunk({"choices": [{"delta": {}, "finish_reason": "stop"}],
+                         "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}})
+        result = c.finish()
+        all_text = "".join(result)
+        self.assertIn("response.completed", all_text)
+        self.assertIn("data: [DONE]", all_text)
+
+    def test_finish_on_empty_stream_still_sends_created(self):
+        c = self._make_converter()
+        c.response_id = "resp-empty"
+        c.model = "test"
+        result = c.finish()
+        all_text = "".join(result)
+        self.assertIn("response.created", all_text)
+        self.assertIn("response.in_progress", all_text)
+        self.assertIn("response.completed", all_text)
+        self.assertIn("data: [DONE]", all_text)
+
+    def test_finish_incomplete_sends_response_incomplete_and_completed(self):
+        """finish_reason=length 时同时发送 response.incomplete 和 response.completed。"""
+        import json
+        c = self._make_converter()
+        c.model = "test"
+        c.process_chunk({"model": "test", "choices": [{"delta": {"content": "partial"}, "finish_reason": "length"}],
+                         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
+        result = c.finish()
+        all_text = "".join(result)
+        self.assertIn("response.incomplete", all_text)
+        self.assertIn("response.completed", all_text)
+        # 确认 completed 中 response.status 为 "incomplete"
+        data = json.loads([line for s in result for line in s.split("\n")
+                          if line.startswith("data: ") and "response.completed" in line][0][6:])
+        self.assertEqual(data["response"]["status"], "incomplete")
+
+    def test_finish_output_sorted_by_index(self):
+        """reasoning（index=0）先于 text（index=1）出现在 response.completed output 中。"""
+        import json
+        c = self._make_converter()
+        c.model = "test"
+        c.process_chunk({"model": "test", "choices": [{"delta": {"reasoning_content": "Think"}}]})
+        c.process_chunk({"choices": [{"delta": {"content": "Answer"}}]})
+        c.process_chunk({"choices": [{"delta": {}, "finish_reason": "stop"}],
+                         "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}})
+        result = c.finish()
+        all_text = "".join(result)
+        completed_line = next(
+            line for s in result for line in s.split("\n")
+            if line.startswith("data: ") and "response.completed" in line
+        )
+        completed = json.loads(completed_line[6:])
+        output = completed["response"]["output"]
+        self.assertEqual(output[0]["type"], "reasoning")
+        self.assertEqual(output[1]["type"], "message")
+
+
 class TestHandleToolCallDelta(_SSETestBase):
     def _make_converter(self):
         from transform import CodexStreamConverter
