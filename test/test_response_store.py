@@ -105,6 +105,29 @@ class TestResponseStore(unittest.TestCase):
         self.assertIsNotNone(store.get("r3"))
 
 
+class TestPreviousResponseIdInjection(unittest.TestCase):
+    def _get_handle_responses_body(self):
+        import pathlib
+        src = (pathlib.Path(__file__).parent.parent / "proxy.py").read_text()
+        start = src.index("def _handle_responses(")
+        # 取到下一个 def（_handle_messages 之前）
+        end = src.index("\n    def _handle_messages(", start)
+        return src[start:end]
+
+    def test_reads_previous_response_id(self):
+        body = self._get_handle_responses_body()
+        self.assertIn("previous_response_id", body,
+                      "_handle_responses() 应读取 previous_response_id")
+        self.assertIn("response_store.get(", body,
+                      "_handle_responses() 应调用 response_store.get() 读取历史")
+
+    def test_system_msg_stays_first(self):
+        """注入历史时 system 消息必须保持在首位（不被历史 messages 插入其前）。"""
+        body = self._get_handle_responses_body()
+        self.assertIn("system_msgs", body,
+                      "proxy.py 应将 system 消息和历史消息分开处理，确保 system 在首位")
+
+
 class TestResponseStoreServerMount(unittest.TestCase):
     def test_main_mounts_response_store(self):
         """proxy.py main() 应在创建 server 后挂载 server.response_store。"""

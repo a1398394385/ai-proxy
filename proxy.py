@@ -330,6 +330,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if logger:
             logger.log_converted_request(request_id, model_name, target, chat_body)
 
+        # previous_response_id：从 store 读取历史 conversation 并注入到本轮 messages
+        prev_id = body.get("previous_response_id")
+        if prev_id:
+            response_store = getattr(self.server, "response_store", None)
+            if response_store is not None:
+                record = response_store.get(prev_id)
+                if record:
+                    # system 消息始终保持首位，历史插入 system 与 user 之间
+                    system_msgs = [m for m in chat_body["messages"] if m.get("role") == "system"]
+                    non_system_msgs = [m for m in chat_body["messages"] if m.get("role") != "system"]
+                    chat_body["messages"] = system_msgs + record.conversation + non_system_msgs
+                else:
+                    logging.warning(f"previous_response_id={prev_id!r} 不存在或已过期，忽略历史")
+
         # 转发到上游（传入 request_id, model_name, target, request_ts）
         if is_stream:
             self._forward_streaming(chat_body, model_cfg, request_id, model_name, target, request_ts)
