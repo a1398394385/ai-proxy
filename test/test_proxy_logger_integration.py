@@ -229,7 +229,7 @@ class TestConversionException(unittest.TestCase):
         mock_conn.sock = MagicMock()
 
         with patch("http.client.HTTPConnection", return_value=mock_conn):
-            with patch.object(self.mod, "chat_to_responses", side_effect=RuntimeError("conversion failed")):
+            with patch("transform_responses.chat_to_responses", side_effect=RuntimeError("conversion failed")):
                 body = json.dumps({
                     "model": "gpt-4o",
                     "input": [{"type": "message", "role": "user", "content": "Hi"}],
@@ -280,7 +280,7 @@ class TestStreamingFlow(unittest.TestCase):
             mock_conn.sock = MagicMock()
             mock_conn_cls.return_value = mock_conn
 
-            with patch.object(self.mod, "create_codex_sse_stream", return_value=sse_events):
+            with patch("transform_responses.create_codex_sse_stream", return_value=sse_events):
                 body = json.dumps({
                     "model": "gpt-4o",
                     "input": [{"type": "message", "role": "user", "content": "Hi"}],
@@ -324,7 +324,7 @@ class TestStreamingFlow(unittest.TestCase):
             mock_conn.sock = MagicMock()
             mock_conn_cls.return_value = mock_conn
 
-            with patch.object(self.mod, "create_codex_sse_stream", return_value=sse_events):
+            with patch("transform_responses.create_codex_sse_stream", return_value=sse_events):
                 body = json.dumps({
                     "model": "gpt-4o",
                     "input": [{"type": "message", "role": "user", "content": "Hi"}],

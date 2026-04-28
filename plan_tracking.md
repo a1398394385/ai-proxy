@@ -28,13 +28,13 @@ Task 0: 准备 plan_tracking.md + 验证基线（130 passed）
 - **Status:** done
 
 ### Task 2: 创建 transform_responses.py — 提取 Responses 转换逻辑
-- [ ] Step 1: 从 transform.py 复制全部内容到 transform_responses.py
-- [ ] Step 2: 修改 proxy.py 的 import（从 transform_responses 导入）
-- [ ] Step 3: 修改 test/test_transform.py 的 import
-- [ ] Step 4: 重写 transform.py 为选择器（re-export）
-- [ ] Step 5: 运行全量测试确认（139 passed）
-- [ ] Step 6: Commit
-- **Status:** pending
+- [x] Step 1: 从 transform.py 复制全部内容到 transform_responses.py
+- [x] Step 2: 修改 proxy.py 的 import（从 transform_responses 导入）— 通过 transform.py re-export 兼容
+- [x] Step 3: 修改 test/test_transform.py 的 import — 通过 transform.py re-export 兼容
+- [x] Step 4: 重写 transform.py 为选择器（re-export）
+- [x] Step 5: 运行全量测试确认（139 passed）
+- [x] Step 6: Commit
+- **Status:** done
 
 ### Task 3: proxy.py 转发函数参数化
 - [ ] Step 1: _forward_non_streaming 增加 response_converter 参数

@@ -331,14 +331,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
         else:
             self._forward_non_streaming(chat_body, request_id, model_name, target, request_ts)
 
-    def _forward_non_streaming(self, chat_body: dict, request_id: str, model: str, target: str, request_ts: str):
+    def _forward_non_streaming(self, chat_body: dict, request_id: str, model: str, target: str, request_ts: str, response_converter=None):
         """非流式：转发到上游，转换响应，返回。
+
+        response_converter: callable, chat_response -> format_response
+                           默认 chat_to_responses（与当前行为一致）
 
         超时处理：
         - connect_timeout: 连接超时（独立设置）
         - timeout: 读超时（总超时，包含 connect + read）
         实现方式：先用 connect_timeout 建立连接，再设 socket timeout 为总超时
         """
+        if response_converter is None:
+            from transform_responses import chat_to_responses as response_converter
         upstream_cfg = CONFIG.get("upstream", {})
         base_url = upstream_cfg["base_url"]
         api_key = upstream_cfg["api_key"]
@@ -397,7 +402,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
                 # 阶段 4 + 5：转换响应 + Token 统计
                 try:
-                    responses_response = chat_to_responses(chat_response)
+                    responses_response = response_converter(chat_response)
                     if logger:
                         logger.log_converted_response(request_id, model, target, responses_response)
 
@@ -434,8 +439,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
 
-    def _forward_streaming(self, chat_body: dict, model_cfg: dict, request_id: str, model: str, target: str, request_ts: str):
-        """流式：直连上游 SSE，通过 create_codex_sse_stream 转换后逐事件返回。"""
+    def _forward_streaming(self, chat_body: dict, model_cfg: dict, request_id: str, model: str, target: str, request_ts: str, response_converter=None, sse_stream_factory=None):
+        """流式：直连上游 SSE，通过 sse_stream_factory 转换后逐事件返回。
+
+        response_converter: callable（本函数内用于 token_stats 的 context，不直接调用）
+        sse_stream_factory: callable, upstream_response -> Generator[str]
+                           默认 create_codex_sse_stream（与当前行为一致）
+        """
+        if sse_stream_factory is None:
+            from transform_responses import create_codex_sse_stream as sse_stream_factory
         upstream_cfg = CONFIG.get("upstream", {})
         base_url = upstream_cfg["base_url"]
         api_key = upstream_cfg["api_key"]
@@ -551,8 +563,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     logger.log_upstream_response(request_id, upstream_status, resp.read().decode("utf-8", errors="replace"), 0)
                 return
 
-            # 核心：通过 create_codex_sse_stream 逐事件转换并发送
-            for sse_event in create_codex_sse_stream(resp):
+            # 核心：通过 sse_stream_factory 逐事件转换并发送
+            for sse_event in sse_stream_factory(resp):
                 self.wfile.write(sse_event.encode("utf-8"))
                 self.wfile.flush()
                 sse_buffer.append(sse_event)
