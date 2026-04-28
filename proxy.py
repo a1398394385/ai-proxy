@@ -520,7 +520,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
 
-    def _forward_streaming(self, chat_body: dict, model_cfg: dict, request_id: str, model: str, target: str, request_ts: str, response_converter=None, sse_stream_factory=None):
+    def _forward_streaming(self, chat_body: dict, model_cfg: dict, request_id: str, model: str, target: str, request_ts: str, response_converter=None, sse_stream_factory=None, store_enabled: bool = True):
         """流式：直连上游 SSE，通过 sse_stream_factory 转换后逐事件返回。
 
         response_converter: callable（本函数内用于 token_stats 的 context，不直接调用）
@@ -655,7 +655,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 return
 
             # 核心：通过 sse_stream_factory 逐事件转换并发送
-            for sse_event in sse_stream_factory(resp):
+            # _rstore 非 None 时传入流式存储所需的额外参数（Phase 2），
+            # create_codex_sse_stream 内部通过 response_store is not None 判断是否存储
+            _rstore = getattr(self.server, "response_store", None) if store_enabled else None
+            stream_gen = sse_stream_factory(
+                resp,
+                request_messages=chat_body.get("messages") if _rstore else None,
+                response_store=_rstore,
+            )
+            for sse_event in stream_gen:
                 self.wfile.write(sse_event.encode("utf-8"))
                 self.wfile.flush()
                 sse_buffer.append(sse_event)

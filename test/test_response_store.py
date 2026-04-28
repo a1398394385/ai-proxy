@@ -105,6 +105,80 @@ class TestResponseStore(unittest.TestCase):
         self.assertIsNotNone(store.get("r3"))
 
 
+class TestStreamingStorePath(unittest.TestCase):
+    @staticmethod
+    def _make_mock_stream(chunks):
+        class MockStream:
+            def __init__(self):
+                self.data = b"".join(chunks)
+                self.pos = 0
+            def read(self, size):
+                chunk = self.data[self.pos:self.pos + size]
+                self.pos += size
+                return chunk
+        return MockStream()
+
+    def test_streaming_stores_record_in_store(self):
+        """耗尽 create_codex_sse_stream 生成器后，store 应有对应的 record。"""
+        from transform_responses import create_codex_sse_stream
+        from response_store import ResponseStore
+
+        store = ResponseStore()
+        chunks = [
+            b'data: {"id":"c1","model":"test","choices":[{"delta":{"content":"Hi"},"index":0}]}\n\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',
+            b'data: [DONE]\n\n',
+        ]
+        request_messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Hello"},
+        ]
+
+        events_text = "".join(create_codex_sse_stream(
+            self._make_mock_stream(chunks),
+            request_messages=request_messages,
+            response_store=store,
+        ))
+
+        self.assertEqual(len(store._store), 1, "store 应有 1 条 record")
+        record = list(store._store.values())[0]
+        self.assertEqual(record.status, "completed")
+        # usage 格式验证：应是 input_tokens/output_tokens（Responses API 格式），
+        # 而非 raw prompt_tokens/completion_tokens（Chat Completions 格式）
+        self.assertIn("input_tokens", record.usage)
+        self.assertIn("output_tokens", record.usage)
+        self.assertNotIn("prompt_tokens", record.usage)
+        self.assertNotIn("completion_tokens", record.usage)
+        # conversation 不含 system，但含 user 和 assistant
+        roles = [m["role"] for m in record.conversation]
+        self.assertNotIn("system", roles, "conversation 不应含 system 消息")
+        self.assertIn("user", roles)
+        self.assertIn("assistant", roles)
+
+    def test_streaming_no_store_when_none(self):
+        """response_store=None 时不报错，正常流式输出。"""
+        from transform_responses import create_codex_sse_stream
+        chunks = [
+            b'data: {"id":"c1","model":"test","choices":[{"delta":{"content":"Hi"},"index":0}]}\n\n',
+            b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',
+            b'data: [DONE]\n\n',
+        ]
+        result = list(create_codex_sse_stream(self._make_mock_stream(chunks)))
+        self.assertTrue(any("response.completed" in e for e in result))
+
+    def test_forward_streaming_passes_store_to_factory(self):
+        """_forward_streaming 应传入 request_messages 和 response_store 参数。"""
+        import pathlib
+        src = (pathlib.Path(__file__).parent.parent / "proxy.py").read_text()
+        start = src.index("def _forward_streaming(")
+        end = src.index("\n    def _send_json(", start)
+        func_body = src[start:end]
+        self.assertIn("request_messages", func_body,
+                      "_forward_streaming 应向 sse_stream_factory 传 request_messages")
+        self.assertIn("response_store", func_body,
+                      "_forward_streaming 应向 sse_stream_factory 传 response_store")
+
+
 class TestNonStreamingStorePath(unittest.TestCase):
     def _get_non_streaming_body(self):
         import pathlib

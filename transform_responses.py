@@ -808,8 +808,12 @@ class CodexStreamConverter:
 StreamState = CodexStreamConverter
 
 
-def create_codex_sse_stream(upstream_response):
-    """读取上游 SSE 流，逐事件 yield Responses API 格式的 SSE 字符串。"""
+def create_codex_sse_stream(upstream_response, request_messages: list = None, response_store=None):
+    """读取上游 SSE 流，逐事件 yield Responses API 格式的 SSE 字符串。
+
+    request_messages: chat_body["messages"]，用于构建完整 conversation（Phase 2 新增）
+    response_store: ResponseStore 实例；非 None 时在 finish() 后存储 response（Phase 2 新增）
+    """
     converter = CodexStreamConverter()
     converter.response_id = generate_response_id()
 
@@ -824,6 +828,28 @@ def create_codex_sse_stream(upstream_response):
 
     for sse_str in converter.finish():
         yield sse_str
+
+    # finish() 返回后 output_items 已按 output_index 排序为 (index, item) 元组
+    if response_store is not None:
+        from response_store import ResponseRecord
+        output_list = [item for _, item in converter.output_items]
+        assistant_msgs = _output_items_to_messages(output_list)
+        conversation = [
+            m for m in (request_messages or []) if m.get("role") != "system"
+        ] + assistant_msgs
+        usage = converter._convert_usage(converter.final_usage) if converter.final_usage is not None else None
+        status = "incomplete" if converter.finish_reason in ("length", "content_filter") else "completed"
+        record = ResponseRecord(
+            response_id=converter.response_id,
+            model=converter.model,
+            output=output_list,
+            conversation=conversation,
+            usage=usage,
+            status=status,
+            created_at=time.time(),
+            expires_at=time.time() + response_store.ttl_seconds,
+        )
+        response_store.put(record.response_id, record)
 
 
 def _output_items_to_messages(output_items: list) -> list:
