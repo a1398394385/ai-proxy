@@ -1117,6 +1117,114 @@ class TestSSEEventFormatIntegration(unittest.TestCase):
         self.assertIn("usage", data["response"])
 
 
+class _SSETestBase(unittest.TestCase):
+    """公共基类：为所有 SSE 事件测试提供 _parse_events 辅助方法，消除重复代码。"""
+    def _parse_events(self, sse_strings):
+        import json
+        events = []
+        for s in sse_strings:
+            for block in s.strip().split("\n\n"):
+                if not block.strip():
+                    continue
+                etype, data = None, None
+                for line in block.split("\n"):
+                    if line.startswith("event: "):
+                        etype = line[7:]
+                    elif line.startswith("data: "):
+                        data = json.loads(line[6:])
+                if etype and data:
+                    events.append((etype, data))
+        return events
+
+
+class TestHandleTextDelta(_SSETestBase):
+    def _make_converter(self):
+        from transform import CodexStreamConverter
+        c = CodexStreamConverter()
+        c.response_id = "resp-test"
+        c.model = "test"
+        return c
+
+    def test_first_delta_emits_output_item_added_and_content_part_added(self):
+        c = self._make_converter()
+        result = c._handle_text_delta("Hello")
+        events = self._parse_events(result)
+        types = [e[0] for e in events]
+        self.assertIn("response.output_item.added", types)
+        self.assertIn("response.content_part.added", types)
+        self.assertIn("response.output_text.delta", types)
+
+    def test_output_item_added_has_correct_item_structure(self):
+        c = self._make_converter()
+        result = c._handle_text_delta("Hello")
+        events = self._parse_events(result)
+        added = next(e for e in events if e[0] == "response.output_item.added")
+        item = added[1]["item"]
+        self.assertEqual(item["type"], "message")
+        self.assertEqual(item["status"], "in_progress")
+        self.assertEqual(item["role"], "assistant")
+        self.assertEqual(item["content"], [])
+        self.assertTrue(item["id"].startswith("msg_"))
+
+    def test_content_part_added_has_correct_part_structure(self):
+        c = self._make_converter()
+        result = c._handle_text_delta("Hello")
+        events = self._parse_events(result)
+        part_added = next(e for e in events if e[0] == "response.content_part.added")
+        part = part_added[1]["part"]
+        self.assertEqual(part["type"], "output_text")
+        self.assertEqual(part["text"], "")
+        self.assertEqual(part["annotations"], [])
+        self.assertEqual(part_added[1]["content_index"], 0)
+
+    def test_second_delta_no_added_events(self):
+        c = self._make_converter()
+        c._handle_text_delta("Hello")   # first
+        result = c._handle_text_delta(" World")   # second
+        events = self._parse_events(result)
+        types = [e[0] for e in events]
+        self.assertNotIn("response.output_item.added", types)
+        self.assertNotIn("response.content_part.added", types)
+        self.assertIn("response.output_text.delta", types)
+
+    def test_accumulated_text(self):
+        c = self._make_converter()
+        c._handle_text_delta("Hello")
+        c._handle_text_delta(" World")
+        self.assertEqual(c.accumulated_text, "Hello World")
+
+    def test_output_index_increments(self):
+        c = self._make_converter()
+        c._handle_text_delta("Hello")
+        self.assertEqual(c.next_output_index, 1)
+        self.assertEqual(c.text_output_index, 0)
+
+    def test_close_text_block_emits_done_events(self):
+        c = self._make_converter()
+        c._handle_text_delta("Hello World")
+        result = c._close_text_block()
+        events = self._parse_events(result)
+        types = [e[0] for e in events]
+        self.assertIn("response.output_text.done", types)
+        self.assertIn("response.content_part.done", types)
+
+    def test_close_text_block_done_has_full_text(self):
+        c = self._make_converter()
+        c._handle_text_delta("Hello ")
+        c._handle_text_delta("World")
+        result = c._close_text_block()
+        events = self._parse_events(result)
+        text_done = next(e for e in events if e[0] == "response.output_text.done")
+        self.assertEqual(text_done[1]["text"], "Hello World")
+
+    def test_close_text_block_sets_opened_false(self):
+        c = self._make_converter()
+        c._handle_text_delta("Hi")
+        self.assertTrue(c.text_content_part_opened)
+        c._close_text_block()
+        self.assertFalse(c.text_content_part_opened)
+
+
 class TestCodexStreamConverterCreated(unittest.TestCase):
     def _make_converter(self):
         from transform import CodexStreamConverter

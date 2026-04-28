@@ -439,6 +439,56 @@ class CodexStreamConverter:
         self.created_sent = True
         return events
 
+    def _handle_text_delta(self, text: str) -> list:
+        events = []
+        if not self.text_message_opened:
+            self.text_output_index = self.next_output_index
+            self.next_output_index += 1
+            self.text_message_id = f"msg_{uuid.uuid4().hex[:8]}"
+            self.text_message_opened = True
+            events.append(self._format_sse("response.output_item.added", {
+                "output_index": self.text_output_index,
+                "item": {
+                    "type": "message",
+                    "id": self.text_message_id,
+                    "status": "in_progress",
+                    "role": "assistant",
+                    "content": [],
+                },
+            }))
+        if not self.text_content_part_opened:
+            self.text_content_part_opened = True
+            events.append(self._format_sse("response.content_part.added", {
+                "output_index": self.text_output_index,
+                "content_index": 0,
+                "part": {"type": "output_text", "text": "", "annotations": []},
+            }))
+        self.accumulated_text += text
+        events.append(self._format_sse("response.output_text.delta", {
+            "output_index": self.text_output_index,
+            "content_index": 0,
+            "delta": text,
+        }))
+        return events
+
+    def _close_text_block(self) -> list:
+        if not self.text_content_part_opened:
+            return []
+        events = [
+            self._format_sse("response.output_text.done", {
+                "output_index": self.text_output_index,
+                "content_index": 0,
+                "text": self.accumulated_text,
+            }),
+            self._format_sse("response.content_part.done", {
+                "output_index": self.text_output_index,
+                "content_index": 0,
+                "part": {"type": "output_text", "text": self.accumulated_text, "annotations": []},
+            }),
+        ]
+        self.text_content_part_opened = False
+        return events
+
 
 @dataclass
 class StreamState:
