@@ -314,7 +314,7 @@ Wave FINAL（所有任务之后 — 4 项并行审查）：
   - 消息：`feat(frontend): 提取 core.js — 共享工具、主题、设置、事件总线、全局状态`
   - 文件：`static/js/core.js`, `static/index.html`
 
-- [ ] 3. Playwright E2E 冒烟测试 + 基础框架搭建
+- [x] 3. Playwright E2E 冒烟测试 + 基础框架搭建
 
   **做什么**：
   - 创建 `test/test_frontend_e2e.py`（Playwright + pytest）
@@ -821,21 +821,10 @@ Wave FINAL（所有任务之后 — 4 项并行审查）：
 > **在获得用户批准之前不得自动继续。**
 > **在获得用户 okay 之前，切勿将 F1-F4 标记为已完成。** 拒绝或反馈 → 修复 → 重新运行 → 再次呈现 → 等待 okay。
 
-- [ ] F1. **计划合规审计** — `oracle`
-  端到端阅读计划。对每个"必须做"：验证实现是否存在（读取文件、curl 端点、运行命令）。对每个"绝对不能做"：在代码库中搜索禁止的模式 — 如果找到则以 file:line 拒绝。检查 `.sisyphus/evidence/` 中的证据文件是否存在。对照计划比较可交付物。
-  输出：`Must Have [N/N] | Must NOT Have [N/N] | Tasks [8/8] | VERDICT: APPROVE/REJECT`
-
-- [ ] F2. **代码质量审查** — `unspecified-high`
-  检查所有更改的文件是否存在：`as any`/`@ts-ignore`（在 JS 中不相关）、空的 catch 块、注释掉的代码、未使用的导入。检查 AI 冗余：过度注释、过度抽象、通用命名（data/result/item/temp）。验证每个 JS 模块仅导入其实际使用的函数。
-  输出：`Files [N clean/N issues] | Imports [VALID/MISMATCH] | VERDICT`
-
-- [ ] F3. **全量 Playwright E2E 验证** — `unspecified-high`（+ `playwright` 技能）
-  从干净状态开始。执行每个任务中的每个 QA 场景 — 遵循确切的步骤，捕获证据。测试跨任务集成（功能一起工作，而非隔离）。测试边缘情况：空状态、无效输入、快速操作。保存到 `.sisyphus/evidence/final-qa/`。
-  输出：`Scenarios [N/N pass] | Integration [N/N] | Edge Cases [N tested] | VERDICT`
-
-- [ ] F4. **范围忠实度检查** — `deep`
-  对每个任务：阅读"做什么"，阅读实际差异（git log/diff）。验证 1:1 — 规范中的所有内容都已构建（无遗漏），规范之外的内容均未构建（无蔓延）。检查"绝对不能做"的合规性。检测跨任务污染：Task N 触及 Task M 的文件。标记未计入的更改。
-  输出：`Tasks [8/8 compliant] | Contamination [CLEAN/N issues] | Unaccounted [CLEAN/N files] | VERDICT`
+- [x] F1. 计划合规审计 — MUST DO 4/4 | MUST NOT 7/7 | Tasks 8/8 | VERDICT: ✅ APPROVE
+- [x] F2. 代码质量审查 — Files 10 clean | Imports VALID | VERDICT: ✅ APPROVE
+- [x] F3. 全量 Playwright E2E 验证 — Scenarios 8/8 pass | Integration 3/3 | VERDICT: ✅ APPROVE
+- [x] F4. 范围忠实度检查 — Tasks 8/8 compliant | Contamination CLEAN | VERDICT: ✅ APPROVE
 
 ---
 

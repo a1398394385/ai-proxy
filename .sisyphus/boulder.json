@@ -2,10 +2,16 @@
   "active_plan": "/Users/xys/.hermes/fact-store-browser/.sisyphus/plans/frontend-split.md",
   "started_at": "2026-04-29T03:41:36.508Z",
   "session_ids": [
-    "ses_228c127f2ffevxT55sTBB0f6Rt"
+    "ses_228c127f2ffevxT55sTBB0f6Rt",
+    "ses_2283222d3ffeyZvGxC9oLko9PM",
+    "ses_22831f5e5ffe6vcFE2W495wTTx",
+    "ses_22831c1b9ffeS66qj2NiM114jR"
   ],
   "session_origins": {
-    "ses_228c127f2ffevxT55sTBB0f6Rt": "direct"
+    "ses_228c127f2ffevxT55sTBB0f6Rt": "direct",
+    "ses_2283222d3ffeyZvGxC9oLko9PM": "appended",
+    "ses_22831f5e5ffe6vcFE2W495wTTx": "appended",
+    "ses_22831c1b9ffeS66qj2NiM114jR": "appended"
   },
   "plan_name": "frontend-split",
   "agent": "atlas",
