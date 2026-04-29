@@ -802,7 +802,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             body = json.loads(body_raw)
             is_stream = body.get("stream", False)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            pass
+            logging.debug(f"透传: 无法解析请求体为 JSON，默认 is_stream=False")
 
         logging.info(f"透传: model={model_name}, stream={is_stream}, target={target}, forward_path={forward_path}")
 
@@ -908,13 +908,30 @@ class ProxyHandler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/") + forward_path
         port = parsed.port or (80 if parsed.scheme == "http" else 443)
         content_type = self.headers.get("Content-Type", "application/json")
+        retries = upstream_cfg.get("retry", 0) + 1
 
-        conn = _create_upstream_conn(upstream_cfg, parsed, port)
-        conn.request(self.command, path, body=body_raw, headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": content_type,
-            "Accept": "text/event-stream",
-        })
+        conn = None
+        for attempt in range(retries):
+            try:
+                conn = _create_upstream_conn(upstream_cfg, parsed, port)
+                conn.request(self.command, path, body=body_raw, headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": content_type,
+                    "Accept": "text/event-stream",
+                })
+                break
+            except (socket.timeout, http.client.HTTPException, OSError) as e:
+                logging.warning(f"透传流式连接失败 (attempt {attempt + 1}): {e}")
+                if conn:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    conn = None
+                if attempt < retries - 1:
+                    continue
+                self._send_json(502, {"error": {"type": "server_error", "message": str(e)}})
+                return
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -963,12 +980,31 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # Best-effort token stats: scan for "usage" in SSE data
             if sse_buffer:
                 last_chunk = sse_buffer[-1].decode("utf-8", errors="replace")
-                usage_match = re.search(r'"usage"\s*:\s*(\{[^}]+\})', last_chunk)
-                if usage_match:
-                    try:
-                        final_usage = json.loads(usage_match.group(1))
-                    except json.JSONDecodeError:
-                        pass
+                # Find "usage" key and extract the full nested JSON object
+                usage_start = last_chunk.find('"usage"')
+                if usage_start >= 0:
+                    # Find the colon after "usage"
+                    colon_pos = last_chunk.find(':', usage_start)
+                    if colon_pos >= 0:
+                        # Find the opening brace
+                        brace_pos = last_chunk.find('{', colon_pos)
+                        if brace_pos >= 0:
+                            # Count braces to find the matching closing brace
+                            depth = 0
+                            end_pos = brace_pos
+                            for i in range(brace_pos, len(last_chunk)):
+                                if last_chunk[i] == '{':
+                                    depth += 1
+                                elif last_chunk[i] == '}':
+                                    depth -= 1
+                                    if depth == 0:
+                                        end_pos = i + 1
+                                        break
+                            if end_pos > brace_pos:
+                                try:
+                                    final_usage = json.loads(last_chunk[brace_pos:end_pos])
+                                except json.JSONDecodeError:
+                                    pass
                 if final_usage:
                     record_token_stats(final_usage, {
                         "request_id": request_id,
