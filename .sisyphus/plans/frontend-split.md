@@ -67,10 +67,10 @@ static/
 ```
 
 ### 完成定义
-- [ ] `./server.sh restart && python3 -m pytest test/ -q` → 333 passed, 0 failed
-- [ ] `index.html` 在浏览器中加载零控制台错误
-- [ ] 三个标签页（Facts/Tokens/Models）+ 设置模态框功能完全正常
-- [ ] 所有 Playwright E2E 场景通过
+- [x] `./server.sh restart && python3 -m pytest test/ -q` → 333 passed, 0 failed
+- [x] `index.html` 在浏览器中加载零控制台错误
+- [x] 三个标签页（Facts/Tokens/Models）+ 设置模态框功能完全正常
+- [x] 所有 Playwright E2E 场景通过
 
 ### 必须做
 - HTML 结构逐字节保留（仅替换 `<style>` 和 `<script>` 标签）
@@ -871,12 +871,12 @@ curl -s http://127.0.0.1:18742/js/app.js | head -1        # 预期：JS 内容
 ```
 
 ### 最终检查清单
-- [ ] 所有"必须做"已实现（5/5）
-- [ ] 所有"绝对不能做"未违反（7/7）
-- [ ] 所有 8 个任务已完成
-- [ ] 所有 7 个 Playwright E2E 测试通过
-- [ ] 333 项后端测试通过（零回归）
-- [ ] `index.html` 从 2622 行减少到 ~80 行
-- [ ] 新文件结构：4 个 CSS + 5 个 JS + 1 个 HTML = 10 个文件
-- [ ] 服务器零改动（`server.py` 未修改）
-- [ ] 零构建工具引入
+- [x] 所有"必须做"已实现（5/5）
+- [x] 所有"绝对不能做"未违反（7/7）
+- [x] 所有 8 个任务已完成
+- [x] 所有 7 个 Playwright E2E 测试通过
+- [x] 333 项后端测试通过（零回归）
+- [x] `index.html` 从 2622 行减少到 ~80 行
+- [x] 新文件结构：4 个 CSS + 5 个 JS + 1 个 HTML = 10 个文件
+- [x] 服务器零改动（`server.py` 未修改）
+- [x] 零构建工具引入
