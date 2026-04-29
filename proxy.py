@@ -178,6 +178,50 @@ def _create_upstream_conn(upstream_cfg, parsed, port):
             )
 
 
+# ─── 透传辅助函数 ───────────────────────────────────────────────────
+
+def _normalize_forward_path(path: str):
+    """归一化透传请求路径，返回安全路径或 None（含路径穿越时）。"""
+    query = ""
+    if "?" in path:
+        path, query = path.split("?", 1)
+
+    if path.startswith("/v1"):
+        path = path[3:]
+
+    if ".." in path:
+        return None
+
+    while "//" in path:
+        path = path.replace("//", "/")
+
+    if not path.startswith("/"):
+        path = "/" + path
+
+    if query:
+        path = path + "?" + query
+
+    return path
+
+
+def _extract_model_for_pass_through(method: str, path: str, body_raw: bytes) -> str:
+    """从请求中提取模型名称，用于透传路由。失败时返回 '*'。"""
+    if method == "POST":
+        try:
+            body = json.loads(body_raw)
+            return body.get("model", "*")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return "*"
+    elif method == "GET":
+        parsed = urllib.parse.urlparse(path)
+        params = urllib.parse.parse_qs(parsed.query)
+        models = params.get("model")
+        if models and len(models) > 0:
+            return models[0]
+        return "*"
+    return "*"
+
+
 # ─── 请求 Handler ──────────────────────────────────────────────────
 
 class ProxyHandler(BaseHTTPRequestHandler):
@@ -195,6 +239,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
             self.wfile.write(b"Upgrade Required: Use HTTP POST with SSE")
+        elif self.path.startswith("/v1/"):
+            self._handle_pass_through()
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -205,6 +251,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._handle_messages()
         elif self.path == "/admin/reload":
             self._handle_admin_reload()
+        elif self.path.startswith("/v1/"):
+            self._handle_pass_through()
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -724,6 +772,57 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         """重定向到 logger。"""
         logging.info("%s - - [%s] %s" % (self.client_address[0], self.log_date_time_string(), format % args))
+
+    def _handle_pass_through(self):
+        """透传端点：原样转发 /v1/* 请求到上游，不做协议转换。"""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body_raw = self.rfile.read(content_length)
+
+        request_id = _generate_request_id()
+        request_ts = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        model_name = _extract_model_for_pass_through(self.command, self.path, body_raw)
+
+        model_cfg = resolve_model(model_name)
+        target = model_cfg["target"]
+        upstream_cfg = model_cfg.get("upstream")
+        if upstream_cfg is None:
+            logging.error(f"透传: 模型 {model_name} 无法解析上游配置")
+            self._send_json(500, {"error": {"type": "internal_error", "message": "模型路由不可用"}})
+            return
+
+        forward_path = _normalize_forward_path(self.path)
+        if forward_path is None:
+            self._send_json(400, {"error": {"type": "invalid_request_error", "message": "无效的请求路径"}})
+            return
+
+        is_stream = False
+        try:
+            body = json.loads(body_raw)
+            is_stream = body.get("stream", False)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            pass
+
+        logging.info(f"透传: model={model_name}, stream={is_stream}, target={target}, forward_path={forward_path}")
+
+        logger = get_logger()
+        if logger:
+            log_body = body_raw.decode("utf-8", errors="replace")[:5000] if body_raw else "(empty)"
+            logger.log_raw_request(request_id, model_name, target,
+                {"method": self.command, "path": self.path, "forward_path": forward_path, "body": log_body})
+
+        if is_stream:
+            self._forward_pass_through_streaming(body_raw, request_id, model_name, target, request_ts, upstream_cfg, forward_path)
+        else:
+            self._forward_pass_through_non_streaming(body_raw, request_id, model_name, target, request_ts, upstream_cfg, forward_path)
+
+    def _forward_pass_through_non_streaming(self, body_raw, request_id, model_name, target, request_ts, upstream_cfg, forward_path):
+        """非流式透传转发 — 将在 Task 5 实现完整逻辑。"""
+        self._send_json(501, {"error": {"type": "not_implemented", "message": "非流式透传尚未实现"}})
+
+    def _forward_pass_through_streaming(self, body_raw, request_id, model_name, target, request_ts, upstream_cfg, forward_path):
+        """流式 SSE 透传转发 — 将在 Task 6 实现完整逻辑。"""
+        self._send_json(501, {"error": {"type": "not_implemented", "message": "流式透传尚未实现"}})
 
 
 # ─── 存储辅助 ──────────────────────────────────────────────────────
