@@ -80,7 +80,7 @@ export function applyDefaultPage(page) {
   document.getElementById('page-settings').classList.add('hidden');
 
   // 加载数据
-  if (page === 'facts') loadFacts();
+  if (page === 'facts') window.loadFacts && window.loadFacts();
   if (page === 'tokens') loadTokenStats();
 }
 
