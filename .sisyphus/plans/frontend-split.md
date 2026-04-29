@@ -369,7 +369,7 @@ Wave FINAL（所有任务之后 — 4 项并行审查）：
    - 消息：`test(frontend): 添加 Playwright E2E 冒烟测试基线（7 个测试）`
    - 文件：`test/test_frontend_e2e.py`
 
-- [ ] 4. 提取 `static/css/facts.css` + `static/js/pages/facts.js`
+- [x] 4. 提取 `static/css/facts.css` + `static/js/pages/facts.js`
 
   **做什么**：
   - **CSS**：将 Fact Store 页面特定样式从 `<style>` 逐字提取到 `static/css/facts.css`：
@@ -458,7 +458,7 @@ Wave FINAL（所有任务之后 — 4 项并行审查）：
   - 消息：`feat(frontend): 提取 facts 模块 — CSS + JS ES 模块`
   - 文件：`static/css/facts.css`, `static/js/pages/facts.js`, `static/index.html`
 
-- [ ] 5. 提取 `static/css/tokens.css` + `static/js/pages/tokens.js`
+- [x] 5. 提取 `static/css/tokens.css` + `static/js/pages/tokens.js`
 
   **做什么**：
   - **CSS**：将 Token 统计页面特定样式提取到 `static/css/tokens.css`：
@@ -545,7 +545,7 @@ Wave FINAL（所有任务之后 — 4 项并行审查）：
   - 消息：`feat(frontend): 提取 tokens 模块 — CSS + JS（含 SVG 图表）`
   - 文件：`static/css/tokens.css`, `static/js/pages/tokens.js`, `static/index.html`
 
-- [ ] 6. 提取 `static/css/models.css` + `static/js/pages/models.js`
+- [x] 6. 提取 `static/css/models.css` + `static/js/pages/models.js`
 
   **做什么**：
   - **CSS**：将模型管理页面特定样式提取到 `static/css/models.css`：
