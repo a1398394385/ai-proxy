@@ -3,6 +3,7 @@
 
 import os
 import sys
+import re
 import json
 import time
 import ssl
@@ -817,12 +818,186 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._forward_pass_through_non_streaming(body_raw, request_id, model_name, target, request_ts, upstream_cfg, forward_path)
 
     def _forward_pass_through_non_streaming(self, body_raw, request_id, model_name, target, request_ts, upstream_cfg, forward_path):
-        """非流式透传转发 — 将在 Task 5 实现完整逻辑。"""
-        self._send_json(501, {"error": {"type": "not_implemented", "message": "非流式透传尚未实现"}})
+        """非流式透传：原样转发请求到上游，原样返回响应。"""
+        base_url = upstream_cfg["base_url"]
+        api_key = upstream_cfg["api_key"]
+        timeout = upstream_cfg.get("timeout", 120)
+        connect_timeout = upstream_cfg.get("connect_timeout", 10)
+        retries = upstream_cfg.get("retry", 0) + 1
+
+        parsed = urllib.parse.urlparse(base_url)
+        path = parsed.path.rstrip("/") + forward_path
+        port = parsed.port or (80 if parsed.scheme == "http" else 443)
+        content_type = self.headers.get("Content-Type", "application/json")
+
+        for attempt in range(retries):
+            conn = None
+            try:
+                conn = _create_upstream_conn(upstream_cfg, parsed, port)
+                conn.request(self.command, path, body=body_raw, headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": content_type,
+                })
+
+                start = time.time()
+                resp = conn.getresponse()
+                if conn.sock:
+                    conn.sock.settimeout(timeout)
+                resp_body = resp.read()
+                duration_ms = int((time.time() - start) * 1000)
+                conn.close()
+                conn = None
+
+                if resp.status >= 500 and attempt < retries - 1:
+                    logging.warning(f"透传上游 {resp.status}，重试 {attempt + 1}/{retries}")
+                    continue
+
+                # Phase 3: log upstream response
+                logger = get_logger()
+                if logger:
+                    log_data = resp_body.decode("utf-8", errors="replace")[:5000]
+                    logger.log_upstream_response(request_id, resp.status, log_data, duration_ms)
+
+                # Phase 5: token_stats (best-effort)
+                if resp.status == 200:
+                    try:
+                        chat_response = json.loads(resp_body)
+                        usage = chat_response.get("usage", {})
+                        if usage:
+                            record_token_stats(usage, {
+                                "request_id": request_id,
+                                "agent": _extract_agent(self.headers.get("User-Agent", "")),
+                                "model": model_name,
+                                "target_model": target,
+                                "request_ts": request_ts,
+                                "duration_ms": duration_ms,
+                            })
+                        else:
+                            logging.warning(f"透传: 无法从响应提取 usage，跳过 token_stats")
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        logging.warning(f"透传: 响应非 JSON，无法提取 usage")
+
+                # Relay response as-is
+                self.send_response(resp.status)
+                self.send_header("Content-Type", resp.getheader("Content-Type", "application/json"))
+                self.end_headers()
+                self.wfile.write(resp_body)
+                return
+
+            except (socket.timeout, http.client.HTTPException, OSError) as e:
+                logging.warning(f"透传上游请求失败 (attempt {attempt + 1}): {e}")
+                if attempt < retries - 1:
+                    continue
+                self._send_json(502, {"error": {"type": "server_error", "message": str(e)}})
+                return
+            finally:
+                if conn:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
 
     def _forward_pass_through_streaming(self, body_raw, request_id, model_name, target, request_ts, upstream_cfg, forward_path):
-        """流式 SSE 透传转发 — 将在 Task 6 实现完整逻辑。"""
-        self._send_json(501, {"error": {"type": "not_implemented", "message": "流式透传尚未实现"}})
+        """流式 SSE 透传：逐 chunk 原样中继上游 SSE 事件，不注入任何代理事件。"""
+        base_url = upstream_cfg["base_url"]
+        api_key = upstream_cfg["api_key"]
+        timeout = upstream_cfg.get("timeout", 120)
+        connect_timeout = upstream_cfg.get("connect_timeout", 10)
+
+        parsed = urllib.parse.urlparse(base_url)
+        path = parsed.path.rstrip("/") + forward_path
+        port = parsed.port or (80 if parsed.scheme == "http" else 443)
+        content_type = self.headers.get("Content-Type", "application/json")
+
+        conn = _create_upstream_conn(upstream_cfg, parsed, port)
+        conn.request(self.command, path, body=body_raw, headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": content_type,
+            "Accept": "text/event-stream",
+        })
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+        start = time.time()
+        sse_buffer = []
+        final_usage = None
+        upstream_status = None
+
+        try:
+            resp = conn.getresponse()
+            if conn.sock:
+                conn.sock.settimeout(timeout)
+            upstream_status = resp.status
+
+            if resp.status != 200:
+                error_body = resp.read()
+                self.wfile.write(error_body)
+                self.wfile.flush()
+                logger = get_logger()
+                if logger:
+                    logger.log_upstream_response(request_id, upstream_status,
+                        error_body.decode("utf-8", errors="replace")[:5000], 0)
+                return
+
+            # Relay raw SSE chunks as-is from upstream
+            while True:
+                chunk = resp.read(4096)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
+                sse_buffer.append(chunk)
+
+            duration_ms = int((time.time() - start) * 1000)
+
+            # Log upstream response
+            full_sse = b"".join(sse_buffer).decode("utf-8", errors="replace")[:5000]
+            logger = get_logger()
+            if logger:
+                logger.log_upstream_response(request_id, upstream_status, full_sse, duration_ms)
+
+            # Best-effort token stats: scan for "usage" in SSE data
+            if sse_buffer:
+                last_chunk = sse_buffer[-1].decode("utf-8", errors="replace")
+                usage_match = re.search(r'"usage"\s*:\s*(\{[^}]+\})', last_chunk)
+                if usage_match:
+                    try:
+                        final_usage = json.loads(usage_match.group(1))
+                    except json.JSONDecodeError:
+                        pass
+                if final_usage:
+                    record_token_stats(final_usage, {
+                        "request_id": request_id,
+                        "agent": _extract_agent(self.headers.get("User-Agent", "")),
+                        "model": model_name,
+                        "target_model": target,
+                        "request_ts": request_ts,
+                        "duration_ms": duration_ms,
+                    })
+                else:
+                    logging.warning(f"透传流式: 无法从 SSE 提取 usage，跳过 token_stats")
+
+        except Exception as e:
+            logging.exception(f"透传流式失败: {e}")
+            logger = get_logger()
+            if logger:
+                logger.log_upstream_response(request_id, upstream_status or 0,
+                    json.dumps({"error": str(e)}), int((time.time() - start) * 1000))
+            try:
+                self.wfile.write(f"data: {{\"error\":\"{str(e)}\"}}\n\n".encode("utf-8"))
+                self.wfile.flush()
+            except (BrokenPipeError, OSError):
+                pass
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
 
 # ─── 存储辅助 ──────────────────────────────────────────────────────
