@@ -1,0 +1,14 @@
+=== Task 5 - Tokens Module Extraction ===
+
+Tests: 333 passed, 0 failed
+Files created:
+  static/css/tokens.css (339 lines)
+  static/js/pages/tokens.js (499 lines)
+Files modified:
+  static/index.html (1613 -> 763 lines, -850 lines)
+  static/js/core.js (2 lines changed)
+
+HTTP checks:
+  /css/tokens.css -> 200
+  /js/pages/tokens.js -> 200
+  / -> 200

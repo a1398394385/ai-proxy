@@ -51,6 +51,7 @@ export function initSettings() {
   }
   // 同步到当前周期
   currentPeriod = savedDefaultPeriod;
+  window.currentPeriod = currentPeriod;
 
   // 更新周期按钮的活动状态
   document.querySelectorAll('.period-btn').forEach(btn => {
@@ -81,7 +82,7 @@ export function applyDefaultPage(page) {
 
   // 加载数据
   if (page === 'facts') window.loadFacts && window.loadFacts();
-  if (page === 'tokens') loadTokenStats();
+  if (page === 'tokens') window.loadTokenStats && window.loadTokenStats();
 }
 
 export function showSettings() {
