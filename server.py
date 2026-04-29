@@ -18,7 +18,7 @@ from config_manager import ConfigDB
 
 # 配置
 DB_PATH = os.path.expanduser("~/.hermes/memory_store.db")
-CONFIG_DB_PATH = Path.home() / ".hermes" / "config.db"
+CONFIG_DB_PATH = Path(__file__).resolve().parent / "data" / "access_log.db"
 
 
 def get_config_db():

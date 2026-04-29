@@ -43,7 +43,7 @@ CONFIG = {}
 CONFIG_PATH = Path(__file__).parent / "proxy_config.yaml"
 
 # ─── 动态配置缓存（替代静态 model_map）───────────────────────────
-CONFIG_DB_PATH = Path.home() / ".hermes" / "config.db"
+CONFIG_DB_PATH = Path(__file__).resolve().parent / "data" / "access_log.db"
 config_cache = ConfigCache(CONFIG_DB_PATH)
 
 
