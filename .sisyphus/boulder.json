@@ -1,46 +1,48 @@
 {
-  "active_plan": "/Users/xys/.hermes/fact-store-browser/.sisyphus/plans/frontend-split.md",
-  "started_at": "2026-04-29T03:41:36.508Z",
+  "active_plan": "/Users/xys/Github/ai-agent-tools/.sisyphus/plans/proxy-pass-through.md",
+  "started_at": "2026-04-29T09:00:18.694Z",
   "session_ids": [
-    "ses_228c127f2ffevxT55sTBB0f6Rt",
-    "ses_2283222d3ffeyZvGxC9oLko9PM",
-    "ses_22831f5e5ffe6vcFE2W495wTTx",
-    "ses_22831c1b9ffeS66qj2NiM114jR"
+    "ses_227ab8384ffeplcwGkBw1iSw5j",
+    "ses_2275c3945ffeQbNDyJbvhIpBY1",
+    "ses_2275a62f3ffeMSNo0eKl6xKuJ5",
+    "ses_22759f987ffeijg181KtGRo1MH",
+    "ses_22759ba73ffe6xhhCxdWLgfZWp"
   ],
   "session_origins": {
-    "ses_228c127f2ffevxT55sTBB0f6Rt": "direct",
-    "ses_2283222d3ffeyZvGxC9oLko9PM": "appended",
-    "ses_22831f5e5ffe6vcFE2W495wTTx": "appended",
-    "ses_22831c1b9ffeS66qj2NiM114jR": "appended"
+    "ses_227ab8384ffeplcwGkBw1iSw5j": "direct",
+    "ses_2275c3945ffeQbNDyJbvhIpBY1": "appended",
+    "ses_2275a62f3ffeMSNo0eKl6xKuJ5": "appended",
+    "ses_22759f987ffeijg181KtGRo1MH": "appended",
+    "ses_22759ba73ffe6xhhCxdWLgfZWp": "appended"
   },
-  "plan_name": "frontend-split",
+  "plan_name": "proxy-pass-through",
   "agent": "atlas",
   "task_sessions": {
     "todo:1": {
       "task_key": "todo:1",
       "task_label": "1",
-      "task_title": "提取 `static/css/base.css` — 共享样式",
-      "session_id": "ses_228a9d840ffep9r5P1PQClEcLT",
+      "task_title": "路径规范化工具 `_normalize_forward_path()`",
+      "session_id": "ses_22785e676ffeK1uJiDrQGJdd7L",
       "agent": "Sisyphus-Junior",
       "category": "quick",
-      "updated_at": "2026-04-29T03:51:18.277Z"
+      "updated_at": "2026-04-29T09:06:58.731Z"
     },
-    "todo:2": {
-      "task_key": "todo:2",
-      "task_label": "2",
-      "task_title": "提取 `static/js/core.js` — 共享 JavaScript 模块",
-      "session_id": "ses_22887292cffeTfvi1QILBLWh1Q",
+    "todo:7": {
+      "task_key": "todo:7",
+      "task_label": "7",
+      "task_title": "单元测试 + 集成测试",
+      "session_id": "ses_22772aec2ffesigd6iq7ZC1Nw1",
       "agent": "Sisyphus-Junior",
-      "updated_at": "2026-04-29T04:48:19.049Z"
+      "category": "unspecified-high",
+      "updated_at": "2026-04-29T09:45:47.969Z"
     },
-    "todo:3": {
-      "task_key": "todo:3",
-      "task_label": "3",
-      "task_title": "Playwright E2E 冒烟测试 + 基础框架搭建",
-      "session_id": "ses_228414456ffeTlfPM7gV1OySff",
+    "final-wave:f1": {
+      "task_key": "final-wave:f1",
+      "task_label": "F1",
+      "task_title": "**计划合规审计** — `oracle`",
+      "session_id": "ses_2277bfd8dffej4xqPMO8i2Yx1u",
       "agent": "Sisyphus-Junior",
-      "category": "deep",
-      "updated_at": "2026-04-29T05:48:39.499Z"
+      "updated_at": "2026-04-29T10:01:33.446Z"
     }
   }
 }

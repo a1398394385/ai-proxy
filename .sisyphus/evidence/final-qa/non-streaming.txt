@@ -1,0 +1,2 @@
+=== NON-STREAMING PASS-THROUGH ===
+{"error":{"message":"team not allowed to access model. This team can only access models=['claude-sonnet-4-6', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001', 'glm-5', 'glm-5.1', 'MiniMax-M2.5', 'MiniMax-M2.7', 'qwen3.5-plus', 'qwen3.6-plus', 'kimi-k2.5']. Tried to access gpt-4o","type":"team_model_access_denied","param":"model","code":"401"}}

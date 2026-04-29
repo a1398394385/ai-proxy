@@ -1,0 +1,10 @@
+=== LOGGING ===
+upstream_response|{"error":{"message":"team not allowed to access model. This team can only access
+raw_request|{"method": "POST", "path": "/v1/chat/completions", "forward_path": "/chat/comple
+upstream_response|{"id":"chatcmpl-a4b32454-411b-49e4-ab71-742f04eae801","created":1777455883,"mode
+raw_request|{"method": "POST", "path": "/v1/chat/completions", "forward_path": "/chat/comple
+upstream_response|{"error":{"message":"team not allowed to access model. This team can only access
+
+1|1|completed
+12|272|completed
+11|257|completed

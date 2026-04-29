@@ -1,0 +1,4 @@
+=== ROUTE PRIORITY ===
+GET /health: 200
+GET /v1/responses: 426
+GET /v1/models: 200

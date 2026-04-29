@@ -1,0 +1,3 @@
+=== PATH TRAVERSAL ===
+{"error": "not found"}
+HTTP: 404
