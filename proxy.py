@@ -300,7 +300,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         # 转发到上游（传入 request_id, model_name, target, request_ts）
         # upstream_cfg 优先从 model_cfg 获取（动态配置），fallback 到 CONFIG（静态配置）
-        upstream_cfg = model_cfg.get("_upstream") or CONFIG.get("upstream", {})
         store_enabled = body.get("store", True)
         if is_stream:
             self._forward_streaming(chat_body, model_cfg, request_id, model_name, target, request_ts,
@@ -349,7 +348,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             logger.log_converted_request(request_id, model_name, target, chat_body)
 
         # 转发（response_converter 始终为 chat_to_anthropic，store_enabled=False 防止 kwargs 注入给 create_anthropic_sse_stream）
-        upstream_cfg = model_cfg.get("_upstream") or CONFIG.get("upstream", {})
+        upstream_cfg = model_cfg.get("upstream") or CONFIG.get("upstream", {})
         if is_stream:
             self._forward_streaming(chat_body, model_cfg, request_id, model_name, target, request_ts,
                                     response_converter=chat_to_anthropic,
@@ -525,202 +524,193 @@ class ProxyHandler(BaseHTTPRequestHandler):
         upstream_status = None
 
         try:
-            resp = conn.getresponse()
-            if conn.sock:
-                conn.sock.settimeout(timeout)
-            upstream_status = resp.status
-
-            # 验证上游 Content-Type，非 SSE 则包装为 response.failed
-            ct = resp.getheader("Content-Type", "")
-            if resp.status != 200:
-                error_event = _format_sse_event("response.failed", {
-                    "response": {
-                        "id": generate_response_id(),
-                        "status": "failed",
-                        "output": [],
-                        "status_details": {
-                            "error": {
-                                "type": "server_error",
-                                "message": f"Upstream returned HTTP {resp.status}",
-                            },
-                        },
-                    },
-                })
-                self.wfile.write(error_event.encode("utf-8"))
-                self.wfile.flush()
-                completed_event = _format_sse_event("response.completed", {
-                    "response": {
-                        "id": generate_response_id(),
-                        "status": "failed",
-                        "output": [],
-                        "usage": {
-                            "input_tokens": 0,
-                            "output_tokens": 0,
-                            "total_tokens": 0,
-                            "input_tokens_details": {"cached_tokens": 0},
-                            "output_tokens_details": {},
-                        },
-                    },
-                })
-                self.wfile.write(completed_event.encode("utf-8"))
-                self.wfile.flush()
-                try:
-                    self.wfile.write(b"data: [DONE]\n\n")
-                    self.wfile.flush()
-                except (BrokenPipeError, OSError):
-                    pass
-                logger = get_logger()
-                if logger:
-                    logger.log_upstream_response(request_id, resp.status, resp.read().decode("utf-8", errors="replace"), 0)
-                return
-
-            if "text/event-stream" not in ct:
-                logging.warning(f"上游返回非 SSE Content-Type: {ct}")
-                error_event = _format_sse_event("response.failed", {
-                    "response": {
-                        "id": generate_response_id(),
-                        "status": "failed",
-                        "output": [],
-                        "status_details": {
-                            "error": {
-                                "type": "server_error",
-                                "message": f"Upstream returned non-SSE Content-Type: {ct}",
-                            },
-                        },
-                    },
-                })
-                self.wfile.write(error_event.encode("utf-8"))
-                self.wfile.flush()
-                completed_event = _format_sse_event("response.completed", {
-                    "response": {
-                        "id": generate_response_id(),
-                        "status": "failed",
-                        "output": [],
-                        "usage": {
-                            "input_tokens": 0,
-                            "output_tokens": 0,
-                            "total_tokens": 0,
-                            "input_tokens_details": {"cached_tokens": 0},
-                            "output_tokens_details": {},
-                        },
-                    },
-                })
-                self.wfile.write(completed_event.encode("utf-8"))
-                self.wfile.flush()
-                try:
-                    self.wfile.write(b"data: [DONE]\n\n")
-                    self.wfile.flush()
-                except (BrokenPipeError, OSError):
-                    pass
-                logger = get_logger()
-                if logger:
-                    logger.log_upstream_response(request_id, upstream_status, resp.read().decode("utf-8", errors="replace"), 0)
-                return
-
-            # 核心：通过 sse_stream_factory 逐事件转换并发送
-            # _rstore 非 None 时传入流式存储所需的额外参数（Phase 2），
-            # _rstore 为 None 时不传额外 kwargs（create_anthropic_sse_stream 不接受这些参数）
-            _rstore = getattr(self.server, "response_store", None) if store_enabled else None
-            if _rstore is not None:
-                stream_gen = sse_stream_factory(
-                    resp,
-                    request_messages=chat_body.get("messages"),
-                    response_store=_rstore,
-                )
-            else:
-                stream_gen = sse_stream_factory(resp)
-            for sse_event in stream_gen:
-                self.wfile.write(sse_event.encode("utf-8"))
-                self.wfile.flush()
-                sse_buffer.append(sse_event)
-                if "response.completed" in sse_event:
-                    try:
-                        data = json.loads(sse_event.split("data: ", 1)[1])
-                        final_usage = data.get("response", {}).get("usage")
-                    except (json.JSONDecodeError, IndexError):
-                        pass
-        except Exception as e:
-            logging.exception("流式转发异常")
-            upstream_status = getattr(e, 'code', None) or getattr(e, 'status', None) or 502
             try:
-                error_event = _format_sse_event("response.failed", {
-                    "response": {
-                        "id": generate_response_id(),
-                        "status": "failed",
-                        "output": [],
-                        "status_details": {
-                            "error": {
-                                "type": "server_error",
-                                "message": str(e),
+                resp = conn.getresponse()
+                if conn.sock:
+                    conn.sock.settimeout(timeout)
+                upstream_status = resp.status
+
+                ct = resp.getheader("Content-Type", "")
+                if resp.status != 200:
+                    error_event = _format_sse_event("response.failed", {
+                        "response": {
+                            "id": generate_response_id(),
+                            "status": "failed",
+                            "output": [],
+                            "status_details": {
+                                "error": {
+                                    "type": "server_error",
+                                    "message": f"Upstream returned HTTP {resp.status}",
+                                },
                             },
                         },
-                    },
-                })
-                self.wfile.write(error_event.encode("utf-8"))
-                self.wfile.flush()
-                completed_event = _format_sse_event("response.completed", {
-                    "response": {
-                        "id": generate_response_id(),
-                        "status": "failed",
-                        "output": [],
-                        "usage": {
-                            "input_tokens": 0,
-                            "output_tokens": 0,
-                            "total_tokens": 0,
-                            "input_tokens_details": {"cached_tokens": 0},
-                            "output_tokens_details": {},
-                        },
-                    },
-                })
-                self.wfile.write(completed_event.encode("utf-8"))
-                self.wfile.flush()
-                try:
-                    self.wfile.write(b"data: [DONE]\n\n")
+                    })
+                    self.wfile.write(error_event.encode("utf-8"))
                     self.wfile.flush()
-                except (BrokenPipeError, OSError):
+                    completed_event = _format_sse_event("response.completed", {
+                        "response": {
+                            "id": generate_response_id(),
+                            "status": "failed",
+                            "output": [],
+                            "usage": {
+                                "input_tokens": 0,
+                                "output_tokens": 0,
+                                "total_tokens": 0,
+                                "input_tokens_details": {"cached_tokens": 0},
+                                "output_tokens_details": {},
+                            },
+                        },
+                    })
+                    self.wfile.write(completed_event.encode("utf-8"))
+                    self.wfile.flush()
+                    try:
+                        self.wfile.write(b"data: [DONE]\n\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, OSError):
+                        pass
+                    logger = get_logger()
+                    if logger:
+                        logger.log_upstream_response(request_id, resp.status, resp.read().decode("utf-8", errors="replace"), 0)
+                    return
+
+                if "text/event-stream" not in ct:
+                    logging.warning(f"上游返回非 SSE Content-Type: {ct}")
+                    error_event = _format_sse_event("response.failed", {
+                        "response": {
+                            "id": generate_response_id(),
+                            "status": "failed",
+                            "output": [],
+                            "status_details": {
+                                "error": {
+                                    "type": "server_error",
+                                    "message": f"Upstream returned non-SSE Content-Type: {ct}",
+                                },
+                            },
+                        },
+                    })
+                    self.wfile.write(error_event.encode("utf-8"))
+                    self.wfile.flush()
+                    completed_event = _format_sse_event("response.completed", {
+                        "response": {
+                            "id": generate_response_id(),
+                            "status": "failed",
+                            "output": [],
+                            "usage": {
+                                "input_tokens": 0,
+                                "output_tokens": 0,
+                                "total_tokens": 0,
+                                "input_tokens_details": {"cached_tokens": 0},
+                                "output_tokens_details": {},
+                            },
+                        },
+                    })
+                    self.wfile.write(completed_event.encode("utf-8"))
+                    self.wfile.flush()
+                    try:
+                        self.wfile.write(b"data: [DONE]\n\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, OSError):
+                        pass
+                    logger = get_logger()
+                    if logger:
+                        logger.log_upstream_response(request_id, upstream_status, resp.read().decode("utf-8", errors="replace"), 0)
+                    return
+
+                # 核心：通过 sse_stream_factory 逐事件转换并发送
+                _rstore = getattr(self.server, "response_store", None) if store_enabled else None
+                if _rstore is not None:
+                    stream_gen = sse_stream_factory(
+                        resp,
+                        request_messages=chat_body.get("messages"),
+                        response_store=_rstore,
+                    )
+                else:
+                    stream_gen = sse_stream_factory(resp)
+                for sse_event in stream_gen:
+                    self.wfile.write(sse_event.encode("utf-8"))
+                    self.wfile.flush()
+                    sse_buffer.append(sse_event)
+                    if "response.completed" in sse_event:
+                        try:
+                            data = json.loads(sse_event.split("data: ", 1)[1])
+                            final_usage = data.get("response", {}).get("usage")
+                        except (json.JSONDecodeError, IndexError):
+                            pass
+            except Exception as e:
+                logging.exception("流式转发异常")
+                upstream_status = getattr(e, 'code', None) or getattr(e, 'status', None) or 502
+                try:
+                    error_event = _format_sse_event("response.failed", {
+                        "response": {
+                            "id": generate_response_id(),
+                            "status": "failed",
+                            "output": [],
+                            "status_details": {
+                                "error": {
+                                    "type": "server_error",
+                                    "message": str(e),
+                                },
+                            },
+                        },
+                    })
+                    self.wfile.write(error_event.encode("utf-8"))
+                    self.wfile.flush()
+                    completed_event = _format_sse_event("response.completed", {
+                        "response": {
+                            "id": generate_response_id(),
+                            "status": "failed",
+                            "output": [],
+                            "usage": {
+                                "input_tokens": 0,
+                                "output_tokens": 0,
+                                "total_tokens": 0,
+                                "input_tokens_details": {"cached_tokens": 0},
+                                "output_tokens_details": {},
+                            },
+                        },
+                    })
+                    self.wfile.write(completed_event.encode("utf-8"))
+                    self.wfile.flush()
+                    try:
+                        self.wfile.write(b"data: [DONE]\n\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, OSError):
+                        pass
+                except Exception:
                     pass
+                logger = get_logger()
+                if logger:
+                    logger.log_upstream_response(request_id, upstream_status,
+                        json.dumps({"error": {"type": "server_error", "message": str(e)}}),
+                        int((time.time() - start) * 1000))
+
+            duration_ms = int((time.time() - start) * 1000)
+            full_sse = "".join(sse_buffer)
+
+            try:
+                self.wfile.close()
             except Exception:
                 pass
-            # 异常路径也记录上游错误到 debug_log
+
             logger = get_logger()
             if logger:
-                logger.log_upstream_response(request_id, upstream_status,
-                    json.dumps({"error": {"type": "server_error", "message": str(e)}}),
-                    int((time.time() - start) * 1000))
-
-        duration_ms = int((time.time() - start) * 1000)
-        full_sse = "".join(sse_buffer)
-
-        # 关闭客户端响应流，让客户端知道流已结束
-        try:
-            self.wfile.close()
-        except Exception:
-            pass
-
-        # 阶段 3：记录上游 SSE
-        logger = get_logger()
-        if logger:
-            logger.log_upstream_response(request_id, upstream_status, full_sse, duration_ms)
-
-            # 阶段 4：流式无 converted_response，跳过标记
-            logger.log_converted_response(request_id, model, target, {"streaming": True, "note": "SSE 流式响应，无 converted_response"})
-
-            # 阶段 5：记录 Token 统计
-            agent = _extract_agent(self.headers.get("User-Agent", ""))
-            if final_usage:
-                record_token_stats(final_usage, {
-                    "request_id": request_id,
-                    "agent": agent,
-                    "model": model,
-                    "target_model": target,
-                    "request_ts": request_ts,
-                    "duration_ms": duration_ms,
-                })
-
-        try:
-            conn.close()
-        except Exception:
-            pass
+                logger.log_upstream_response(request_id, upstream_status, full_sse, duration_ms)
+                logger.log_converted_response(request_id, model, target, {"streaming": True, "note": "SSE 流式响应，无 converted_response"})
+                agent = _extract_agent(self.headers.get("User-Agent", ""))
+                if final_usage:
+                    record_token_stats(final_usage, {
+                        "request_id": request_id,
+                        "agent": agent,
+                        "model": model,
+                        "target_model": target,
+                        "request_ts": request_ts,
+                        "duration_ms": duration_ms,
+                    })
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def _send_json(self, status_code: int, data: dict):
         """发送 JSON 响应。"""

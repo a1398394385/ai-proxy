@@ -210,11 +210,8 @@ function initFactPage() {
   }
 }
 
-// Initialize
-initFactPage();
-
 // ===== Exports =====
-export { loadFacts, loadCategories, renderFacts, toggleFactExpand, editFact, saveFact, deleteFact, allFacts, activeCategory, editingId };
+export { loadFacts, loadCategories, renderFacts, toggleFactExpand, editFact, saveFact, deleteFact, initFactPage, allFacts, activeCategory, editingId };
 
 // ===== Global Scope Mounting =====
 window.loadFacts = loadFacts;

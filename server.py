@@ -25,9 +25,15 @@ def get_config_db():
     return ConfigDB(CONFIG_DB_PATH)
 
 
+MAX_BODY_SIZE = 10 * 1024 * 1024  # 10MB
+
+
 def _read_json(handler):
     """读取请求体 JSON，错误时发送 400 并返回 None。"""
     length = int(handler.headers.get("Content-Length", 0))
+    if length > MAX_BODY_SIZE:
+        json_response(handler, {"error": "Request body too large"}, 413)
+        return None
     body = handler.rfile.read(length)
     try:
         return json.loads(body)
@@ -730,9 +736,16 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             })
 
         # 静态文件
-        file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", path.lstrip("/"))
+        static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+        file_path = os.path.join(static_dir, path.lstrip("/"))
         if path == "/":
-            file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "index.html")
+            file_path = os.path.join(static_dir, "index.html")
+        real_file = os.path.realpath(file_path)
+        real_static = os.path.realpath(static_dir)
+        if not real_file.startswith(real_static + os.sep):
+            self.send_response(403)
+            self.end_headers()
+            return
         if os.path.isfile(file_path):
             ext_map = {".html": "text/html", ".css": "text/css", ".js": "application/javascript"}
             ext = os.path.splitext(file_path)[1]

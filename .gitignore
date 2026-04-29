@@ -11,6 +11,7 @@
 .claude/
 
 # Working docs
+docs/superpowers/
 task_plan.md
 progress.md
 findings.md

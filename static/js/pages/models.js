@@ -298,9 +298,6 @@ export function initModelPage() {
   }
 }
 
-// Initialize
-initModelPage();
-
 // ===== Exports =====
 export { loadModelConfig, refreshConfigStatus, refreshUpstreamDropdown, loadAllModelConfigTables, loadUpstreamTable, loadModelTable, loadRouteTable, applyConfig, showUpstreamModal, saveUpstream, testUpstream, confirmDisableUpstream, showModelModal, saveModel, confirmDeleteModel, showRouteModal, saveRoute, confirmDeleteRoute };
 
