@@ -488,9 +488,6 @@ export function initTokenPage() {
   });
 }
 
-// Initialize
-initTokenPage();
-
 // ===== Exports =====
 export { loadTokenStats, renderKPI, renderTrendChart, renderModelTable, allModels, chartData, hiddenSeries };
 

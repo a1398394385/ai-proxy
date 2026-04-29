@@ -46,3 +46,26 @@
 - **Fix**: Removed fallback stubs from 7 module function aliases (`api`, `formatNumber`, `formatTokens`, `escHtml`, `showModal`, `closeModal`, `bus`). Changed from `var x = window.x || stub` to `var x = window.x` (undefined until module loads).
 - **Why safe**: These vars are only accessed inside functions that execute AFTER module load (user clicks, fetch responses, DOMContentLoaded). At parse time they're `undefined`, but no synchronous code dereferences them. Module sets `window.x = realFunc` before any code reads them.
 - **Key insight**: `var x = window.x` at global scope IS `window.x` (Object Environment Record binding). Module's `window.x = realFunc` updates the same property, so all future `x` references resolve to the real function.
+## Task 7 Complete — app.js Integration
+
+### Changes Made
+1. **core.js**: 
+   - Removed `initTheme()` module-level call (line 36 → removed)
+   - Added `pageLoaders` export (callback registry pattern)
+   - Updated `applyDefaultPage()` to use `pageLoaders` instead of `window.loadFacts`
+   
+2. **facts.js**: Removed module-level `initFactPage()` call; added `initFactPage` to exports
+3. **tokens.js**: Removed module-level `initTokenPage()` call; added `initTokenPage` to exports  
+4. **models.js**: Removed module-level `initModelPage()` call
+5. **app.js** (new): Single entry module — registers pageLoaders, inits pages, sets up bus events, and runs DOMContentLoaded
+6. **index.html**: Stripped all 4 head script tags + entire inline `<script>` block (120 lines removed), replaced with single `<script type="module" src="js/app.js">`
+
+### Architecture Decisions
+- **pageLoaders registry**: core.js's `applyDefaultPage()` needs to call `loadFacts()`/`loadTokenStats()`, but can't import from page modules (cross-page import rule). Solution: callback registry pattern where app.js registers the loaders.
+- **`window.currentPage`**: Used for nav tab handler reassignment since ES module imports are live read-only views that can't be reassigned from app.js.
+- **Preserved bus events**: `config:upstream-changed`, `config:model-changed`, `config:route-changed` listeners preserved in app.js.
+
+### Verification
+- 333 tests pass (unchanged)
+- LSP: 0 errors, 3 pre-existing hints (tokens.js unused vars)
+- Module graph: app.js → core.js + facts/tokens/models → no circular imports

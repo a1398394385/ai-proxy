@@ -32,9 +32,6 @@ export function updateThemeButton(theme) {
   }
 }
 
-// 初始化主题
-initTheme();
-
 // ===== 设置功能 =====
 export function initSettings() {
   const savedDefaultPage = localStorage.getItem('defaultPage') || 'facts';
@@ -80,9 +77,10 @@ export function applyDefaultPage(page) {
   document.getElementById('page-models').classList.toggle('hidden', page !== 'models');
   document.getElementById('page-settings').classList.add('hidden');
 
-  // 加载数据
-  if (page === 'facts') window.loadFacts && window.loadFacts();
-  if (page === 'tokens') window.loadTokenStats && window.loadTokenStats();
+  // 加载数据（通过回调注册表，避免跨模块导入）
+  if (page === 'facts' && pageLoaders.facts) pageLoaders.facts();
+  if (page === 'tokens' && pageLoaders.tokens) pageLoaders.tokens();
+  if (page === 'models' && pageLoaders.models) pageLoaders.models();
 }
 
 export function showSettings() {
@@ -144,6 +142,9 @@ export const bus = {
   emit(name, detail) { document.dispatchEvent(new CustomEvent(name, { detail })); },
   on(name, fn) { document.addEventListener(name, fn); }
 };
+
+// Callback registry for cross-page data loading (avoids circular imports)
+export const pageLoaders = { facts: null, tokens: null, models: null };
 
 // Global scope mounting for onclick handlers (required by ES modules)
 window.api = api;

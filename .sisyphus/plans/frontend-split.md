@@ -644,7 +644,7 @@ Wave FINAL（所有任务之后 — 4 项并行审查）：
   - 消息：`feat(frontend): 提取 models 模块 — CSS + JS（含上游/模型/路由 CRUD）`
   - 文件：`static/css/models.css`, `static/js/pages/models.js`, `static/index.html`
 
-- [ ] 7. 创建 `static/js/app.js` 入口 + 精简 `index.html`
+- [x] 7. 创建 `static/js/app.js` 入口 + 精简 `index.html`
 
   **做什么**：
   - 创建 `static/js/app.js` 作为应用入口模块：
@@ -744,7 +744,7 @@ Wave FINAL（所有任务之后 — 4 项并行审查）：
   - 消息：`feat(frontend): 创建 app.js 入口 + 精简 index.html 为骨架`
   - 文件：`static/js/app.js`, `static/index.html`
 
-- [ ] 8. 最终集成验证 — onclick 处理器 + 跨页面回归
+- [x] 8. 最终集成验证 — onclick 处理器 + 跨页面回归
 
   **做什么**：
   - 验证所有 `onclick="..."` 处理器在拆分后仍可工作：

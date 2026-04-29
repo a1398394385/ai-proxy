@@ -8,10 +8,6 @@
 <link rel="stylesheet" href="css/facts.css">
 <link rel="stylesheet" href="css/tokens.css">
 <link rel="stylesheet" href="css/models.css">
-<script type="module" src="js/core.js"></script>
-<script type="module" src="js/pages/facts.js"></script>
-<script type="module" src="js/pages/tokens.js"></script>
-<script type="module" src="js/pages/models.js"></script>
 </head>
 <body>
 <div class="app">
@@ -278,122 +274,6 @@
   </div>
 </div>
 
-<script>
-// Inline script aliases for module exports (defined in js/core.js)
-var currentPage = 'facts';
-var allFacts = [];
-var activeCategory = null;
-var editingId = null;
-
-// Module function references (no fallback — module loads asynchronously, polled in boot)
-var api = window.api;
-var formatNumber = window.formatNumber;
-var formatTokens = window.formatTokens;
-var escHtml = window.escHtml;
-var showModal = window.showModal;
-var closeModal = window.closeModal;
-var bus = window.bus;
-
-// Module functions used in DOMContentLoaded handlers (defensive stubs)
-var toggleTheme = window.toggleTheme || function() {};
-var showSettings = window.showSettings || function() {};
-var saveDefaultPage = window.saveDefaultPage || function() {};
-var initSettings = window.initSettings || function() {};
-
-// Facts page function aliases (defined in js/pages/facts.js)
-var loadFacts = window.loadFacts || function() {};
-var loadCategories = window.loadCategories || function() {};
-var editFact = window.editFact || function() {};
-var saveFact = window.saveFact || function() {};
-var deleteFact = window.deleteFact || function() {};
-var toggleFactExpand = window.toggleFactExpand || function() {};
-
-// 绑定设置相关事件
-document.addEventListener('DOMContentLoaded', () => {
-  // 主题切换按钮
-  const themeBtn = document.getElementById('theme-toggle');
-  if (themeBtn) {
-    themeBtn.addEventListener('click', toggleTheme);
-  }
-  
-  // 设置按钮
-  const settingsBtn = document.getElementById('settings-btn');
-  if (settingsBtn) {
-    settingsBtn.addEventListener('click', showSettings);
-  }
-  
-  // 默认页面选择器
-  const defaultPageSelect = document.getElementById('default-page-select');
-  if (defaultPageSelect) {
-    defaultPageSelect.addEventListener('change', (e) => {
-      saveDefaultPage(e.target.value);
-    });
-  }
-  
-  // 默认周期选择器
-  const defaultPeriodSelect = document.getElementById('default-period-select');
-  if (defaultPeriodSelect) {
-    defaultPeriodSelect.addEventListener('change', (e) => {
-      localStorage.setItem('defaultPeriod', e.target.value);
-    });
-  }
-  
-  // 初始化设置
-  initSettings();
-});
-
-// ===== API 调用 =====
-
-
-// ===== 导航切换 =====
-document.querySelectorAll('.nav-tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    const page = tab.dataset.page;
-    currentPage = page;
-    document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    document.getElementById('page-facts').classList.toggle('hidden', page !== 'facts');
-    document.getElementById('page-tokens').classList.toggle('hidden', page !== 'tokens');
-    document.getElementById('page-models').classList.toggle('hidden', page !== 'models');
-    document.getElementById('page-settings').classList.add('hidden');
-    if (page === 'facts') window.loadFacts && window.loadFacts();
-    if (page === 'tokens') window.loadTokenStats && window.loadTokenStats();
-    if (page === 'models') window.loadModelConfig && window.loadModelConfig();
-  });
-});
-
-
-
-// ===== 模态框 =====
-
-
-document.getElementById('modal-overlay').addEventListener('click', e => {
-  if (e.target.id === 'modal-overlay') closeModal();
-});
-
-function registerModelEvents() {
-  var b = window.bus;
-  if (!b || !b.on) return setTimeout(registerModelEvents, 50);
-  b.on('config:dirty', () => {
-    const btn = document.getElementById('apply-config-btn');
-    if (btn) { btn.classList.add('pulse-orange'); btn.textContent = '⚠️ 应用配置'; }
-  });
-  b.on('config:applied', () => {
-    const btn = document.getElementById('apply-config-btn');
-    if (btn) { btn.classList.remove('pulse-orange'); btn.textContent = '✅ 应用配置'; }
-  });
-  b.on('config:upstream-changed', () => { window.refreshUpstreamDropdown && window.refreshUpstreamDropdown(); window.refreshConfigStatus && window.refreshConfigStatus(); });
-  b.on('config:model-changed', () => { window.refreshConfigStatus && window.refreshConfigStatus(); });
-  b.on('config:route-changed', () => { window.refreshConfigStatus && window.refreshConfigStatus(); });
-}
-registerModelEvents();
-
-// ===== 初始化 =====
-// Defer initial load until module exports are ready
-setTimeout(function boot() {
-  if (typeof window.api === 'function' && typeof window.loadFacts === 'function') window.loadFacts();
-  else setTimeout(boot, 20);
-}, 10);
-</script>
+<script type="module" src="js/app.js"></script>
 </body>
 </html>
