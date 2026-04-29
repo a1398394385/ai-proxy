@@ -19,7 +19,7 @@
 ./server.sh restart   # 重启（修改代码后必须执行，无热重载）
 
 # 测试
-cd /Users/xys/.hermes/fact-store-browser
+cd /Users/xys/Github/ai-agent-tools
 python3 -m pytest test/ -q                    # 全量（333 tests，约 17s）
 python3 -m pytest test/test_transform.py -q  # 单文件
 
@@ -88,6 +88,7 @@ fact_entities (fact_id, entity_id)  -- 多对多
 | POST | `/v1/responses` | OpenAI Responses API（Codex CLI 主路径）|
 | POST | `/v1/responses/compact` | 同上 |
 | POST | `/v1/messages` | Anthropic Messages API（Claude Code）|
+| `*` | `/v1/*` | 透传（pass-through）— 未匹配以上路由的 `/v1/` 请求原样转发到上游 |
 | POST | `/admin/reload` | 强制刷新 ConfigCache（仅 127.0.0.1/::1）|
 
 ## 代理请求流程
@@ -140,10 +141,11 @@ test/
 ├── test_sse_utils.py                 # SSE 格式化（5K）
 ├── test_proxy_config.py              # 配置加载校验（3.5K）
 ├── test_config_integration.py        # 配置集成（3.4K）
-└── test_e2e_smoke.py                 # 端对端冒烟，启动真实 proxy（6.7K）
+├── test_e2e_smoke.py                 # 端对端冒烟，启动真实 proxy（6.7K）
+├── test_proxy_pass_through.py         # pass-through 透传功能测试（15 tests）
 ```
 
-**当前：333 tests passing**
+**当前：348 tests passing**
 
 ## 开发规范
 
