@@ -777,107 +777,30 @@ tr:hover td {
 </div>
 
 <script>
-// ===== 全局状态 =====
-let currentPage = 'facts';
-let currentPeriod = 'week';
-let allFacts = [];
-let allModels = [];
-let activeCategory = null;
-let editingId = null;
+// Inline script aliases for module exports (defined in js/core.js)
+var currentPage = 'facts';
+var currentPeriod = 'week';
+var allFacts = [];
+var allModels = [];
+var activeCategory = null;
+var editingId = null;
+var chartData = [];
+var hiddenSeries = new Set();
 
-const catLabels = { general: '通用', project: '项目', tool: '工具', user_pref: '偏好' };
-const catIcons = { general: '📝', project: '📁', tool: '🔧', user_pref: '✨' };
+// Module function references (no fallback — module loads asynchronously, polled in boot)
+var api = window.api;
+var formatNumber = window.formatNumber;
+var formatTokens = window.formatTokens;
+var escHtml = window.escHtml;
+var showModal = window.showModal;
+var closeModal = window.closeModal;
+var bus = window.bus;
 
-// ===== 主题切换 =====
-function initTheme() {
-  const savedTheme = localStorage.getItem('theme') || 'dark';
-  document.documentElement.setAttribute('data-theme', savedTheme);
-  updateThemeButton(savedTheme);
-}
-
-function toggleTheme() {
-  const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
-  const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', newTheme);
-  localStorage.setItem('theme', newTheme);
-  updateThemeButton(newTheme);
-}
-
-function updateThemeButton(theme) {
-  const btn = document.getElementById('theme-toggle');
-  if (btn) {
-    btn.textContent = theme === 'dark' ? '🌙' : '🌕';
-    btn.title = theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式';
-  }
-}
-
-// 初始化主题
-initTheme();
-
-// ===== 设置功能 =====
-function initSettings() {
-  const savedDefaultPage = localStorage.getItem('defaultPage') || 'facts';
-  const pageSelect = document.getElementById('default-page-select');
-  if (pageSelect) {
-    pageSelect.value = savedDefaultPage;
-  }
-  
-  // 初始化默认周期设置
-  const savedDefaultPeriod = localStorage.getItem('defaultPeriod') || 'week';
-  const periodSelect = document.getElementById('default-period-select');
-  if (periodSelect) {
-    periodSelect.value = savedDefaultPeriod;
-  }
-  // 同步到当前周期
-  currentPeriod = savedDefaultPeriod;
-  
-  // 更新周期按钮的活动状态
-  document.querySelectorAll('.period-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.period === savedDefaultPeriod);
-  });
-  
-  // 应用默认页面
-  applyDefaultPage(savedDefaultPage);
-}
-
-function applyDefaultPage(page) {
-  if (!page || (page !== 'facts' && page !== 'tokens')) {
-    page = 'facts';
-  }
-  
-  currentPage = page;
-  
-  // 更新导航标签状态
-  document.querySelectorAll('.nav-tab').forEach(t => {
-    t.classList.toggle('active', t.dataset.page === page);
-  });
-  
-  // 显示/隐藏页面
-  document.getElementById('page-facts').classList.toggle('hidden', page !== 'facts');
-  document.getElementById('page-tokens').classList.toggle('hidden', page !== 'tokens');
-  document.getElementById('page-models').classList.toggle('hidden', page !== 'models');
-  document.getElementById('page-settings').classList.add('hidden');
-  
-  // 加载数据
-  if (page === 'facts') loadFacts();
-  if (page === 'tokens') loadTokenStats();
-}
-
-function showSettings() {
-  currentPage = 'settings';
-  
-  // 隐藏所有主页面
-  document.getElementById('page-facts').classList.add('hidden');
-  document.getElementById('page-tokens').classList.add('hidden');
-  document.getElementById('page-settings').classList.remove('hidden');
-  
-  // 移除导航标签的活动状态
-  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
-}
-
-function saveDefaultPage(page) {
-  localStorage.setItem('defaultPage', page);
-}
+// Module functions used in DOMContentLoaded handlers (defensive stubs)
+var toggleTheme = window.toggleTheme || function() {};
+var showSettings = window.showSettings || function() {};
+var saveDefaultPage = window.saveDefaultPage || function() {};
+var initSettings = window.initSettings || function() {};
 
 // 绑定设置相关事件
 document.addEventListener('DOMContentLoaded', () => {
@@ -914,21 +837,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ===== API 调用 =====
-async function api(path, opts = {}) {
-  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
-  return res.json();
-}
 
-function formatNumber(n) {
-  if (n == null || n === undefined) return '0';
-  if (n >= 1000000) return (n / 1000000).toFixed(2) + 'M';
-  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-  return n.toLocaleString();
-}
-
-function formatTokens(n) {
-  return n.toLocaleString();
-}
 
 // ===== 导航切换 =====
 document.querySelectorAll('.nav-tab').forEach(tab => {
@@ -1045,9 +954,7 @@ function toggleFactExpand(btn) {
   }
 }
 
-function escHtml(s) {
-  const d = document.createElement('div'); d.textContent = s; return d.innerHTML;
-}
+
 
 // ===== Token 统计 =====
 document.querySelectorAll('.period-btn').forEach(btn => {
@@ -1139,8 +1046,7 @@ function renderKPI(stats) {
 }
 
 // ===== SVG 面积图实现 =====
-let chartData = [];
-let hiddenSeries = new Set();
+
 
 function renderTrendChart(trends) {
   chartData = trends || [];
@@ -1560,17 +1466,7 @@ document.getElementById('model-search').addEventListener('input', () => {
 });
 
 // ===== 模态框 =====
-function showModal(title, content, footer) {
-  document.getElementById('modal-title').textContent = title;
-  document.getElementById('modal-body').innerHTML = content;
-  document.getElementById('modal-footer').innerHTML = footer;
-  document.getElementById('modal-overlay').classList.add('show');
-}
 
-function closeModal() {
-  document.getElementById('modal-overlay').classList.remove('show');
-  editingId = null;
-}
 
 document.getElementById('modal-overlay').addEventListener('click', e => {
   if (e.target.id === 'modal-overlay') closeModal();
@@ -1676,22 +1572,24 @@ document.getElementById('search').addEventListener('input', e => {
 // ===== 模型管理 =====
 // escHtml 已在 line 1681 定义，复用
 
-const bus = {
-  emit(name, detail) { document.dispatchEvent(new CustomEvent(name, { detail })); },
-  on(name, fn) { document.addEventListener(name, fn); }
-};
 
-bus.on('config:dirty', () => {
-  const btn = document.getElementById('apply-config-btn');
-  if (btn) { btn.classList.add('pulse-orange'); btn.textContent = '⚠️ 应用配置'; }
-});
-bus.on('config:applied', () => {
-  const btn = document.getElementById('apply-config-btn');
-  if (btn) { btn.classList.remove('pulse-orange'); btn.textContent = '✅ 应用配置'; }
-});
-bus.on('config:upstream-changed', () => { refreshUpstreamDropdown(); refreshConfigStatus(); });
-bus.on('config:model-changed', () => { refreshConfigStatus(); });
-bus.on('config:route-changed', () => { refreshConfigStatus(); });
+
+function registerModelEvents() {
+  var b = window.bus;
+  if (!b || !b.on) return setTimeout(registerModelEvents, 50);
+  b.on('config:dirty', () => {
+    const btn = document.getElementById('apply-config-btn');
+    if (btn) { btn.classList.add('pulse-orange'); btn.textContent = '⚠️ 应用配置'; }
+  });
+  b.on('config:applied', () => {
+    const btn = document.getElementById('apply-config-btn');
+    if (btn) { btn.classList.remove('pulse-orange'); btn.textContent = '✅ 应用配置'; }
+  });
+  b.on('config:upstream-changed', () => { refreshUpstreamDropdown(); refreshConfigStatus(); });
+  b.on('config:model-changed', () => { refreshConfigStatus(); });
+  b.on('config:route-changed', () => { refreshConfigStatus(); });
+}
+registerModelEvents();
 
 async function refreshConfigStatus() {
   try {
@@ -1983,7 +1881,11 @@ async function applyConfig() {
 }
 
 // ===== 初始化 =====
-loadFacts();
+// Defer initial load until core.js module exports are ready
+setTimeout(function boot() {
+  if (typeof window.api === 'function') loadFacts();
+  else setTimeout(boot, 20);
+}, 10);
 </script>
 </body>
 </html>
