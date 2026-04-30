@@ -67,3 +67,29 @@ td {
 tr:hover td {
   background: hsl(var(--muted) / 0.5);
 }
+
+/* Drawer 折叠面板 */
+.drawer {
+  transition: max-height 0.3s ease, opacity 0.3s ease;
+  overflow: hidden;
+}
+
+.drawer.hidden {
+  max-height: 0;
+  opacity: 0;
+  margin-bottom: 0 !important;
+}
+
+.drawer:not(.hidden) {
+  max-height: 2000px;
+  opacity: 1;
+}
+
+/* 上游表格可点击行 */
+#upstream-table tbody tr {
+  cursor: pointer;
+}
+
+#upstream-table tbody tr:hover td {
+  background: hsl(var(--primary) / 0.08);
+}

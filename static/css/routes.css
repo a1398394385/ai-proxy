@@ -1,0 +1,30 @@
+/* Proxy 路由 Tab 切换 */
+.proxy-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.proxy-tab {
+  padding: 6px 14px;
+  border-radius: calc(var(--radius) / 2);
+  border: 1px solid hsl(var(--border));
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.proxy-tab:hover {
+  color: hsl(var(--foreground));
+  background: hsl(var(--muted));
+  border-color: hsl(var(--primary) / 0.3);
+}
+
+.proxy-tab.active {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  border-color: hsl(var(--primary));
+}
