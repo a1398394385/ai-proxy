@@ -2,9 +2,11 @@
 """动态模型配置管理 — ConfigDB（数据库 CRUD）+ ConfigCache（内存缓存）。"""
 
 import sqlite3
+import shutil
 import threading
 import time
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -71,6 +73,19 @@ class ConfigDB:
             """)
         finally:
             conn.close()
+
+        # 检查迁移状态（不阻塞启动）
+        try:
+            mg = Migrations(self.db_path)
+            s = mg.status()
+            if not s["migrated"]:
+                logging.warning(
+                    f"[ConfigDB] 数据库需要迁移，"
+                    f"请调用 Migrations.migrate() 或 POST /api/migrate. "
+                    f"当前状态: {s['details']}"
+                )
+        except Exception:
+            pass  # 静默 — 不阻塞启动
 
     def close(self):
         """No-op placeholder for API compatibility."""
@@ -449,6 +464,143 @@ class ConfigDB:
             models = conn.execute("SELECT COUNT(*) FROM target_models").fetchone()[0]
             routes = conn.execute("SELECT COUNT(*) FROM model_routes").fetchone()[0]
             return {"upstreams": upstreams, "models": models, "routes": routes}
+        finally:
+            conn.close()
+
+
+class Migrations:
+    """数据库迁移管理 — 将 model_routes 表从 v0 升级到 v1（添加 proxy_type 列）。
+
+    SQLite 不支持 ALTER TABLE DROP CONSTRAINT，因此使用重建表方式迁移。
+    迁移是幂等的 — 已迁移的数据库再次调用 migrate() 会立即返回。
+    """
+
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+
+    def _connect(self):
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=3000")
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+
+    def status(self) -> dict:
+        """返回当前迁移状态。version 0 = 未迁移，version >= 1 = 已迁移。"""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT version FROM schema_version LIMIT 1"
+            ).fetchone()
+            if row is None or row["version"] == 0:
+                return {
+                    "migrated": False,
+                    "version": row["version"] if row else 0,
+                    "details": "尚未执行迁移: model_routes 表缺少 proxy_type 列",
+                }
+            return {
+                "migrated": True,
+                "version": row["version"],
+                "details": f"已迁移到 v{row['version']}: model_routes 包含 proxy_type 列",
+            }
+        finally:
+            conn.close()
+
+    def migrate(self) -> dict:
+        """执行 v0 → v1 迁移（幂等）。"""
+        # STEP 0: 检查是否需要迁移
+        s = self.status()
+        if s["migrated"]:
+            logging.info(f"[Migrations] 数据库已是最新版本 v{s['version']}，跳过迁移")
+            return {"status": "already_migrated", "details": s["details"]}
+
+        # STEP 1: 备份现有数据库
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        backup_name = f"{self.db_path.stem}.bak.{timestamp}{self.db_path.suffix}"
+        backup_path = self.db_path.parent / backup_name
+        shutil.copy2(self.db_path, backup_path)
+        logging.info(f"[Migrations] STEP 1: 备份完成 -> {backup_path}")
+
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN TRANSACTION")
+
+            try:
+                # 记录原始路由数（用于验证）
+                old_count = conn.execute(
+                    "SELECT COUNT(*) FROM model_routes"
+                ).fetchone()[0]
+                logging.info(
+                    f"[Migrations] STEP 0: 原始 model_routes 记录数 = {old_count}"
+                )
+
+                # STEP 2: 创建新表
+                conn.execute("""
+                    CREATE TABLE model_routes_new (
+                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source          TEXT NOT NULL CHECK(length(source) > 0),
+                        target_model_id INTEGER NOT NULL REFERENCES target_models(id) ON DELETE RESTRICT,
+                        proxy_type      TEXT NOT NULL DEFAULT 'codex'
+                            CHECK(proxy_type IN ('codex', 'claude', 'pass_through')),
+                        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                        UNIQUE(source, proxy_type)
+                    );
+                """)
+                logging.info("[Migrations] STEP 2: model_routes_new 表创建完成")
+
+                # STEP 3: 复制数据（proxy_type 自动默认为 'codex'）
+                conn.execute("""
+                    INSERT INTO model_routes_new
+                        (id, source, target_model_id, created_at, updated_at)
+                    SELECT id, source, target_model_id, created_at, updated_at
+                    FROM model_routes;
+                """)
+                logging.info("[Migrations] STEP 3: 数据复制完成")
+
+                # STEP 4: 替换表
+                conn.execute("DROP TABLE model_routes;")
+                conn.execute(
+                    "ALTER TABLE model_routes_new RENAME TO model_routes;"
+                )
+                logging.info("[Migrations] STEP 4: 表替换完成")
+
+                # STEP 5: 记录版本
+                conn.execute("DELETE FROM schema_version;")
+                conn.execute(
+                    "INSERT INTO schema_version (version) VALUES (1);"
+                )
+                logging.info("[Migrations] STEP 5: schema_version 更新为 1")
+
+                # STEP 6: 验证
+                new_count = conn.execute(
+                    "SELECT COUNT(*) FROM model_routes"
+                ).fetchone()[0]
+                if new_count < old_count:
+                    raise sqlite3.OperationalError(
+                        f"迁移验证失败: 原有 {old_count} 条记录, 現有 {new_count} 条记录"
+                    )
+                logging.info(
+                    f"[Migrations] STEP 6: 验证通过, {new_count} 条记录"
+                )
+
+                conn.commit()
+                logging.info(
+                    f"[Migrations] 迁移成功: {new_count} 条路由"
+                )
+
+            except Exception:
+                conn.rollback()
+                logging.error("[Migrations] 迁移失败，已回滚", exc_info=True)
+                raise
+
+            return {
+                "status": "ok",
+                "routes_count": new_count,
+                "backup_path": str(backup_path),
+            }
+
         finally:
             conn.close()
 
