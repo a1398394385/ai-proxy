@@ -65,10 +65,13 @@ class ConfigDB:
 
                 CREATE TABLE IF NOT EXISTS model_routes (
                     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    source          TEXT NOT NULL UNIQUE CHECK(length(source) > 0),
+                    source          TEXT NOT NULL CHECK(length(source) > 0),
                     target_model_id INTEGER NOT NULL REFERENCES target_models(id) ON DELETE RESTRICT,
+                    proxy_type      TEXT NOT NULL DEFAULT 'codex'
+                                    CHECK(proxy_type IN ('codex', 'claude', 'pass_through')),
                     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+                    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                    UNIQUE(source, proxy_type)
                 );
             """)
         finally:
@@ -289,18 +292,25 @@ class ConfigDB:
 
     # ─── 路由映射 CRUD ────────────────────────────────────────────
 
-    def list_routes(self):
+    def list_routes(self, proxy_type: Optional[str] = None):
         conn = self._connect()
         try:
+            params = []
+            where = ""
+            if proxy_type is not None:
+                where = "WHERE mr.proxy_type = ?"
+                params.append(proxy_type)
             rows = conn.execute(
-                """SELECT mr.*, tm.name as target_name, tm.upstream_id,
+                f"""SELECT mr.*, tm.name as target_name, tm.upstream_id,
                           u.is_active as upstream_active
                    FROM model_routes mr
                    JOIN target_models tm ON mr.target_model_id = tm.id
                    JOIN upstreams u ON tm.upstream_id = u.id
+                   {where}
                    ORDER BY
                      CASE mr.source WHEN '*' THEN 0 ELSE 1 END,
-                     mr.source"""
+                     mr.source""",
+                params,
             ).fetchall()
             return [dict(r) for r in rows]
         finally:
@@ -321,6 +331,9 @@ class ConfigDB:
             conn.close()
 
     def add_route(self, data: dict) -> int:
+        proxy_type = data.get("proxy_type", "codex")
+        if proxy_type not in ("codex", "claude", "pass_through"):
+            raise ValueError("proxy_type must be one of: codex, claude, pass_through")
         conn = self._connect()
         try:
             # 校验目标模型所属上游是否活跃
@@ -333,8 +346,8 @@ class ConfigDB:
             if not active:
                 raise ValueError("目标模型不存在或所属上游已禁用")
             cursor = conn.execute(
-                "INSERT INTO model_routes (source, target_model_id) VALUES (?, ?)",
-                (data["source"], data["target_model_id"]),
+                "INSERT INTO model_routes (source, target_model_id, proxy_type) VALUES (?, ?, ?)",
+                (data["source"], data["target_model_id"], proxy_type),
             )
             conn.commit()
             return cursor.lastrowid
@@ -346,12 +359,43 @@ class ConfigDB:
         try:
             fields = []
             values = []
-            for key in ("source", "target_model_id"):
+            for key in ("source", "target_model_id", "proxy_type"):
                 if key in data:
+                    if key == "proxy_type" and data[key] not in ("codex", "claude", "pass_through"):
+                        raise ValueError("proxy_type must be one of: codex, claude, pass_through")
                     fields.append(f"{key} = ?")
                     values.append(data[key])
             if not fields:
                 return
+
+            # 校验目标模型是否存在且所属上游活跃
+            target_model_id: Optional[int] = data.get("target_model_id")
+            if target_model_id is not None:
+                # 使用新提供的 target_model_id
+                active = conn.execute(
+                    """SELECT 1 FROM target_models tm
+                       JOIN upstreams u ON tm.upstream_id = u.id
+                       WHERE tm.id = ? AND u.is_active = 1""",
+                    (target_model_id,),
+                ).fetchone()
+                if not active:
+                    raise ValueError("目标模型不存在或所属上游已禁用")
+            else:
+                # 未提供 target_model_id，验证现有路由的目标模型仍然有效
+                existing = conn.execute(
+                    "SELECT target_model_id FROM model_routes WHERE id = ?",
+                    (route_id,),
+                ).fetchone()
+                if existing:
+                    active = conn.execute(
+                        """SELECT 1 FROM target_models tm
+                           JOIN upstreams u ON tm.upstream_id = u.id
+                           WHERE tm.id = ? AND u.is_active = 1""",
+                        (existing["target_model_id"],),
+                    ).fetchone()
+                    if not active:
+                        raise ValueError("当前路由的目标模型所属上游已禁用")
+
             fields.append("updated_at = datetime('now')")
             values.append(route_id)
             conn.execute(
@@ -382,19 +426,19 @@ class ConfigDB:
 
     # ─── 配置查询（供 proxy 使用）────────────────────────────────
 
-    def resolve_model(self, source_name: str) -> Optional[dict]:
+    def resolve_model(self, source_name: str, proxy_type: str = "codex") -> Optional[dict]:
         """返回值约定：
         - 找到可用匹配（路由存在 + 上游 is_active=1）→ 返回完整配置 dict
         - 匹配到但上游禁用 → 跳过，继续尝试 "*" fallback
         - "*" 也找不到或也禁用 → 返回 None
         """
         for name in (source_name, "*"):
-            row = self.resolve_one(name)
+            row = self.resolve_one(name, proxy_type)
             if row is not None:
                 return row
         return None
 
-    def resolve_one(self, source_name: str) -> Optional[dict]:
+    def resolve_one(self, source_name: str, proxy_type: str = "codex") -> Optional[dict]:
         """精确匹配单个 source 的路由配置，无 fallback（供 ConfigCache 内部使用）。"""
         conn = self._connect()
         try:
@@ -405,8 +449,8 @@ class ConfigDB:
                    FROM model_routes mr
                    JOIN target_models tm ON mr.target_model_id = tm.id
                    JOIN upstreams u ON tm.upstream_id = u.id
-                   WHERE mr.source = ? AND u.is_active = 1""",
-                (source_name,),
+                   WHERE mr.source = ? AND mr.proxy_type = ? AND u.is_active = 1""",
+                (source_name, proxy_type),
             ).fetchone()
             if row is None:
                 return None
@@ -429,16 +473,22 @@ class ConfigDB:
         finally:
             conn.close()
 
-    def get_all_routes(self) -> dict:
+    def get_all_routes(self, proxy_type: Optional[str] = None) -> dict:
         conn = self._connect()
         try:
+            params = []
+            where = "WHERE u.is_active = 1"
+            if proxy_type is not None:
+                where += " AND mr.proxy_type = ?"
+                params.append(proxy_type)
             rows = conn.execute(
-                """SELECT mr.source, tm.name as target_name, tm.multimodal,
+                f"""SELECT mr.source, mr.proxy_type, tm.name as target_name, tm.multimodal,
                           tm.format, tm.upstream_id
                    FROM model_routes mr
                    JOIN target_models tm ON mr.target_model_id = tm.id
                    JOIN upstreams u ON tm.upstream_id = u.id
-                   WHERE u.is_active = 1"""
+                   {where}""",
+                params,
             ).fetchall()
             result = {}
             for r in rows:
@@ -447,13 +497,14 @@ class ConfigDB:
                     "multimodal": r["multimodal"],
                     "format": r["format"],
                     "upstream_id": r["upstream_id"],
+                    "proxy_type": r["proxy_type"],
                 }
             return result
         finally:
             conn.close()
 
-    def validate_star_fallback(self) -> bool:
-        return self.resolve_model("*") is not None
+    def validate_star_fallback(self, proxy_type: str = "codex") -> bool:
+        return self.resolve_model("*", proxy_type) is not None
 
     def get_counts(self) -> dict:
         conn = self._connect()
@@ -619,19 +670,25 @@ class ConfigCache:
         with self._lock:
             self._loaded_at = 0
 
-    def resolve(self, source_name: str) -> Optional[dict]:
+    def resolve(self, source_name: str, proxy_type: str = "codex") -> Optional[dict]:
         with self._lock:
-            self._refresh_if_stale()
-            if source_name in self._routes:
-                return self._routes[source_name]
-            return self._routes.get("*")
+            self._refresh_if_stale(proxy_type)
+            key = (source_name, proxy_type)
+            if key in self._routes:
+                return self._routes[key]
+            return self._routes.get(("*", proxy_type))
 
-    def get_all(self) -> dict:
+    def get_all(self, proxy_type: Optional[str] = None) -> dict:
         with self._lock:
-            self._refresh_if_stale()
-            return {k: v for k, v in self._routes.items()}
+            self._refresh_if_stale(proxy_type)
+            result = {}
+            for (src, pt), cfg in self._routes.items():
+                if proxy_type is not None and pt != proxy_type:
+                    continue
+                result[src] = cfg
+            return result
 
-    def _refresh_if_stale(self):
+    def _refresh_if_stale(self, proxy_type: Optional[str] = None):
         now = time.time()
         if self._loaded_at > 0 and now - self._loaded_at < self._ttl:
             return
@@ -639,11 +696,13 @@ class ConfigCache:
             db = ConfigDB(self._db_path)
             try:
                 new_routes = {}
-                all_routes = db.get_all_routes()
-                for source in all_routes:
-                    cfg = db.resolve_one(source)
+                all_routes = db.list_routes(proxy_type)
+                for route in all_routes:
+                    source = route["source"]
+                    pt = route.get("proxy_type", "codex")
+                    cfg = db.resolve_one(source, pt)
                     if cfg:
-                        new_routes[source] = cfg
+                        new_routes[(source, pt)] = cfg
                 self._routes = new_routes
                 self._loaded_at = time.time()
             finally:
