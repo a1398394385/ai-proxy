@@ -160,7 +160,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
 
         model_name = body.get("model", "*")
-        model_cfg = resolve_model(model_name)
+        model_cfg = resolve_model(model_name, proxy_type='codex')
         target = model_cfg["target"]
         upstream_cfg = model_cfg.get("upstream")
         if upstream_cfg is None:
@@ -230,7 +230,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
 
         model_name = body.get("model", "*")
-        model_cfg = resolve_model(model_name)
+        model_cfg = resolve_model(model_name, proxy_type='claude')
         target = model_cfg["target"]
         is_stream = body.get("stream", False)
 
