@@ -64,7 +64,8 @@ function toggleModelDrawer(event, upstreamId) {
   drawerRow.innerHTML =
     '<td colspan="6">' +
       '<div class="drawer-content">' +
-        '<div class="drawer-header">🤖 模型列表 — 上游: ' + escHtml(upstreamId) + '</div>' +
+        '<div class="drawer-header">🤖 模型列表 — 上游: ' + escHtml(upstreamId) +
+          '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); showModelModalForUpstream(\'' + escHtml(upstreamId) + '\')" style="margin-left:auto;">＋ 新增模型</button></div>' +
         '<table class="drawer-model-table">' +
           '<thead><tr><th>模型名</th><th>Format</th><th>Multimodal</th><th>操作</th></tr></thead>' +
           '<tbody class="drawer-model-tbody"></tbody>' +
@@ -220,8 +221,8 @@ async function confirmDisableUpstream(id) {
 }
 
 // ─── 模型模态框 ───
-async function showModelModal(editId) {
-  let data = { name: '', upstream_id: '', multimodal: 1, format: 'openai_chat' };
+async function showModelModal(editId, defaultUpstreamId) {
+  let data = { name: '', upstream_id: defaultUpstreamId || '', multimodal: 1, format: 'openai_chat' };
   let title = '新增模型';
   if (editId) {
     title = '编辑模型 #' + editId;
@@ -239,6 +240,10 @@ async function showModelModal(editId) {
        <select class="form-input" id="m-format"><option value="openai_chat" ${data.format === 'openai_chat' ? 'selected' : ''}>openai_chat</option><option value="openai_responses" ${data.format === 'openai_responses' ? 'selected' : ''}>openai_responses</option><option value="anthropic" ${data.format === 'anthropic' ? 'selected' : ''}>anthropic</option></select></div>
      <div class="form-group"><label class="form-label">Multimodal</label><select class="form-input" id="m-multimodal"><option value="1" ${data.multimodal ? 'selected' : ''}>✅ 支持</option><option value="0" ${!data.multimodal ? 'selected' : ''}>❌ 不支持</option></select></div>`,
     `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveModel(${editId || 0})">保存</button>`);
+}
+
+function showModelModalForUpstream(upstreamId) {
+  showModelModal(0, upstreamId);
 }
 
 async function saveModel(editId) {
@@ -316,6 +321,7 @@ window.saveUpstream = saveUpstream;
 window.testUpstream = testUpstream;
 window.confirmDisableUpstream = confirmDisableUpstream;
 window.showModelModal = showModelModal;
+window.showModelModalForUpstream = showModelModalForUpstream;
 window.saveModel = saveModel;
 window.confirmDeleteModel = confirmDeleteModel;
 window.toggleModelDrawer = toggleModelDrawer;
