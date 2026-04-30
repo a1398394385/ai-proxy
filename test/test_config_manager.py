@@ -388,3 +388,58 @@ class TestConfigCache(unittest.TestCase):
         cfg2 = cache.resolve("*")
         self.assertEqual(cfg2["target_name"], "claude")
 
+
+class TestRouteProxyType(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "config.db"
+        from config_manager import ConfigDB
+        self.db = ConfigDB(self.db_path)
+        self.db.add_upstream({"id": "up-a", "base_url": "http://a", "api_key": "sk-a"})
+        self.db.add_upstream({"id": "up-b", "base_url": "http://b", "api_key": "sk-b"})
+        self.m1 = self.db.add_model({"name": "qwen", "upstream_id": "up-a"})
+        self.m2 = self.db.add_model({"name": "claude", "upstream_id": "up-b"})
+
+    def tearDown(self):
+        self.db.close()
+        self.tmp.cleanup()
+
+    def test_list_routes_filter_by_proxy_type(self):
+        self.db.add_route({"source": "gpt-4", "target_model_id": self.m1, "proxy_type": "codex"})
+        self.db.add_route({"source": "gpt-4", "target_model_id": self.m2, "proxy_type": "claude"})
+        self.db.add_route({"source": "sonnet", "target_model_id": self.m1, "proxy_type": "claude"})
+
+        codex_routes = self.db.list_routes(proxy_type="codex")
+        claude_routes = self.db.list_routes(proxy_type="claude")
+        all_routes = self.db.list_routes()
+
+        self.assertEqual(len(codex_routes), 1)
+        self.assertEqual(codex_routes[0]["proxy_type"], "codex")
+        self.assertEqual(len(claude_routes), 2)
+        self.assertEqual(len(all_routes), 3)
+
+    def test_add_route_invalid_proxy_type(self):
+        with self.assertRaises(ValueError):
+            self.db.add_route({"source": "gpt-4", "target_model_id": self.m1, "proxy_type": "invalid"})
+
+    def test_add_route_duplicate_source_same_proxy(self):
+        self.db.add_route({"source": "gpt-4", "target_model_id": self.m1, "proxy_type": "codex"})
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.add_route({"source": "gpt-4", "target_model_id": self.m2, "proxy_type": "codex"})
+
+    def test_add_route_same_source_different_proxy(self):
+        self.db.add_route({"source": "gpt-4", "target_model_id": self.m1, "proxy_type": "codex"})
+        rid = self.db.add_route({"source": "gpt-4", "target_model_id": self.m2, "proxy_type": "claude"})
+        self.assertIsInstance(rid, int)
+
+    def test_resolve_one_proxy_type_isolation(self):
+        self.db.add_route({"source": "gpt-4o", "target_model_id": self.m1, "proxy_type": "codex"})
+        self.db.add_route({"source": "gpt-4o", "target_model_id": self.m2, "proxy_type": "claude"})
+
+        codex_result = self.db.resolve_one("gpt-4o", "codex")
+        claude_result = self.db.resolve_one("gpt-4o", "claude")
+
+        self.assertEqual(codex_result["target_name"], "qwen")
+        self.assertEqual(claude_result["target_name"], "claude")
+        self.assertNotEqual(codex_result["target_name"], claude_result["target_name"])
+

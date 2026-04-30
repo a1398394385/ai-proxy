@@ -3,7 +3,7 @@ import unittest
 import tempfile
 from pathlib import Path
 
-from config_manager import ConfigDB, ConfigCache
+from config_manager import ConfigDB, ConfigCache, Migrations
 
 
 class TestConfigIntegration(unittest.TestCase):
@@ -81,3 +81,19 @@ class TestConfigIntegration(unittest.TestCase):
         result = self.db.delete_model(self.m1)
         self.assertIn("error", result)
         self.assertIn("referenced_routes", result)
+
+    def test_migration_idempotent(self):
+        """迁移幂等性：连续两次调用 migrate()，第二次返回 already_migrated。"""
+        mg = Migrations(self.db_path)
+        mg.migrate()
+        result = mg.migrate()
+        self.assertEqual(result["status"], "already_migrated")
+
+    def test_migration_data_preserved(self):
+        """迁移后数据完整性：路由数不变，所有路由 proxy_type 均为 'codex'。"""
+        mg = Migrations(self.db_path)
+        mg.migrate()
+        routes = self.db.list_routes()
+        self.assertEqual(len(routes), 3)
+        for route in routes:
+            self.assertEqual(route["proxy_type"], "codex")
