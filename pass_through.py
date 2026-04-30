@@ -37,7 +37,7 @@ class PassThroughHandler(BaseHTTPRequestHandler):
         request_ts = time.strftime("%Y-%m-%d %H:%M:%S")
         
         model_name = _extract_model_for_pass_through(self.command, self.path, body_raw)
-        model_cfg = resolve_model(model_name)
+        model_cfg = resolve_model(model_name, proxy_type='pass_through')
         target = model_cfg["target"]
         upstream_cfg = model_cfg.get("upstream")
         if upstream_cfg is None:
