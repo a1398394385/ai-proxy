@@ -15,6 +15,7 @@ from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 
 from config_manager import ConfigDB
+from common import get_port, get_host, load_config, CONFIG, CONFIG_PATH
 
 # 配置
 DB_PATH = os.path.expanduser("~/.hermes/memory_store.db")
@@ -83,8 +84,9 @@ def _test_upstream_connectivity(upstream: dict) -> dict:
     return result
 STATE_DB_PATH = os.path.expanduser("~/.hermes/state.db")
 CC_SWITCH_DB_PATH = os.path.expanduser("~/.cc-switch/cc-switch.db")
-PORT = 18742
-HOST = "127.0.0.1"
+load_config(CONFIG_PATH)
+HOST = get_host("data_browser", "127.0.0.1")
+PORT = get_port("data_browser", 18742)
 
 # 缓存计费规则
 _pricing_cache = {}
@@ -635,7 +637,8 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             db.close()
             proxy_reachable = False
             try:
-                conn = http.client.HTTPConnection("127.0.0.1", 48743, timeout=2)
+                proxy_port = get_port("codex_proxy", 48743)
+                conn = http.client.HTTPConnection("127.0.0.1", proxy_port, timeout=2)
                 conn.request("GET", "/health")
                 resp = conn.getresponse()
                 proxy_reachable = resp.status == 200
@@ -823,8 +826,8 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/config/reload":
             try:
-                conn = http.client.HTTPConnection("127.0.0.1", 48743, timeout=5)
-                conn.request("POST", "/admin/reload")
+                proxy_port = get_port("codex_proxy", 48743)
+                conn = http.client.HTTPConnection("127.0.0.1", proxy_port, timeout=5)
                 resp = conn.getresponse()
                 body = json.loads(resp.read())
                 conn.close()

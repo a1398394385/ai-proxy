@@ -2,6 +2,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PIDFILE="$SCRIPT_DIR/.server.pid"
 PROXY_PIDFILE="$SCRIPT_DIR/.proxy.pid"
+PASS_THROUGH_PIDFILE="$SCRIPT_DIR/.pass_through.pid"
 
 start_data_browser() {
   if [ -f "$PIDFILE" ]; then
@@ -123,6 +124,65 @@ status_proxy() {
   return 0
 }
 
+start_pass_through() {
+  if [ -f "$PASS_THROUGH_PIDFILE" ]; then
+    PID=$(cat "$PASS_THROUGH_PIDFILE")
+    if kill -0 "$PID" 2>/dev/null; then
+      echo "Pass-Through Proxy 已经在运行 (PID $PID)，访问 http://127.0.0.1:48744"
+      return 0
+    fi
+    rm -f "$PASS_THROUGH_PIDFILE"
+  fi
+  cd "$SCRIPT_DIR"
+  nohup python3 pass_through.py > /dev/null 2>&1 &
+  BPID=$!
+  echo "$BPID" > "$PASS_THROUGH_PIDFILE"
+  sleep 0.5
+  if ! kill -0 "$BPID" 2>/dev/null; then
+    rm -f "$PASS_THROUGH_PIDFILE"
+    echo "Pass-Through Proxy 启动失败"
+    return 1
+  fi
+  echo "Pass-Through Proxy 已启动 (PID $BPID)，访问 http://127.0.0.1:48744"
+  return 0
+}
+
+stop_pass_through() {
+  if [ -f "$PASS_THROUGH_PIDFILE" ]; then
+    PID=$(cat "$PASS_THROUGH_PIDFILE")
+    if kill "$PID" 2>/dev/null; then
+      rm -f "$PASS_THROUGH_PIDFILE"
+      echo "Pass-Through Proxy 已停止 (PID $PID)"
+      return 0
+    fi
+    rm -f "$PASS_THROUGH_PIDFILE"
+  fi
+  PID2=$(lsof -ti:48744 2>/dev/null)
+  if [ -n "$PID2" ]; then
+    kill "$PID2" && echo "Pass-Through Proxy 已停止 (端口 48744)" || echo "停止失败"
+    return 0
+  fi
+  echo "Pass-Through Proxy 未运行"
+  return 0
+}
+
+status_pass_through() {
+  if [ -f "$PASS_THROUGH_PIDFILE" ]; then
+    PID=$(cat "$PASS_THROUGH_PIDFILE")
+    if kill -0 "$PID" 2>/dev/null; then
+      echo "Pass-Through Proxy 运行中 PID=$PID"
+      return 0
+    fi
+  fi
+  PID2=$(lsof -ti:48744 2>/dev/null)
+  if [ -n "$PID2" ]; then
+    echo "Pass-Through Proxy 运行中 PID=$PID2 (孤儿进程)"
+    return 0
+  fi
+  echo "Pass-Through Proxy 未运行"
+  return 0
+}
+
 start() {
   # 记录 Data Browser 是否原本就在运行
   local db_was_running=false
@@ -146,16 +206,20 @@ start() {
     fi
     return 1
   fi
+
+  start_pass_through
 }
 
 stop() {
   stop_data_browser
   stop_proxy
+  stop_pass_through
 }
 
 status() {
   status_data_browser
   status_proxy
+  status_pass_through
 }
 
 restart() {

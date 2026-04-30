@@ -3,6 +3,17 @@ proxy:
   port: 48743
   log_level: "INFO" # DEBUG / INFO / WARNING
 
+ports:
+  data_browser:
+    host: "127.0.0.1"
+    port: 18742
+  codex_proxy:
+    host: "127.0.0.1"
+    port: 48743
+  pass_through:
+    host: "127.0.0.1"
+    port: 48744
+
 upstream:
   base_url: "https://llm-open-api.cargoware.com/v1"
   api_key: "sk-1f5H4uYz1mKZvEONUuQrQw"

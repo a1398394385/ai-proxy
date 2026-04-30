@@ -236,25 +236,25 @@ Wave FINAL：
 
   **提交**：`refactor(proxy): 删除透传 catch-all 和 handler`
 
-- [ ] 5. 更新 `proxy_config.yaml` — 新增 `ports:` 段
+- [x] 5. 更新 `proxy_config.yaml` — 新增 `ports:` 段
 
   **做什么**：新增顶级 `ports:` 段，含 data_browser(18742)、codex_proxy(48743)、pass_through(48744) 的 host+port。保留旧 `proxy.host/port` 向后兼容。`common.py` 新增 `get_port(service)` 优先读 ports。
 
   **类别**：`quick` | **提交**：`feat(config): ports 段配置化`
 
-- [ ] 6. 创建 `pass_through.py` — 独立透传服务器（port 48744）
+- [x] 6. 创建 `pass_through.py` — 独立透传服务器（port 48744）
 
   **做什么**：新建 ThreadedHTTPServer，实现 PassThroughHandler（do_GET/do_POST 接受所有路径），import common.py 共享代码，复用已验证的透传转发逻辑。路径不再剥 /v1。
 
   **类别**：`deep` | **提交**：`feat: 独立透传服务器`
 
-- [ ] 7. 更新 `server.py` 读取 ports 配置
+- [x] 7. 更新 `server.py` 读取 ports 配置
 
   **做什么**：HOST/PORT 常量、L638/L826 硬编码 48743 均改为从 `common.get_port()` 读取。
 
   **类别**：`quick` | **提交**：`refactor(server): 从配置读取端口`
 
-- [ ] 8. 更新 `server.sh` 管理 3 个服务
+- [x] 8. 更新 `server.sh` 管理 3 个服务
 
   **做什么**：新增 `start/stop/status_pass_through`，PID 文件 `.pass_through.pid`。
 
