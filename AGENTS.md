@@ -39,7 +39,7 @@ python3 quick_test.py
 | `transform_responses.py` | 891 | OpenAI Responses API ↔ Chat Completions 转换，含 `CodexStreamConverter` 状态机 |
 | `transform_anthropic.py` | 510 | Anthropic Messages API ↔ Chat Completions 转换，含 `AnthropicStreamState` 状态机 |
 | `sse_utils.py` | 13 | `_format_sse_event()` — 两个转换模块共用的 SSE 格式化 |
-| `common.py` | 190 | 共享模块 — CONFIG 变量、`load_config`、模型解析、上游连接、路径工具函数 |
+| `common.py` | 192 | 共享模块 — CONFIG 变量、`load_config`、模型解析、上游连接、路径工具函数 |
 | `config_manager.py` | 563 | `ConfigDB`（SQLite CRUD）+ `ConfigCache`（内存缓存，TTL 5s）+ 内联 YAML 解析器 |
 | `request_logger.py` | 206 | 四阶段请求/响应日志，写入 `data/access_log.db`（SQLite WAL） |
 | `token_stats.py` | 157 | Token 统计写入，三种 usage 格式兼容（Anthropic / OpenAI Chat / OpenAI Responses） |
@@ -57,7 +57,16 @@ python3 quick_test.py
 | 文件 | 职责 |
 |------|------|
 | `server.py` | HTTP server — Fact Store API + Token 统计 API + ConfigDB 管理 API（上游/模型/路由 CRUD）|
-| `static/index.html` | 单文件前端（~61K）— vanilla JS，Facts / Tokens / Settings 三 Tab |
+| `static/index.html` | 前端 HTML 入口（11K）— 导航框架，三 Tab：Fact Store / Token 统计 / 模型管理 |
+| `static/js/app.js` | ES Module 入口 — 组装页面模块、注册事件总线监听 |
+| `static/js/core.js` | 核心工具 — 主题切换、设置对话框、事件总线（bus）、Tab 路由 |
+| `static/js/pages/facts.js` | Fact Store 页面逻辑 — 搜索、增删、分类过滤 |
+| `static/js/pages/tokens.js` | Token 统计页面逻辑 — 用量图表、模型分布、时段筛选 |
+| `static/js/pages/models.js` | 模型管理页面逻辑 — 上游 / 模型 / 路由 CRUD，上游连通性测试 |
+| `static/css/base.css` | 全局基础样式 — 主题变量、导航、通用组件 |
+| `static/css/facts.css` | Fact Store 页面样式 |
+| `static/css/tokens.css` | Token 统计页面样式 |
+| `static/css/models.css` | 模型管理页面样式 |
 
 ## 数据库
 
