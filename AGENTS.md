@@ -2,25 +2,26 @@
 
 ## 项目概述
 
-本项目包含两个独立 HTTP 服务，统一由 `./server.sh` 管理：
+本项目包含三个独立 HTTP 服务，统一由 `./server.sh` 管理：
 
 | 服务 | 文件 | 端口 | 用途 |
 |------|------|------|------|
 | Hermes Data Browser | `server.py` | 18742 | Web UI — Fact Store 浏览 / Token 统计 / 动态模型路由管理 |
 | Codex Proxy | `proxy.py` | 48743 | OpenAI Responses API + Anthropic Messages API → Chat Completions 代理 |
+| Pass-Through Proxy | `pass_through.py` | 48744 | 纯透传代理，不做协议转换 — `/v1/` 请求原样转发到上游 |
 
 ## 开发命令
 
 ```bash
-# 服务管理（两个服务同时管理）
-./server.sh start     # 启动 Data Browser + Codex Proxy
-./server.sh stop      # 停止两个服务
+# 服务管理（三个服务同时管理）
+./server.sh start     # 启动 Data Browser + Codex Proxy + Pass-Through
+./server.sh stop      # 停止三个服务
 ./server.sh status    # 查看状态
 ./server.sh restart   # 重启（修改代码后必须执行，无热重载）
 
 # 测试
 cd /Users/xys/Github/ai-agent-tools
-python3 -m pytest test/ -q                    # 全量（333 tests，约 17s）
+python3 -m pytest test/ -q                    # 全量（348 tests，约 4s）
 python3 -m pytest test/test_transform.py -q  # 单文件
 
 # 快速 API 冒烟
@@ -33,16 +34,23 @@ python3 quick_test.py
 
 | 文件 | 行数 | 职责 |
 |------|------|------|
-| `proxy.py` | 800 | ThreadedHTTPServer — HTTP 路由、请求转发、日志串联入口 |
+| `proxy.py` | 706 | ThreadedHTTPServer — HTTP 路由、请求转发、日志串联入口 |
 | `transform.py` | 41 | Re-export shim — 对外统一公共接口（不含实现） |
 | `transform_responses.py` | 891 | OpenAI Responses API ↔ Chat Completions 转换，含 `CodexStreamConverter` 状态机 |
 | `transform_anthropic.py` | 510 | Anthropic Messages API ↔ Chat Completions 转换，含 `AnthropicStreamState` 状态机 |
 | `sse_utils.py` | 13 | `_format_sse_event()` — 两个转换模块共用的 SSE 格式化 |
+| `common.py` | 190 | 共享模块 — CONFIG 变量、`load_config`、模型解析、上游连接、路径工具函数 |
 | `config_manager.py` | 563 | `ConfigDB`（SQLite CRUD）+ `ConfigCache`（内存缓存，TTL 5s）+ 内联 YAML 解析器 |
 | `request_logger.py` | 206 | 四阶段请求/响应日志，写入 `data/access_log.db`（SQLite WAL） |
 | `token_stats.py` | 157 | Token 统计写入，三种 usage 格式兼容（Anthropic / OpenAI Chat / OpenAI Responses） |
 | `response_store.py` | 72 | 内存 `ResponseStore`（LRU + TTL），支持 `previous_response_id` 多轮对话 |
-| `proxy_config.yaml` | 37 | proxy host/port、upstream 静态连接参数、logging 设置 |
+| `proxy_config.yaml` | 48 | proxy/pass_through host/port、upstream 静态连接参数、logging 设置 |
+
+### Pass-Through Proxy
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `pass_through.py` | 323 | ThreadedHTTPServer — 纯透传，`PassThroughHandler` 原样转发 `/v1/` 请求 |
 
 ### Data Browser
 
@@ -88,8 +96,9 @@ fact_entities (fact_id, entity_id)  -- 多对多
 | POST | `/v1/responses` | OpenAI Responses API（Codex CLI 主路径）|
 | POST | `/v1/responses/compact` | 同上 |
 | POST | `/v1/messages` | Anthropic Messages API（Claude Code）|
-| `*` | `/v1/*` | 透传（pass-through）— 未匹配以上路由的 `/v1/` 请求原样转发到上游 |
 | POST | `/admin/reload` | 强制刷新 ConfigCache（仅 127.0.0.1/::1）|
+
+> **注意**：透传（pass-through）功能已从 proxy.py 移到独立的 `pass_through.py` 服务（port 48744）。未匹配以上路由的 `/v1/*` 请求现在由 pass_through.py 在 48744 端口处理，proxy.py:48743 不再响应透传路径（返回 404）。
 
 ## 代理请求流程
 
@@ -153,7 +162,7 @@ test/
 
 1. **TDD** — 先写失败测试 → 实现最小代码 → 验证通过 → commit
 2. **修改后必须重启** — `./server.sh restart`（无热重载）
-3. **不破坏现有功能** — 任何修改后确认 333 tests 仍全部通过
+3. **不破坏现有功能** — 任何修改后确认 348 tests 仍全部通过
 4. **commit message 用中文** — 解释 "why" 而非 "what"，`--no-verify` 禁止使用
 
 ### 协作规范

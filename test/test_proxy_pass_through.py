@@ -12,12 +12,21 @@ import importlib.util
 
 import request_logger
 from request_logger import RequestLogger
-from proxy import _normalize_forward_path, _extract_model_for_pass_through
+from common import _normalize_forward_path, _extract_model_for_pass_through
 
 
 def _load_proxy():
     spec = importlib.util.spec_from_file_location(
         "proxy_test", Path(__file__).parent.parent / "proxy.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _load_pass_through():
+    spec = importlib.util.spec_from_file_location(
+        "pass_through_test", Path(__file__).parent.parent / "pass_through.py"
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -73,12 +82,12 @@ def _make_handler(mod, body: bytes, path="/v1/chat/completions", method="POST"):
     handler.send_header = MagicMock()
     handler.end_headers = MagicMock()
     handler._forward_pass_through_non_streaming = (
-        lambda *a, **kw: mod.ProxyHandler._forward_pass_through_non_streaming(
+        lambda *a, **kw: mod.PassThroughHandler._forward_pass_through_non_streaming(
             handler, *a, **kw
         )
     )
     handler._forward_pass_through_streaming = (
-        lambda *a, **kw: mod.ProxyHandler._forward_pass_through_streaming(
+        lambda *a, **kw: mod.PassThroughHandler._forward_pass_through_streaming(
             handler, *a, **kw
         )
     )
@@ -92,9 +101,9 @@ def _make_handler(mod, body: bytes, path="/v1/chat/completions", method="POST"):
 class TestNormalizeForwardPath(unittest.TestCase):
 
     def test_normal_case(self):
-        """常规路径：去掉 /v1 前缀。"""
+        """常规路径：保持 /v1 前缀不变（不再由 normalize 负责去除）。"""
         result = _normalize_forward_path("/v1/chat/completions")
-        self.assertEqual(result, "/chat/completions")
+        self.assertEqual(result, "/v1/chat/completions")
 
     def test_traversal_rejection(self):
         """路径穿越应被拒绝，返回 None。"""
@@ -104,17 +113,17 @@ class TestNormalizeForwardPath(unittest.TestCase):
     def test_double_slash_norm(self):
         """多余斜杠应被归一化。"""
         result = _normalize_forward_path("/v1//api//test")
-        self.assertEqual(result, "/api/test")
+        self.assertEqual(result, "/v1/api/test")
 
     def test_query_preserve(self):
         """查询参数应保留。"""
         result = _normalize_forward_path("/v1/chat?model=gpt")
-        self.assertEqual(result, "/chat?model=gpt")
+        self.assertEqual(result, "/v1/chat?model=gpt")
 
     def test_root_path(self):
         """根路径处理。"""
         result = _normalize_forward_path("/v1/")
-        self.assertEqual(result, "/")
+        self.assertEqual(result, "/v1/")
 
     def test_path_without_v1(self):
         """非 /v1 前缀路径原样返回。"""
@@ -211,7 +220,7 @@ class TestPassThroughLogging(unittest.TestCase):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmpdir.name) / "test.db"
         request_logger._logger = RequestLogger(self.db_path)
-        self.mod = _load_proxy()
+        self.mod = _load_pass_through()
         _configure(self.mod)
 
     def tearDown(self):
@@ -242,7 +251,7 @@ class TestPassThroughLogging(unittest.TestCase):
                 "max_tokens": 5,
             }).encode()
             handler, sent = _make_handler(self.mod, body)
-            self.mod.ProxyHandler._handle_pass_through(handler)
+            self.mod.PassThroughHandler._handle_pass_through(handler)
 
         handler.send_response.assert_called_with(200)
 

@@ -260,19 +260,19 @@ Wave FINAL：
 
   **类别**：`quick` | **提交**：`feat(server.sh): 三服务管理`
 
-- [ ] 9. 更新 `test/test_proxy_pass_through.py` 导入
+- [x] 9. 更新 `test/test_proxy_pass_through.py` 导入
 
   **做什么**：`from proxy` → `from common`/`from pass_through`，更新端到端端口 48743→48744。
 
   **类别**：`unspecified-high` | **提交**：`test: 更新透传测试`
 
-- [ ] 10. 更新其他测试文件
+- [x] 10. 更新其他测试文件
 
   **做什么**：`test_proxy_config.py`、`test_e2e_smoke.py`、`test_proxy_logger_integration.py` — `proxy.port` → `ports.codex_proxy`。
 
   **类别**：`quick` | **提交**：`test: 配置引用更新`
 
-- [ ] 11. 端到端验证 + 文档更新
+- [x] 11. 端到端验证 + 文档更新
 
   **做什么**：重启全服务，验证 proxy 返回 404 透传、pass_through 响应透传、server.py 连通。更新 AGENTS.md/CLAUDE.md。
 

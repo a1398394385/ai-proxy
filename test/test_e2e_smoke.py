@@ -129,6 +129,8 @@ class TestEndToEndSmoke(unittest.TestCase):
         cls.cfg_path = os.path.join(cls.tmpdir, "test_config.yaml")
         cfg = _read_config(PROXY_CONFIG)
         cfg["proxy"]["port"] = cls.port
+        # Also set ports.codex_proxy.port for new config format
+        cfg.setdefault("ports", {}).setdefault("codex_proxy", {})["port"] = cls.port
         cfg["logging"]["log_dir"] = cls.tmpdir
         cfg["logging"]["log_file"] = "access_log.db"
         with open(cls.cfg_path, "w") as f:

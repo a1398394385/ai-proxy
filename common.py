@@ -48,7 +48,9 @@ def load_config(config_path: Path = None):
         sys.exit(1)
 
     with open(path, "r") as f:
-        CONFIG = _parse_yaml(f.read())
+        new_config = _parse_yaml(f.read())
+    CONFIG.clear()
+    CONFIG.update(new_config)
 
     # 设置日志：同时写 proxy.log 文件和 stdout，遵循 log_level 配置
     if not logging.root.handlers:
