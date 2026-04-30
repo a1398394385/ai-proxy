@@ -6,14 +6,22 @@
     "ses_2275c3945ffeQbNDyJbvhIpBY1",
     "ses_2275a62f3ffeMSNo0eKl6xKuJ5",
     "ses_22759f987ffeijg181KtGRo1MH",
-    "ses_22759ba73ffe6xhhCxdWLgfZWp"
+    "ses_22759ba73ffe6xhhCxdWLgfZWp",
+    "ses_223640755ffevdmcFya4IWa3P8",
+    "ses_22363ee03ffeRYiroEEWfwy4Ao",
+    "ses_22363bfc2ffe0MMVxVttX6Brko",
+    "ses_22363a95affemx1oeJIzMPRJHU"
   ],
   "session_origins": {
     "ses_227ab8384ffeplcwGkBw1iSw5j": "direct",
     "ses_2275c3945ffeQbNDyJbvhIpBY1": "appended",
     "ses_2275a62f3ffeMSNo0eKl6xKuJ5": "appended",
     "ses_22759f987ffeijg181KtGRo1MH": "appended",
-    "ses_22759ba73ffe6xhhCxdWLgfZWp": "appended"
+    "ses_22759ba73ffe6xhhCxdWLgfZWp": "appended",
+    "ses_223640755ffevdmcFya4IWa3P8": "appended",
+    "ses_22363ee03ffeRYiroEEWfwy4Ao": "appended",
+    "ses_22363bfc2ffe0MMVxVttX6Brko": "appended",
+    "ses_22363a95affemx1oeJIzMPRJHU": "appended"
   },
   "plan_name": "proxy-pass-through",
   "agent": "atlas",
@@ -21,11 +29,11 @@
     "todo:1": {
       "task_key": "todo:1",
       "task_label": "1",
-      "task_title": "路径规范化工具 `_normalize_forward_path()`",
-      "session_id": "ses_22785e676ffeK1uJiDrQGJdd7L",
+      "task_title": "创建 `common.py` — ConfigCache + resolve_model + _create_upstream_conn",
+      "session_id": "ses_223a6f2beffehoDvSAJNNL3g6i",
       "agent": "Sisyphus-Junior",
-      "category": "quick",
-      "updated_at": "2026-04-29T09:06:58.731Z"
+      "category": "deep",
+      "updated_at": "2026-04-30T03:28:27.810Z"
     },
     "todo:7": {
       "task_key": "todo:7",

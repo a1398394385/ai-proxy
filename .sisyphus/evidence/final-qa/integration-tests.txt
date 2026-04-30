@@ -1,0 +1,33 @@
+=== F3: Hands-On QA Integration Test Results ===
+Timestamp: 2026年 4月30日 星期四 12时20分02秒 CST
+
+TEST 1 — proxy.py health check
+  Request: GET http://127.0.0.1:48743/health
+  Response: 200
+  Result: PASS
+
+TEST 2 — proxy.py NO pass-through (should reject /v1/chat/completions)
+  Request: POST http://127.0.0.1:48743/v1/chat/completions
+  Response: 404
+  Result: PASS — proxy correctly rejects passthrough paths
+
+TEST 3 — pass_through.py forwarding
+  Request: POST http://127.0.0.1:48744/chat/completions
+  Response: 401 (from upstream — auth required)
+  Result: PASS — pass-through forwarding works, reaches upstream
+
+TEST 4 — server.sh status
+  Output:
+    Hermes Data Browser 运行中 PID=38479
+    Codex Proxy 运行中 PID=38510
+    Pass-Through Proxy 运行中 PID=38541
+  Result: PASS — all 3 services running
+
+TEST 5 — server.py config status
+  Request: GET http://127.0.0.1:18742/api/config/status
+  Response: proxy_reachable: True
+  Result: PASS
+
+================================
+Scenarios: 5/5 pass
+VERDICT: APPROVE
