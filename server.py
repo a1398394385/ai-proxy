@@ -19,7 +19,7 @@ from common import get_port, get_host, load_config, CONFIG, CONFIG_PATH
 
 # 配置
 DB_PATH = os.path.expanduser("~/.hermes/memory_store.db")
-CONFIG_DB_PATH = Path(__file__).resolve().parent / "data" / "access_log.db"
+CONFIG_DB_PATH = Path(os.path.expanduser("~/.hermes/config.db"))
 
 
 def get_config_db():

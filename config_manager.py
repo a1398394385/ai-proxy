@@ -49,6 +49,7 @@ class ConfigDB:
                     retry           INTEGER NOT NULL DEFAULT 1    CHECK(retry >= 0),
                     is_active       INTEGER NOT NULL DEFAULT 1    CHECK(is_active IN (0, 1)),
                     is_default      INTEGER NOT NULL DEFAULT 0    CHECK(is_default IN (0, 1)),
+                    format          TEXT NOT NULL DEFAULT 'openai_chat',
                     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
                 );
@@ -58,7 +59,6 @@ class ConfigDB:
                     name        TEXT NOT NULL CHECK(length(name) > 0),
                     upstream_id TEXT NOT NULL REFERENCES upstreams(id) ON DELETE RESTRICT,
                     multimodal  INTEGER NOT NULL DEFAULT 1    CHECK(multimodal IN (0, 1)),
-                    format      TEXT NOT NULL DEFAULT 'openai_chat',
                     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
                     UNIQUE(name, upstream_id)
                 );
@@ -125,8 +125,8 @@ class ConfigDB:
 
             conn.execute(
                 """INSERT INTO upstreams (id, base_url, api_key, timeout,
-                   connect_timeout, ssl_verify, retry, is_default)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   connect_timeout, ssl_verify, retry, is_default, format)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     data["id"],
                     data["base_url"],
@@ -136,6 +136,7 @@ class ConfigDB:
                     data.get("ssl_verify", 1),
                     data.get("retry", 1),
                     data.get("is_default", 0),
+                    data.get("format", "openai_chat"),
                 ),
             )
             conn.commit()
@@ -152,7 +153,7 @@ class ConfigDB:
             fields = []
             values = []
             for key in ("base_url", "api_key", "timeout", "connect_timeout",
-                        "ssl_verify", "retry", "is_default"):
+                        "ssl_verify", "retry", "is_default", "format"):
                 if key in data:
                     fields.append(f"{key} = ?")
                     values.append(data[key])
@@ -198,7 +199,8 @@ class ConfigDB:
     def list_models(self, upstream_id=None):
         conn = self._connect()
         try:
-            sql = """SELECT tm.*, u.id as upstream_name, u.is_active as upstream_active
+            sql = """SELECT tm.id, tm.name, tm.upstream_id, tm.multimodal, tm.created_at,
+                            u.format, u.id as upstream_name, u.is_active as upstream_active
                      FROM target_models tm
                      JOIN upstreams u ON tm.upstream_id = u.id"""
             params = []
@@ -214,7 +216,8 @@ class ConfigDB:
         conn = self._connect()
         try:
             row = conn.execute(
-                """SELECT tm.*, u.id as upstream_name, u.is_active as upstream_active
+                """SELECT tm.id, tm.name, tm.upstream_id, tm.multimodal, tm.created_at,
+                            u.format, u.id as upstream_name, u.is_active as upstream_active
                    FROM target_models tm
                    JOIN upstreams u ON tm.upstream_id = u.id
                    WHERE tm.id = ?""",
@@ -228,13 +231,12 @@ class ConfigDB:
         conn = self._connect()
         try:
             cursor = conn.execute(
-                """INSERT INTO target_models (name, upstream_id, multimodal, format)
-                   VALUES (?, ?, ?, ?)""",
+                """INSERT INTO target_models (name, upstream_id, multimodal)
+                   VALUES (?, ?, ?)""",
                 (
                     data["name"],
                     data["upstream_id"],
                     data.get("multimodal", 1),
-                    data.get("format", "openai_chat"),
                 ),
             )
             conn.commit()
@@ -247,7 +249,7 @@ class ConfigDB:
         try:
             fields = []
             values = []
-            for key in ("name", "upstream_id", "multimodal", "format"):
+            for key in ("name", "upstream_id", "multimodal"):
                 if key in data:
                     fields.append(f"{key} = ?")
                     values.append(data[key])
@@ -443,7 +445,7 @@ class ConfigDB:
         conn = self._connect()
         try:
             row = conn.execute(
-                """SELECT tm.name as target_name, tm.multimodal, tm.format,
+                """SELECT tm.name as target_name, tm.multimodal, u.format,
                           u.id as upstream_id, u.base_url, u.api_key,
                           u.timeout, u.connect_timeout, u.ssl_verify, u.retry
                    FROM model_routes mr
@@ -483,7 +485,7 @@ class ConfigDB:
                 params.append(proxy_type)
             rows = conn.execute(
                 f"""SELECT mr.source, mr.proxy_type, tm.name as target_name, tm.multimodal,
-                          tm.format, tm.upstream_id
+                          u.format, tm.upstream_id
                    FROM model_routes mr
                    JOIN target_models tm ON mr.target_model_id = tm.id
                    JOIN upstreams u ON tm.upstream_id = u.id
@@ -520,7 +522,8 @@ class ConfigDB:
 
 
 class Migrations:
-    """数据库迁移管理 — 将 model_routes 表从 v0 升级到 v1（添加 proxy_type 列）。
+    """数据库迁移管理 — 将 model_routes 表从 v0 升级到 v1（添加 proxy_type 列），
+    以及将 format 字段从 target_models 迁移到 upstreams（v1 → v2）。
 
     SQLite 不支持 ALTER TABLE DROP CONSTRAINT，因此使用重建表方式迁移。
     迁移是幂等的 — 已迁移的数据库再次调用 migrate() 会立即返回。
@@ -538,33 +541,41 @@ class Migrations:
         return conn
 
     def status(self) -> dict:
-        """返回当前迁移状态。version 0 = 未迁移，version >= 1 = 已迁移。"""
+        """返回当前迁移状态。version 0 = 未迁移，version >= 2 = 已迁移。"""
         conn = self._connect()
         try:
             row = conn.execute(
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
-            if row is None or row["version"] == 0:
+            version = row["version"] if row else 0
+            if version == 0:
                 return {
                     "migrated": False,
-                    "version": row["version"] if row else 0,
+                    "version": 0,
                     "details": "尚未执行迁移: model_routes 表缺少 proxy_type 列",
+                }
+            if version == 1:
+                return {
+                    "migrated": False,
+                    "version": 1,
+                    "details": "需要执行迁移: format 字段需要从 target_models 迁移到 upstreams",
                 }
             return {
                 "migrated": True,
-                "version": row["version"],
-                "details": f"已迁移到 v{row['version']}: model_routes 包含 proxy_type 列",
+                "version": version,
+                "details": f"已迁移到 v{version}: format 字段在 upstreams 表中",
             }
         finally:
             conn.close()
 
     def migrate(self) -> dict:
-        """执行 v0 → v1 迁移（幂等）。"""
-        # STEP 0: 检查是否需要迁移
+        """执行迁移（幂等）。v0 → v1 → v2 按序执行。"""
         s = self.status()
         if s["migrated"]:
             logging.info(f"[Migrations] 数据库已是最新版本 v{s['version']}，跳过迁移")
             return {"status": "already_migrated", "details": s["details"]}
+
+        version = s["version"]
 
         # STEP 1: 备份现有数据库
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -573,20 +584,30 @@ class Migrations:
         shutil.copy2(self.db_path, backup_path)
         logging.info(f"[Migrations] STEP 1: 备份完成 -> {backup_path}")
 
+        if version == 0:
+            self._migrate_v0_to_v1(backup_path)
+        if version <= 1:
+            self._migrate_v1_to_v2(backup_path)
+
+        return {
+            "status": "ok",
+            "version": 2,
+            "backup_path": str(backup_path),
+        }
+
+    def _migrate_v0_to_v1(self, backup_path: Path):
+        """执行 v0 → v1 迁移（添加 proxy_type 列到 model_routes）。"""
         conn = self._connect()
         try:
             conn.execute("BEGIN TRANSACTION")
-
             try:
-                # 记录原始路由数（用于验证）
                 old_count = conn.execute(
                     "SELECT COUNT(*) FROM model_routes"
                 ).fetchone()[0]
                 logging.info(
-                    f"[Migrations] STEP 0: 原始 model_routes 记录数 = {old_count}"
+                    f"[Migrations] v0→v1 STEP 0: 原始 model_routes 记录数 = {old_count}"
                 )
 
-                # STEP 2: 创建新表
                 conn.execute("""
                     CREATE TABLE model_routes_new (
                         id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -599,59 +620,137 @@ class Migrations:
                         UNIQUE(source, proxy_type)
                     );
                 """)
-                logging.info("[Migrations] STEP 2: model_routes_new 表创建完成")
+                logging.info("[Migrations] v0→v1 STEP 2: model_routes_new 表创建完成")
 
-                # STEP 3: 复制数据（proxy_type 自动默认为 'codex'）
                 conn.execute("""
                     INSERT INTO model_routes_new
                         (id, source, target_model_id, created_at, updated_at)
                     SELECT id, source, target_model_id, created_at, updated_at
                     FROM model_routes;
                 """)
-                logging.info("[Migrations] STEP 3: 数据复制完成")
+                logging.info("[Migrations] v0→v1 STEP 3: 数据复制完成")
 
-                # STEP 4: 替换表
                 conn.execute("DROP TABLE model_routes;")
                 conn.execute(
                     "ALTER TABLE model_routes_new RENAME TO model_routes;"
                 )
-                logging.info("[Migrations] STEP 4: 表替换完成")
+                logging.info("[Migrations] v0→v1 STEP 4: 表替换完成")
 
-                # STEP 5: 记录版本
                 conn.execute("DELETE FROM schema_version;")
                 conn.execute(
                     "INSERT INTO schema_version (version) VALUES (1);"
                 )
-                logging.info("[Migrations] STEP 5: schema_version 更新为 1")
+                logging.info("[Migrations] v0→v1 STEP 5: schema_version 更新为 1")
 
-                # STEP 6: 验证
                 new_count = conn.execute(
                     "SELECT COUNT(*) FROM model_routes"
                 ).fetchone()[0]
                 if new_count < old_count:
                     raise sqlite3.OperationalError(
-                        f"迁移验证失败: 原有 {old_count} 条记录, 現有 {new_count} 条记录"
+                        f"迁移验证失败: 原有 {old_count} 条记录, 现有 {new_count} 条记录"
                     )
                 logging.info(
-                    f"[Migrations] STEP 6: 验证通过, {new_count} 条记录"
+                    f"[Migrations] v0→v1 STEP 6: 验证通过, {new_count} 条记录"
                 )
 
                 conn.commit()
                 logging.info(
-                    f"[Migrations] 迁移成功: {new_count} 条路由"
+                    f"[Migrations] v0→v1 迁移成功: {new_count} 条路由"
                 )
-
             except Exception:
                 conn.rollback()
-                logging.error("[Migrations] 迁移失败，已回滚", exc_info=True)
+                logging.error("[Migrations] v0→v1 迁移失败，已回滚", exc_info=True)
                 raise
+        finally:
+            conn.close()
 
-            return {
-                "status": "ok",
-                "routes_count": new_count,
-                "backup_path": str(backup_path),
-            }
+    def _migrate_v1_to_v2(self, backup_path: Path):
+        """执行 v1 → v2 迁移（format 字段从 target_models 迁移到 upstreams）。"""
+        conn = self._connect()
+        try:
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.execute("BEGIN TRANSACTION")
+            try:
+                has_format = conn.execute(
+                    "SELECT 1 FROM pragma_table_info('upstreams') WHERE name = 'format'"
+                ).fetchone()
+                if not has_format:
+                    conn.execute(
+                        "ALTER TABLE upstreams ADD COLUMN format TEXT NOT NULL DEFAULT 'openai_chat'"
+                    )
+                    logging.info("[Migrations] v1→v2 STEP 1: upstreams.format 列添加完成")
+                else:
+                    logging.info("[Migrations] v1→v2 STEP 1: upstreams.format 列已存在，跳过")
 
+                has_format_col = conn.execute(
+                    "SELECT 1 FROM pragma_table_info('target_models') WHERE name = 'format'"
+                ).fetchone()
+                if has_format_col:
+                    conn.execute("""
+                        UPDATE upstreams
+                        SET format = COALESCE(
+                            (SELECT format FROM target_models
+                             WHERE target_models.upstream_id = upstreams.id
+                               AND format != 'openai_chat'
+                             LIMIT 1),
+                            'openai_chat'
+                        )
+                    """)
+                    logging.info("[Migrations] v1→v2 STEP 2: upstreams.format 数据合并完成")
+
+                    conn.execute("""
+                        CREATE TABLE target_models_new (
+                            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                            name        TEXT NOT NULL CHECK(length(name) > 0),
+                            upstream_id TEXT NOT NULL REFERENCES upstreams(id) ON DELETE RESTRICT,
+                            multimodal  INTEGER NOT NULL DEFAULT 1    CHECK(multimodal IN (0, 1)),
+                            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                            UNIQUE(name, upstream_id)
+                        );
+                    """)
+                    logging.info("[Migrations] v1→v2 STEP 3: target_models_new 表创建完成")
+
+                    conn.execute("""
+                        INSERT INTO target_models_new
+                            (id, name, upstream_id, multimodal, created_at)
+                        SELECT id, name, upstream_id, multimodal, created_at
+                        FROM target_models;
+                    """)
+                    logging.info("[Migrations] v1→v2 STEP 4: target_models 数据复制完成")
+
+                    conn.execute("DROP TABLE target_models;")
+                    conn.execute(
+                        "ALTER TABLE target_models_new RENAME TO target_models;"
+                    )
+                    logging.info("[Migrations] v1→v2 STEP 5: target_models 表替换完成")
+                else:
+                    logging.info("[Migrations] v1→v2: target_models.format 列已不存在，跳过数据迁移")
+
+                conn.execute("DELETE FROM schema_version;")
+                conn.execute(
+                    "INSERT INTO schema_version (version) VALUES (2);"
+                )
+                logging.info("[Migrations] v1→v2 STEP 6: schema_version 更新为 2")
+
+                old_model_count = conn.execute(
+                    "SELECT COUNT(*) FROM target_models"
+                ).fetchone()[0]
+                upstream_with_format = conn.execute(
+                    "SELECT COUNT(*) FROM upstreams WHERE format IS NOT NULL"
+                ).fetchone()[0]
+                logging.info(
+                    f"[Migrations] v1→v2 STEP 7: 验证通过, "
+                    f"target_models={old_model_count}, upstreams_with_format={upstream_with_format}"
+                )
+
+                conn.commit()
+                logging.info("[Migrations] v1→v2 迁移成功")
+            except Exception:
+                conn.rollback()
+                logging.error("[Migrations] v1→v2 迁移失败，已回滚", exc_info=True)
+                raise
+            finally:
+                conn.execute("PRAGMA foreign_keys = ON")
         finally:
             conn.close()
 

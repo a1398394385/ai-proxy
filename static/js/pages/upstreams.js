@@ -66,10 +66,10 @@ function toggleModelDrawer(event, upstreamId) {
       '<div class="drawer-content">' +
         '<div class="drawer-header">🤖 模型列表 — 上游: ' + escHtml(upstreamId) +
           '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); showModelModalForUpstream(\'' + escHtml(upstreamId) + '\')" style="margin-left:auto;">＋ 新增模型</button></div>' +
-        '<table class="drawer-model-table">' +
-          '<thead><tr><th>模型名</th><th>Format</th><th>Multimodal</th><th>操作</th></tr></thead>' +
-          '<tbody class="drawer-model-tbody"></tbody>' +
-        '</table>' +
+     '<table class="drawer-model-table">' +
+           '<thead><tr><th>模型名</th><th>所属上游</th><th>Multimodal</th><th>操作</th></tr></thead>' +
+           '<tbody class="drawer-model-tbody"></tbody>' +
+         '</table>' +
       '</div>' +
     '</td>';
 
@@ -107,7 +107,6 @@ async function loadModelTable(upstreamId) {
     `<tr>
       <td><span class="badge badge-green">${escHtml(m.name)}</span></td>
       <td><span class="badge" style="background:hsl(var(--muted));color:hsl(var(--muted-foreground))">${escHtml(m.upstream_name)}</span></td>
-      <td><span class="format-with-tooltip" title="当前所有上游统一使用格式转换，此字段暂不生效">${escHtml(m.format)}</span></td>
       <td>${m.multimodal ? '✅' : '❌'}</td>
       <td>
         <button class="btn btn-secondary btn-sm" onclick="showModelModal(${m.id})">编辑</button>
@@ -165,7 +164,8 @@ async function showUpstreamModal(editId) {
        <div class="form-group"><label class="form-label">SSL</label><select class="form-input" id="up-ssl"><option value="1" ${data.ssl_verify ? 'selected' : ''}>开启</option><option value="0" ${!data.ssl_verify ? 'selected' : ''}>关闭</option></select></div>
        <div class="form-group"><label class="form-label">重试</label><input type="number" class="form-input" id="up-retry" value="${data.retry}" min="0"></div>
        <div class="form-group"><label class="form-label">默认</label><select class="form-input" id="up-default"><option value="1" ${data.is_default ? 'selected' : ''}>是</option><option value="0" ${!data.is_default ? 'selected' : ''}>否</option></select></div>
-     </div>`,
+     </div>
+     <div class="form-group"><label class="form-label">Format</label><select class="form-input" id="up-format"><option value="openai_chat" ${data.format === 'openai_chat' ? 'selected' : ''}>openai_chat</option><option value="openai_responses" ${data.format === 'openai_responses' ? 'selected' : ''}>openai_responses</option><option value="anthropic" ${data.format === 'anthropic' ? 'selected' : ''}>anthropic</option></select></div>`,
     `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveUpstream('${editId || ''}')">保存</button>`);
 }
 
@@ -178,6 +178,7 @@ async function saveUpstream(editId) {
     ssl_verify: parseInt(document.getElementById('up-ssl').value),
     retry: parseInt(document.getElementById('up-retry').value) || 1,
     is_default: parseInt(document.getElementById('up-default').value),
+    format: document.getElementById('up-format').value,
   };
   if (!editId) data.id = document.getElementById('up-id').value.trim();
   if (!data.base_url) { alert('Base URL 不能为空'); return; }
@@ -222,7 +223,7 @@ async function confirmDisableUpstream(id) {
 
 // ─── 模型模态框 ───
 async function showModelModal(editId, defaultUpstreamId) {
-  let data = { name: '', upstream_id: defaultUpstreamId || '', multimodal: 1, format: 'openai_chat' };
+  let data = { name: '', upstream_id: defaultUpstreamId || '', multimodal: 1 };
   let title = '新增模型';
   if (editId) {
     title = '编辑模型 #' + editId;
@@ -233,11 +234,14 @@ async function showModelModal(editId, defaultUpstreamId) {
   const upstreams = await api('/api/upstreams');
   const activeUpstreams = upstreams.upstreams.filter(u => u.is_active);
   const upstreamOpts = activeUpstreams.map(u => '<option value="' + escHtml(u.id) + '" ' + (data.upstream_id === u.id ? 'selected' : '') + '>' + escHtml(u.id) + '</option>').join('');
+
+  const upstreamField = defaultUpstreamId
+    ? `<input type="hidden" id="m-upstream" value="${escHtml(defaultUpstreamId)}"><div class="form-group"><label class="form-label">所属上游</label><input type="text" class="form-input" value="${escHtml(defaultUpstreamId)}" readonly style="background:hsl(var(--muted));color:hsl(var(--muted-foreground));cursor:not-allowed"></div>`
+    : `<div class="form-group"><label class="form-label">所属上游</label><select class="form-input" id="m-upstream">${upstreamOpts}</select></div>`;
+
   showModal(title,
     `<div class="form-group"><label class="form-label">模型名</label><input type="text" class="form-input" id="m-name" value="${escHtml(data.name)}"></div>
-     <div class="form-group"><label class="form-label">所属上游</label><select class="form-input" id="m-upstream">${upstreamOpts}</select></div>
-     <div class="form-group"><label class="form-label">Format <span title="当前所有上游统一使用格式转换，此字段暂不生效" style="cursor:help;border-bottom:1px dashed">ⓘ</span></label>
-       <select class="form-input" id="m-format"><option value="openai_chat" ${data.format === 'openai_chat' ? 'selected' : ''}>openai_chat</option><option value="openai_responses" ${data.format === 'openai_responses' ? 'selected' : ''}>openai_responses</option><option value="anthropic" ${data.format === 'anthropic' ? 'selected' : ''}>anthropic</option></select></div>
+     ${upstreamField}
      <div class="form-group"><label class="form-label">Multimodal</label><select class="form-input" id="m-multimodal"><option value="1" ${data.multimodal ? 'selected' : ''}>✅ 支持</option><option value="0" ${!data.multimodal ? 'selected' : ''}>❌ 不支持</option></select></div>`,
     `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveModel(${editId || 0})">保存</button>`);
 }
@@ -251,7 +255,6 @@ async function saveModel(editId) {
     name: document.getElementById('m-name').value.trim(),
     upstream_id: document.getElementById('m-upstream').value,
     multimodal: parseInt(document.getElementById('m-multimodal').value),
-    format: document.getElementById('m-format').value,
   };
   if (!data.name) { alert('模型名不能为空'); return; }
   if (editId) {

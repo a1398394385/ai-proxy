@@ -44,14 +44,13 @@ async function loadModelTable(upstreamId) {
     `<tr>
       <td><span class="badge badge-green">${escHtml(m.name)}</span></td>
       <td><span class="badge" style="background:hsl(var(--muted));color:hsl(var(--muted-foreground))">${escHtml(m.upstream_name)}</span></td>
-      <td><span class="format-with-tooltip" title="当前所有上游统一使用格式转换，此字段暂不生效">${escHtml(m.format)}</span></td>
       <td>${m.multimodal ? '✅' : '❌'}</td>
       <td>
         <button class="btn btn-secondary btn-sm" onclick="showModelModal(${m.id})">编辑</button>
         <button class="btn btn-danger btn-sm" onclick="confirmDeleteModel(${m.id}, '${escHtml(m.name)}')">删除</button>
       </td>
     </tr>`
-  ).join('') || '<tr><td colspan="5" class="empty-state">暂无模型</td></tr>';
+  ).join('') || '<tr><td colspan="4" class="empty-state">暂无模型</td></tr>';
 }
 
 async function loadRouteTable() {
@@ -168,7 +167,7 @@ async function confirmDisableUpstream(id) {
 
 // ─── 模型模态框 ───
 async function showModelModal(editId) {
-  let data = { name: '', upstream_id: '', multimodal: 1, format: 'openai_chat' };
+  let data = { name: '', upstream_id: '', multimodal: 1 };
   let title = '新增模型';
   if (editId) {
     title = '编辑模型 #' + editId;
@@ -182,8 +181,6 @@ async function showModelModal(editId) {
   showModal(title,
     `<div class="form-group"><label class="form-label">模型名</label><input type="text" class="form-input" id="m-name" value="${escHtml(data.name)}"></div>
      <div class="form-group"><label class="form-label">所属上游</label><select class="form-input" id="m-upstream">${upstreamOpts}</select></div>
-     <div class="form-group"><label class="form-label">Format <span title="当前所有上游统一使用格式转换，此字段暂不生效" style="cursor:help;border-bottom:1px dashed">ⓘ</span></label>
-       <select class="form-input" id="m-format"><option value="openai_chat" ${data.format === 'openai_chat' ? 'selected' : ''}>openai_chat</option><option value="openai_responses" ${data.format === 'openai_responses' ? 'selected' : ''}>openai_responses</option><option value="anthropic" ${data.format === 'anthropic' ? 'selected' : ''}>anthropic</option></select></div>
      <div class="form-group"><label class="form-label">Multimodal</label><select class="form-input" id="m-multimodal"><option value="1" ${data.multimodal ? 'selected' : ''}>✅ 支持</option><option value="0" ${!data.multimodal ? 'selected' : ''}>❌ 不支持</option></select></div>`,
     `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveModel(${editId || 0})">保存</button>`);
 }
@@ -193,7 +190,6 @@ async function saveModel(editId) {
     name: document.getElementById('m-name').value.trim(),
     upstream_id: document.getElementById('m-upstream').value,
     multimodal: parseInt(document.getElementById('m-multimodal').value),
-    format: document.getElementById('m-format').value,
   };
   if (!data.name) { alert('模型名不能为空'); return; }
   if (editId) {
