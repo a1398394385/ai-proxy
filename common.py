@@ -68,14 +68,14 @@ def load_config(config_path: Path = None):
         )
 
 
-def resolve_model(model_name: str) -> dict:
+def resolve_model(model_name: str, proxy_type: str = 'codex') -> dict:
     """使用动态配置缓存查找模型路由。
 
     返回格式与旧版兼容：
     {"target": str, "multimodal": bool}
     -> 新增 {"target": str, "multimodal": bool, "upstream": dict}
     """
-    cfg = config_cache.resolve(model_name)
+    cfg = config_cache.resolve(model_name, proxy_type)
     if cfg is None:
         return {"target": model_name, "multimodal": False}
     return {
