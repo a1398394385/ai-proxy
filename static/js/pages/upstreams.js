@@ -23,8 +23,8 @@ async function loadUpstreamTable() {
   const tbody = document.querySelector('#upstream-table tbody');
   tbody.innerHTML = data.upstreams.map(u =>
     `<tr style="${u.is_active ? '' : 'opacity:0.5'}">
-      <td style="cursor:pointer" onclick="toggleModelDrawer('${escHtml(u.id)}')"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${u.is_active ? 'hsl(var(--green))' : 'hsl(var(--red))'};"></span> ${u.is_active ? '活跃' : '已禁用'}</td>
-      <td style="cursor:pointer" onclick="toggleModelDrawer('${escHtml(u.id)}')"><span class="badge badge-blue">${escHtml(u.id)}</span></td>
+      <td style="cursor:pointer" onclick="toggleModelDrawer(event, '${escHtml(u.id)}')"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${u.is_active ? 'hsl(var(--green))' : 'hsl(var(--red))'};"></span> ${u.is_active ? '活跃' : '已禁用'}</td>
+      <td style="cursor:pointer" onclick="toggleModelDrawer(event, '${escHtml(u.id)}')"><span class="badge badge-blue">${escHtml(u.id)}</span></td>
       <td style="font-family:monospace;font-size:12px">${escHtml(u.base_url)}</td>
       <td>${u.timeout}s</td>
       <td>${u.is_default ? '✅' : ''}</td>
@@ -37,28 +37,72 @@ async function loadUpstreamTable() {
   ).join('');
 }
 
-// ===== Drawer =====
+// ===== Drawer (inline accordion) =====
 
 let openDrawerUpstreamId = null;
 
-function toggleModelDrawer(upstreamId) {
-  const drawer = document.getElementById('model-drawer');
-  const label = document.getElementById('model-drawer-upstream-label');
+function toggleModelDrawer(event, upstreamId) {
+  event.stopPropagation();
+
+  // If same upstream clicked again → close
   if (openDrawerUpstreamId === upstreamId) {
-    drawer.classList.add('hidden');
-    openDrawerUpstreamId = null;
+    closeDrawerRow();
     return;
   }
+
+  // Close existing drawer if open
+  closeDrawerRow();
+
+  // Find the clicked row and insert drawer row after it
+  const clickedRow = event.currentTarget.closest('tr');
+  if (!clickedRow) return;
+
+  const tbody = clickedRow.parentElement;
+  const drawerRow = document.createElement('tr');
+  drawerRow.className = 'drawer-row';
+  drawerRow.id = 'drawer-' + upstreamId;
+  drawerRow.innerHTML =
+    '<td colspan="6">' +
+      '<div class="drawer-content">' +
+        '<div class="drawer-header">🤖 模型列表 — 上游: ' + escHtml(upstreamId) + '</div>' +
+        '<table class="drawer-model-table">' +
+          '<thead><tr><th>模型名</th><th>Format</th><th>Multimodal</th><th>操作</th></tr></thead>' +
+          '<tbody class="drawer-model-tbody"></tbody>' +
+        '</table>' +
+      '</div>' +
+    '</td>';
+
+  // Insert after the clicked row
+  const nextRow = clickedRow.nextElementSibling;
+  if (nextRow) {
+    tbody.insertBefore(drawerRow, nextRow);
+  } else {
+    tbody.appendChild(drawerRow);
+  }
+
   openDrawerUpstreamId = upstreamId;
-  drawer.classList.remove('hidden');
-  label.textContent = '上游: ' + upstreamId;
+
+  // Trigger slide-in animation
+  requestAnimationFrame(() => {
+    const content = drawerRow.querySelector('.drawer-content');
+    if (content) content.classList.add('slide-in');
+  });
+
   loadModelTable(upstreamId);
+}
+
+function closeDrawerRow() {
+  const existing = document.querySelector('tr.drawer-row');
+  if (existing) existing.remove();
+  openDrawerUpstreamId = null;
 }
 
 async function loadModelTable(upstreamId) {
   const url = '/api/models?upstream_id=' + encodeURIComponent(upstreamId);
   const data = await api(url);
-  document.querySelector('#drawer-model-table tbody').innerHTML = data.models.map(m =>
+  const tbody = document.querySelector('#drawer-' + CSS.escape(upstreamId) + ' .drawer-model-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = data.models.map(m =>
     `<tr>
       <td><span class="badge badge-green">${escHtml(m.name)}</span></td>
       <td><span class="badge" style="background:hsl(var(--muted));color:hsl(var(--muted-foreground))">${escHtml(m.upstream_name)}</span></td>
@@ -69,13 +113,32 @@ async function loadModelTable(upstreamId) {
         <button class="btn btn-danger btn-sm" onclick="confirmDeleteModel(${m.id}, '${escHtml(m.name)}')">删除</button>
       </td>
     </tr>`
-  ).join('') || '<tr><td colspan="5" class="empty-state">暂无模型</td></tr>';
+  ).join('') || '<tr><td colspan="4" class="empty-state">暂无模型</td></tr>';
 }
 
 function loadAllModelConfigTables() {
+  const wasOpen = openDrawerUpstreamId;
+  closeDrawerRow();
   loadUpstreamTable();
-  if (openDrawerUpstreamId) {
-    loadModelTable(openDrawerUpstreamId);
+  if (wasOpen) {
+    // Re-open the drawer by simulating a click on the matching row
+    const row = document.querySelector('#upstream-table tbody tr');
+    if (row) {
+      // Find the row that matches the previously open upstream
+      const allRows = document.querySelectorAll('#upstream-table tbody tr');
+      for (const r of allRows) {
+        const badge = r.querySelector('.badge-blue');
+        if (badge && badge.textContent === wasOpen) {
+          const td = r.querySelector('td[onclick*="toggleModelDrawer"]');
+          if (td) {
+            // Reconstruct the event and call toggleModelDrawer
+            const fakeEvent = { stopPropagation: () => {}, currentTarget: td };
+            toggleModelDrawer(fakeEvent, wasOpen);
+          }
+          break;
+        }
+      }
+    }
   }
 }
 

@@ -68,21 +68,56 @@ tr:hover td {
   background: hsl(var(--muted) / 0.5);
 }
 
-/* Drawer 折叠面板 */
-.drawer {
-  transition: max-height 0.3s ease, opacity 0.3s ease;
-  overflow: hidden;
+/* Inline accordion drawer */
+.drawer-row td {
+  padding: 0;
+  border: none;
+  background: transparent;
 }
 
-.drawer.hidden {
+.drawer-content {
+  padding: 0 20px;
   max-height: 0;
+  overflow: hidden;
   opacity: 0;
-  margin-bottom: 0 !important;
+  background: hsl(var(--secondary) / 0.3);
+  transition: max-height 0.35s ease, opacity 0.25s ease, padding 0.35s ease;
 }
 
-.drawer:not(.hidden) {
-  max-height: 2000px;
+.drawer-content.slide-in {
+  max-height: 800px;
   opacity: 1;
+  padding: 16px 20px;
+}
+
+.drawer-header {
+  font-size: 13px;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.drawer-model-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.drawer-model-table th {
+  padding: 8px 12px;
+  font-size: 10px;
+  background: hsl(var(--muted) / 0.5);
+}
+
+.drawer-model-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid hsl(var(--border) / 0.5);
+}
+
+.drawer-model-table tbody tr:hover td {
+  background: hsl(var(--primary) / 0.05);
 }
 
 /* 上游表格可点击行 */
