@@ -58,7 +58,7 @@ function toggleModelDrawer(upstreamId) {
 async function loadModelTable(upstreamId) {
   const url = '/api/models?upstream_id=' + encodeURIComponent(upstreamId);
   const data = await api(url);
-  document.querySelector('#model-table tbody').innerHTML = data.models.map(m =>
+  document.querySelector('#drawer-model-table tbody').innerHTML = data.models.map(m =>
     `<tr>
       <td><span class="badge badge-green">${escHtml(m.name)}</span></td>
       <td><span class="badge" style="background:hsl(var(--muted));color:hsl(var(--muted-foreground))">${escHtml(m.upstream_name)}</span></td>
