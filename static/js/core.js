@@ -35,17 +35,8 @@ export function updateThemeButton(theme) {
 // ===== 设置功能 =====
 export function initSettings() {
   const savedDefaultPage = localStorage.getItem('defaultPage') || 'facts';
-  const pageSelect = document.getElementById('default-page-select');
-  if (pageSelect) {
-    pageSelect.value = savedDefaultPage;
-  }
-
-  // 初始化默认周期设置
   const savedDefaultPeriod = localStorage.getItem('defaultPeriod') || 'week';
-  const periodSelect = document.getElementById('default-period-select');
-  if (periodSelect) {
-    periodSelect.value = savedDefaultPeriod;
-  }
+
   // 同步到当前周期
   currentPeriod = savedDefaultPeriod;
   window.currentPeriod = currentPeriod;
@@ -60,7 +51,8 @@ export function initSettings() {
 }
 
 export function applyDefaultPage(page) {
-  if (!page || (page !== 'facts' && page !== 'tokens')) {
+  const validPages = ['facts', 'tokens', 'models', 'routes'];
+  if (!page || !validPages.includes(page)) {
     page = 'facts';
   }
 
@@ -75,29 +67,82 @@ export function applyDefaultPage(page) {
   document.getElementById('page-facts').classList.toggle('hidden', page !== 'facts');
   document.getElementById('page-tokens').classList.toggle('hidden', page !== 'tokens');
   document.getElementById('page-models').classList.toggle('hidden', page !== 'models');
-  document.getElementById('page-settings').classList.add('hidden');
+  document.getElementById('page-routes').classList.toggle('hidden', page !== 'routes');
 
   // 加载数据（通过回调注册表，避免跨模块导入）
   if (page === 'facts' && pageLoaders.facts) pageLoaders.facts();
   if (page === 'tokens' && pageLoaders.tokens) pageLoaders.tokens();
   if (page === 'models' && pageLoaders.models) pageLoaders.models();
+  if (page === 'routes' && pageLoaders.routes) pageLoaders.routes();
 }
 
 export function showSettings() {
-  currentPage = 'settings';
+  const defaultPage = localStorage.getItem('defaultPage') || 'facts';
+  const defaultPeriod = localStorage.getItem('defaultPeriod') || 'week';
 
-  // 隐藏所有主页面
-  document.getElementById('page-facts').classList.add('hidden');
-  document.getElementById('page-tokens').classList.add('hidden');
-  document.getElementById('page-settings').classList.remove('hidden');
+  const body = `
+    <div style="display:flex;flex-direction:column;gap:20px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div>
+          <div style="font-weight:600;margin-bottom:4px;">默认页面</div>
+          <div style="font-size:13px;color:var(--muted);">打开网页时默认显示的页面</div>
+        </div>
+        <select class="settings-select" id="modal-default-page-select">
+          <option value="facts">📋 Fact Store</option>
+          <option value="tokens">📊 Token 统计</option>
+          <option value="models">🔌 模型管理</option>
+          <option value="routes">🔀 路由映射</option>
+        </select>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div>
+          <div style="font-weight:600;margin-bottom:4px;">默认 Token 周期</div>
+          <div style="font-size:13px;color:var(--muted);">进入 Token 统计时默认显示的时间范围</div>
+        </div>
+        <select class="settings-select" id="modal-default-period-select">
+          <option value="day">24小时</option>
+          <option value="week">7天</option>
+          <option value="month">30天</option>
+        </select>
+      </div>
+    </div>`;
 
-  // 移除导航标签的活动状态
-  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+  showModal('⚙ 通用设置', body, '');
+
+  // 设置当前值（在 DOM 注入后）
+  setTimeout(() => {
+    const pageSelect = document.getElementById('modal-default-page-select');
+    const periodSelect = document.getElementById('modal-default-period-select');
+    if (pageSelect) {
+      pageSelect.value = defaultPage;
+      pageSelect.addEventListener('change', (e) => saveDefaultPage(e.target.value));
+    }
+    if (periodSelect) {
+      periodSelect.value = defaultPeriod;
+      periodSelect.addEventListener('change', (e) => {
+        const val = e.target.value;
+        localStorage.setItem('defaultPeriod', val);
+        currentPeriod = val;
+        window.currentPeriod = val;
+        document.querySelectorAll('.period-btn').forEach(btn => {
+          btn.classList.toggle('active', btn.dataset.period === val);
+        });
+      });
+    }
+  }, 0);
 }
 
 export function saveDefaultPage(page) {
   localStorage.setItem('defaultPage', page);
 }
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const overlay = document.getElementById('modal-overlay');
+  if (overlay && overlay.classList.contains('show')) {
+    closeModal();
+  }
+});
 
 // ===== API 调用 =====
 export async function api(path, opts = {}) {
@@ -144,7 +189,7 @@ export const bus = {
 };
 
 // Callback registry for cross-page data loading (avoids circular imports)
-export const pageLoaders = { facts: null, tokens: null, models: null };
+export const pageLoaders = { facts: null, tokens: null, models: null, routes: null };
 
 // Global scope mounting for onclick handlers (required by ES modules)
 window.api = api;

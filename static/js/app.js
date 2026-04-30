@@ -5,15 +5,17 @@
 import { initTheme, toggleTheme, initSettings, showSettings, saveDefaultPage, pageLoaders, bus } from './core.js';
 import { loadFacts, initFactPage } from './pages/facts.js';
 import { loadTokenStats, initTokenPage } from './pages/tokens.js';
-import { loadModelConfig, initModelPage } from './pages/models.js';
+import { loadUpstreamPage, initUpstreamPage } from './pages/upstreams.js';
+import { loadRoutePage, initRoutePage } from './pages/routes.js';
 
 pageLoaders.facts = loadFacts;
 pageLoaders.tokens = loadTokenStats;
-pageLoaders.models = loadModelConfig;
+pageLoaders.models = loadUpstreamPage;
+pageLoaders.routes = loadRoutePage;
 
 initFactPage();
 initTokenPage();
-initModelPage();
+initUpstreamPage(); initRoutePage();
 
 bus.on('config:dirty', () => {
   const btn = document.getElementById('apply-config-btn');
@@ -37,11 +39,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const settingsBtn = document.getElementById('settings-btn');
   if (settingsBtn) settingsBtn.addEventListener('click', showSettings);
 
-  const pageSelect = document.getElementById('default-page-select');
-  if (pageSelect) pageSelect.addEventListener('change', (e) => saveDefaultPage(e.target.value));
-
-  const periodSelect = document.getElementById('default-period-select');
-  if (periodSelect) periodSelect.addEventListener('change', (e) => localStorage.setItem('defaultPeriod', e.target.value));
+  const applyBtn = document.getElementById('apply-config-btn');
+  if (applyBtn) applyBtn.addEventListener('click', () => window.applyConfig?.());
 
   document.querySelectorAll('.nav-tab').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -54,11 +53,12 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('page-facts').classList.toggle('hidden', page !== 'facts');
       document.getElementById('page-tokens').classList.toggle('hidden', page !== 'tokens');
       document.getElementById('page-models').classList.toggle('hidden', page !== 'models');
-      document.getElementById('page-settings').classList.add('hidden');
+      document.getElementById('page-routes').classList.toggle('hidden', page !== 'routes');
 
       if (page === 'facts') loadFacts();
       if (page === 'tokens') loadTokenStats();
-      if (page === 'models') loadModelConfig();
+      if (page === 'models') loadUpstreamPage();
+      if (page === 'routes') loadRoutePage();
     });
   });
 
