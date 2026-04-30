@@ -27,8 +27,12 @@
       <button class="nav-tab" data-page="models">
         <span>🔌</span> 模型管理
       </button>
+      <button class="nav-tab" data-page="routes">
+        <span>🔀</span> 路由映射
+      </button>
     </div>
     <div class="nav-actions">
+      <button class="btn btn-primary btn-sm" id="apply-config-btn" onclick="applyConfig()" style="margin-right:8px;">✅ 应用配置</button>
       <button class="toolbar-btn" id="settings-btn" title="设置">&#x2699;</button>
       <button class="toolbar-btn" id="theme-toggle">&#x1F319;</button>
     </div>
@@ -189,73 +193,26 @@
       </div>
     </div>
 
-    <div class="table-card" style="margin-bottom:20px">
-      <div class="table-header">
-        <span class="table-title">🤖 目标模型</span>
-        <div style="display:flex;gap:8px;align-items:center">
-          <select id="model-filter-upstream" style="padding:4px 8px;border-radius:6px;border:1px solid hsl(var(--border));background:hsl(var(--secondary));color:hsl(var(--foreground));font-size:12px;"><option value="">全部上游</option></select>
-          <button class="btn btn-primary btn-sm" onclick="showModelModal()">+ 新增模型</button>
-        </div>
-      </div>
-      <div class="table-scroll">
-        <table id="model-table">
-          <thead><tr><th>模型名</th><th>所属上游</th><th>Format</th><th>Multimodal</th><th>操作</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="table-card" style="margin-bottom:20px">
-      <div class="table-header">
-        <span class="table-title">🔀 路由映射</span>
-        <button class="btn btn-primary btn-sm" onclick="showRouteModal()">+ 新增路由</button>
-      </div>
-      <div class="table-scroll">
-        <table id="route-table">
-          <thead><tr><th>源模型</th><th>→ 目标模型</th><th>上游</th><th>状态</th><th>操作</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
-
-    <div style="display:flex;justify-content:flex-end;gap:12px;margin-top:16px;">
-      <button class="btn btn-primary" id="apply-config-btn" onclick="applyConfig()">✅ 应用配置</button>
-    </div>
-  </div>
-
-  <!-- 设置页面 -->
-  <div id="page-settings" class="main-content hidden">
-    <div class="settings-container">
-      <div class="settings-card">
-        <div class="settings-header">
-          <span class="settings-title">&#x2699; 通用设置</span>
-        </div>
-        <div class="settings-body">
-          <div class="settings-item">
-            <div class="settings-label">
-              <span class="settings-label-title">默认页面</span>
-              <span class="settings-label-desc">打开网页时默认显示的页面</span>
-            </div>
-            <select class="settings-select" id="default-page-select">
-              <option value="facts">&#x1F4CB; Fact Store</option>
-              <option value="tokens">&#x1F4CA; Token 统计</option>
-            </select>
+    <div id="model-drawer" class="drawer hidden" style="margin-bottom:20px;">
+      <div class="table-card">
+        <div class="table-header">
+          <span class="table-title">🤖 模型列表</span>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span id="model-drawer-upstream-label"></span>
           </div>
-          <div class="settings-item" style="margin-top: 20px;">
-            <div class="settings-label">
-              <span class="settings-label-title">默认 Token 周期</span>
-              <span class="settings-label-desc">进入 Token 统计时默认显示的时间范围</span>
-            </div>
-            <select class="settings-select" id="default-period-select">
-              <option value="day">24小时</option>
-              <option value="week">7天</option>
-              <option value="month">30天</option>
-            </select>
-          </div>
+        </div>
+        <div class="table-scroll">
+          <table id="model-table">
+            <thead><tr><th>模型名</th><th>Format</th><th>Multimodal</th><th>操作</th></tr></thead>
+            <tbody></tbody>
+          </table>
         </div>
       </div>
     </div>
   </div>
+
+  <!-- 路由映射页面 -->
+  <div id="page-routes" class="main-content hidden"></div>
 </div>
 
 <!-- 模态框 -->
