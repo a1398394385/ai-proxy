@@ -216,6 +216,32 @@ async function loadUpstreamPage() {
   loadUpstreamTable();
 }
 
+async function applyConfig() {
+  const btn = document.getElementById('apply-config-btn');
+  if (!btn) return;
+  btn.textContent = '⏳ 应用中...'; btn.disabled = true;
+  try {
+    const result = await api('/api/config/reload', { method: 'POST' });
+    const proxyOk = result.proxy && result.proxy.status === 'ok';
+    const ptOk = result.pass_through && result.pass_through.status === 'ok';
+    if (proxyOk) {
+      bus.emit('config:applied', { reloaded_at: result.proxy.reloaded_at });
+      btn.classList.remove('pulse-orange'); btn.textContent = '✅ 应用配置';
+      refreshConfigStatus();
+      const extra = ptOk ? '' : ' (pass_through 未响应)';
+      alert('配置已生效 (' + result.proxy.reloaded_at + ')' + extra);
+    } else {
+      const msg = result.proxy ? result.proxy.message : '重载失败';
+      alert('⚠️ ' + msg);
+      btn.textContent = '🔄 重试';
+    }
+  } catch (e) {
+    alert('⚠️ proxy 未运行，配置将在 TTL 过期后自动生效');
+    btn.textContent = '🔄 重试';
+  }
+  btn.disabled = false;
+}
+
 function initUpstreamPage() {
   // No filter dropdown needed — removed
 }
@@ -232,5 +258,6 @@ window.confirmDeleteModel = confirmDeleteModel;
 window.toggleModelDrawer = toggleModelDrawer;
 window.loadUpstreamPage = loadUpstreamPage;
 window.refreshConfigStatus = refreshConfigStatus;
+window.applyConfig = applyConfig;
 
-export { loadUpstreamPage, initUpstreamPage, refreshConfigStatus };
+export { loadUpstreamPage, initUpstreamPage, refreshConfigStatus, applyConfig };
