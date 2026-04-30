@@ -14,7 +14,7 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 
-from config_manager import ConfigDB
+from config_manager import ConfigDB, Migrations
 from common import get_port, get_host, load_config, CONFIG, CONFIG_PATH
 
 # 配置
@@ -617,8 +617,9 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             return json_response(self, {"error": "Not found"}, 404)
 
         if path == "/api/routes":
+            proxy_type = qs.get("proxy_type", [None])[0]
             db = get_config_db()
-            routes = db.list_routes()
+            routes = db.list_routes(proxy_type=proxy_type)
             db.close()
             return json_response(self, {"routes": routes})
 
@@ -645,8 +646,19 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 conn.close()
             except Exception:
                 pass
+            pass_through_reachable = False
+            try:
+                pt_port = get_port("pass_through", 48744)
+                conn = http.client.HTTPConnection("127.0.0.1", pt_port, timeout=2)
+                conn.request("GET", "/health")
+                resp = conn.getresponse()
+                pass_through_reachable = resp.status == 200
+                conn.close()
+            except Exception:
+                pass
             return json_response(self, {
                 "proxy_reachable": proxy_reachable,
+                "pass_through_reachable": pass_through_reachable,
                 "config_db": counts,
             })
 
@@ -767,6 +779,13 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         # ===== 模型配置 API =====
+        if parsed.path == "/api/migrate":
+            try:
+                result = Migrations(Path.home() / ".hermes" / "config.db").migrate()
+                return json_response(self, result)
+            except Exception as e:
+                return json_response(self, {"error": str(e)}, 500)
+
         if parsed.path == "/api/upstreams":
             data = _read_json(self)
             if not data:
@@ -808,6 +827,12 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             data = _read_json(self)
             if not data:
                 return
+            # 校验 proxy_type
+            proxy_type = data.get("proxy_type", "codex")
+            if proxy_type not in ("codex", "claude", "pass_through"):
+                return json_response(self, {
+                    "error": "proxy_type must be one of: codex, claude, pass_through"
+                }, 400)
             db = get_config_db()
             model = db.get_model(data["target_model_id"])
             if not model:
@@ -820,23 +845,35 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 rid = db.add_route(data)
                 db.close()
                 return json_response(self, {"id": rid, "message": "Created"}, 201)
-            except sqlite3.IntegrityError as e:
+            except (sqlite3.IntegrityError, ValueError) as e:
                 db.close()
                 return json_response(self, {"error": str(e)}, 409)
 
         if parsed.path == "/api/config/reload":
+            result = {}
+            # Reload codex proxy
             try:
                 proxy_port = get_port("codex_proxy", 48743)
                 conn = http.client.HTTPConnection("127.0.0.1", proxy_port, timeout=5)
+                conn.request("POST", "/admin/reload")
                 resp = conn.getresponse()
                 body = json.loads(resp.read())
                 conn.close()
-                return json_response(self, body, resp.status)
-            except Exception:
-                return json_response(self, {
-                    "status": "error",
-                    "message": "proxy 未运行，配置将在 TTL 过期后自动生效",
-                })
+                result["proxy"] = body
+            except Exception as e:
+                result["proxy"] = {"status": "error", "message": str(e)}
+            # Reload pass_through proxy
+            try:
+                pt_port = get_port("pass_through", 48744)
+                conn = http.client.HTTPConnection("127.0.0.1", pt_port, timeout=5)
+                conn.request("POST", "/admin/reload")
+                resp = conn.getresponse()
+                body = json.loads(resp.read())
+                conn.close()
+                result["pass_through"] = body
+            except Exception as e:
+                result["pass_through"] = {"status": "error", "message": str(e)}
+            return json_response(self, result)
 
         # ===== Fact Store API =====
         if parsed.path == "/api/facts":
@@ -936,7 +973,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 db.update_route(int(m.group(1)), data)
                 db.close()
                 return json_response(self, {"message": "Updated"})
-            except sqlite3.IntegrityError as e:
+            except (sqlite3.IntegrityError, ValueError) as e:
                 db.close()
                 return json_response(self, {"error": str(e)}, 409)
 
