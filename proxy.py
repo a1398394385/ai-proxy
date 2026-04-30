@@ -16,7 +16,17 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from pathlib import Path
 
-from config_manager import ConfigCache, _parse_yaml, _yaml_scalar
+from common import (
+    config_cache,
+    resolve_model,
+    _create_upstream_conn,
+    CONFIG,
+    CONFIG_PATH,
+    CONFIG_DB_PATH,
+    load_config,
+    get_port,
+    get_host,
+)
 
 from transform import (
     generate_response_id,
@@ -37,65 +47,6 @@ from request_logger import (
 )
 
 from token_stats import record_token_stats
-
-# ─── 配置加载 ───────────────────────────────────────────────────────
-
-CONFIG = {}
-CONFIG_PATH = Path(__file__).parent / "proxy_config.yaml"
-
-# ─── 动态配置缓存（替代静态 model_map）───────────────────────────
-CONFIG_DB_PATH = Path(__file__).resolve().parent / "data" / "access_log.db"
-config_cache = ConfigCache(CONFIG_DB_PATH)
-
-
-def load_config(config_path: Path = None):
-    """加载 proxy_config.yaml 的 proxy 段（日志配置等），校验动态配置 * fallback。
-
-    config_path: 可选，覆盖默认配置文件路径（用于测试）。
-
-    model_map 校验已移除，改由 ConfigCache 从 config.db 动态加载。
-    """
-    global CONFIG
-    path = config_path or CONFIG_PATH
-    if not path.exists():
-        print(f"FATAL: 配置文件不存在: {path}", file=sys.stderr)
-        sys.exit(1)
-
-    with open(path, "r") as f:
-        CONFIG = _parse_yaml(f.read())
-
-    # 设置日志：同时写 proxy.log 文件和 stdout，遵循 log_level 配置
-    if not logging.root.handlers:
-        log_level = CONFIG.get("proxy", {}).get("log_level", "INFO")
-        numeric_level = getattr(logging, log_level.upper(), logging.INFO)
-
-        log_file = Path(__file__).parent / "proxy.log"
-        file_handler = logging.FileHandler(log_file)
-        stream_handler = logging.StreamHandler(sys.stdout)
-
-        logging.basicConfig(
-            level=numeric_level,
-            format="%(asctime)s [%(levelname)s] %(message)s",
-            handlers=[file_handler, stream_handler],
-        )
-
-
-def resolve_model(model_name: str) -> dict:
-    """使用动态配置缓存查找模型路由。
-
-    返回格式与旧版兼容：
-    {"target": str, "multimodal": bool}
-    -> 新增 {"target": str, "multimodal": bool, "upstream": dict}
-    """
-    cfg = config_cache.resolve(model_name)
-    if cfg is None:
-        return {"target": model_name, "multimodal": False}
-    return {
-        "target": cfg["target_name"],
-        "multimodal": bool(cfg["multimodal"]),
-        "upstream": cfg["upstream"],
-    }
-
 
 # ─── ThreadedHTTPServer ────────────────────────────────────────────
 
@@ -133,96 +84,6 @@ def rotate_log_if_needed():
     log_file.unlink()
 
 
-# ─── 上游连接创建 ──────────────────────────────────────────────
-
-def _create_upstream_conn(upstream_cfg, parsed, port):
-    """创建到上游的连接，支持 HTTP 代理（含 HTTPS tunneling）。
-
-    使用 http.client 的 set_tunnel() 实现 HTTPS over HTTP 代理。
-    """
-    proxy = upstream_cfg.get("proxy")
-    connect_timeout = upstream_cfg.get("connect_timeout", 10)
-
-    if proxy:
-        proxy_parsed = urllib.parse.urlparse(proxy)
-        proxy_host = proxy_parsed.hostname
-        proxy_port = proxy_parsed.port or 8080
-
-        use_ssl = parsed.scheme == "https"
-        ssl_ctx = ssl.create_default_context() if upstream_cfg.get("ssl_verify", True) else ssl._create_unverified_context()
-
-        if use_ssl:
-            conn = http.client.HTTPSConnection(
-                proxy_host, proxy_port,
-                timeout=connect_timeout, context=ssl_ctx,
-            )
-        else:
-            conn = http.client.HTTPConnection(
-                proxy_host, proxy_port,
-                timeout=connect_timeout,
-            )
-        # 设置 tunnel：CONNECT 目标主机:端口
-        conn.set_tunnel(parsed.hostname, port)
-        return conn
-    else:
-        use_ssl = parsed.scheme == "https"
-        ssl_ctx = ssl.create_default_context() if upstream_cfg.get("ssl_verify", True) else ssl._create_unverified_context()
-        if use_ssl:
-            return http.client.HTTPSConnection(
-                parsed.hostname, port,
-                timeout=connect_timeout, context=ssl_ctx,
-            )
-        else:
-            return http.client.HTTPConnection(
-                parsed.hostname, port,
-                timeout=connect_timeout,
-            )
-
-
-# ─── 透传辅助函数 ───────────────────────────────────────────────────
-
-def _normalize_forward_path(path: str):
-    """归一化透传请求路径，返回安全路径或 None（含路径穿越时）。"""
-    query = ""
-    if "?" in path:
-        path, query = path.split("?", 1)
-
-    if path.startswith("/v1"):
-        path = path[3:]
-
-    if ".." in path:
-        return None
-
-    while "//" in path:
-        path = path.replace("//", "/")
-
-    if not path.startswith("/"):
-        path = "/" + path
-
-    if query:
-        path = path + "?" + query
-
-    return path
-
-
-def _extract_model_for_pass_through(method: str, path: str, body_raw: bytes) -> str:
-    """从请求中提取模型名称，用于透传路由。失败时返回 '*'。"""
-    if method == "POST":
-        try:
-            body = json.loads(body_raw)
-            return body.get("model", "*")
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return "*"
-    elif method == "GET":
-        parsed = urllib.parse.urlparse(path)
-        params = urllib.parse.parse_qs(parsed.query)
-        models = params.get("model")
-        if models and len(models) > 0:
-            return models[0]
-        return "*"
-    return "*"
-
-
 # ─── 请求 Handler ──────────────────────────────────────────────────
 
 class ProxyHandler(BaseHTTPRequestHandler):
@@ -240,8 +101,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
             self.wfile.write(b"Upgrade Required: Use HTTP POST with SSE")
-        elif self.path.startswith("/v1/"):
-            self._handle_pass_through()
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -252,8 +111,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._handle_messages()
         elif self.path == "/admin/reload":
             self._handle_admin_reload()
-        elif self.path.startswith("/v1/"):
-            self._handle_pass_through()
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -773,267 +630,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         """重定向到 logger。"""
         logging.info("%s - - [%s] %s" % (self.client_address[0], self.log_date_time_string(), format % args))
-
-    def _handle_pass_through(self):
-        """透传端点：原样转发 /v1/* 请求到上游，不做协议转换。"""
-        content_length = int(self.headers.get("Content-Length", 0))
-        body_raw = self.rfile.read(content_length)
-
-        request_id = _generate_request_id()
-        request_ts = time.strftime("%Y-%m-%d %H:%M:%S")
-
-        model_name = _extract_model_for_pass_through(self.command, self.path, body_raw)
-
-        model_cfg = resolve_model(model_name)
-        target = model_cfg["target"]
-        upstream_cfg = model_cfg.get("upstream")
-        if upstream_cfg is None:
-            logging.error(f"透传: 模型 {model_name} 无法解析上游配置")
-            self._send_json(500, {"error": {"type": "internal_error", "message": "模型路由不可用"}})
-            return
-
-        forward_path = _normalize_forward_path(self.path)
-        if forward_path is None:
-            self._send_json(400, {"error": {"type": "invalid_request_error", "message": "无效的请求路径"}})
-            return
-
-        is_stream = False
-        try:
-            body = json.loads(body_raw)
-            is_stream = body.get("stream", False)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            logging.debug(f"透传: 无法解析请求体为 JSON，默认 is_stream=False")
-
-        logging.info(f"透传: model={model_name}, stream={is_stream}, target={target}, forward_path={forward_path}")
-
-        logger = get_logger()
-        if logger:
-            log_body = body_raw.decode("utf-8", errors="replace")[:5000] if body_raw else "(empty)"
-            logger.log_raw_request(request_id, model_name, target,
-                {"method": self.command, "path": self.path, "forward_path": forward_path, "body": log_body})
-
-        if is_stream:
-            self._forward_pass_through_streaming(body_raw, request_id, model_name, target, request_ts, upstream_cfg, forward_path)
-        else:
-            self._forward_pass_through_non_streaming(body_raw, request_id, model_name, target, request_ts, upstream_cfg, forward_path)
-
-    def _forward_pass_through_non_streaming(self, body_raw, request_id, model_name, target, request_ts, upstream_cfg, forward_path):
-        """非流式透传：原样转发请求到上游，原样返回响应。"""
-        base_url = upstream_cfg["base_url"]
-        api_key = upstream_cfg["api_key"]
-        timeout = upstream_cfg.get("timeout", 120)
-        connect_timeout = upstream_cfg.get("connect_timeout", 10)
-        retries = upstream_cfg.get("retry", 0) + 1
-
-        parsed = urllib.parse.urlparse(base_url)
-        path = parsed.path.rstrip("/") + forward_path
-        port = parsed.port or (80 if parsed.scheme == "http" else 443)
-        content_type = self.headers.get("Content-Type", "application/json")
-
-        for attempt in range(retries):
-            conn = None
-            try:
-                conn = _create_upstream_conn(upstream_cfg, parsed, port)
-                conn.request(self.command, path, body=body_raw, headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": content_type,
-                })
-
-                start = time.time()
-                resp = conn.getresponse()
-                if conn.sock:
-                    conn.sock.settimeout(timeout)
-                resp_body = resp.read()
-                duration_ms = int((time.time() - start) * 1000)
-                conn.close()
-                conn = None
-
-                if resp.status >= 500 and attempt < retries - 1:
-                    logging.warning(f"透传上游 {resp.status}，重试 {attempt + 1}/{retries}")
-                    continue
-
-                # Phase 3: log upstream response
-                logger = get_logger()
-                if logger:
-                    log_data = resp_body.decode("utf-8", errors="replace")[:5000]
-                    logger.log_upstream_response(request_id, resp.status, log_data, duration_ms)
-
-                # Phase 5: token_stats (best-effort)
-                if resp.status == 200:
-                    try:
-                        chat_response = json.loads(resp_body)
-                        usage = chat_response.get("usage", {})
-                        if usage:
-                            record_token_stats(usage, {
-                                "request_id": request_id,
-                                "agent": _extract_agent(self.headers.get("User-Agent", "")),
-                                "model": model_name,
-                                "target_model": target,
-                                "request_ts": request_ts,
-                                "duration_ms": duration_ms,
-                            })
-                        else:
-                            logging.warning(f"透传: 无法从响应提取 usage，跳过 token_stats")
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        logging.warning(f"透传: 响应非 JSON，无法提取 usage")
-
-                # Relay response as-is
-                self.send_response(resp.status)
-                self.send_header("Content-Type", resp.getheader("Content-Type", "application/json"))
-                self.end_headers()
-                self.wfile.write(resp_body)
-                return
-
-            except (socket.timeout, http.client.HTTPException, OSError) as e:
-                logging.warning(f"透传上游请求失败 (attempt {attempt + 1}): {e}")
-                if attempt < retries - 1:
-                    continue
-                self._send_json(502, {"error": {"type": "server_error", "message": str(e)}})
-                return
-            finally:
-                if conn:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-
-    def _forward_pass_through_streaming(self, body_raw, request_id, model_name, target, request_ts, upstream_cfg, forward_path):
-        """流式 SSE 透传：逐 chunk 原样中继上游 SSE 事件，不注入任何代理事件。"""
-        base_url = upstream_cfg["base_url"]
-        api_key = upstream_cfg["api_key"]
-        timeout = upstream_cfg.get("timeout", 120)
-        connect_timeout = upstream_cfg.get("connect_timeout", 10)
-
-        parsed = urllib.parse.urlparse(base_url)
-        path = parsed.path.rstrip("/") + forward_path
-        port = parsed.port or (80 if parsed.scheme == "http" else 443)
-        content_type = self.headers.get("Content-Type", "application/json")
-        retries = upstream_cfg.get("retry", 0) + 1
-
-        conn = None
-        for attempt in range(retries):
-            try:
-                conn = _create_upstream_conn(upstream_cfg, parsed, port)
-                conn.request(self.command, path, body=body_raw, headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": content_type,
-                    "Accept": "text/event-stream",
-                })
-                break
-            except (socket.timeout, http.client.HTTPException, OSError) as e:
-                logging.warning(f"透传流式连接失败 (attempt {attempt + 1}): {e}")
-                if conn:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-                    conn = None
-                if attempt < retries - 1:
-                    continue
-                self._send_json(502, {"error": {"type": "server_error", "message": str(e)}})
-                return
-
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("X-Accel-Buffering", "no")
-        self.end_headers()
-
-        start = time.time()
-        sse_buffer = []
-        final_usage = None
-        upstream_status = None
-
-        try:
-            resp = conn.getresponse()
-            if conn.sock:
-                conn.sock.settimeout(timeout)
-            upstream_status = resp.status
-
-            if resp.status != 200:
-                error_body = resp.read()
-                self.wfile.write(error_body)
-                self.wfile.flush()
-                logger = get_logger()
-                if logger:
-                    logger.log_upstream_response(request_id, upstream_status,
-                        error_body.decode("utf-8", errors="replace")[:5000], 0)
-                return
-
-            # Relay raw SSE chunks as-is from upstream
-            while True:
-                chunk = resp.read(4096)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
-                self.wfile.flush()
-                sse_buffer.append(chunk)
-
-            duration_ms = int((time.time() - start) * 1000)
-
-            # Log upstream response
-            full_sse = b"".join(sse_buffer).decode("utf-8", errors="replace")[:5000]
-            logger = get_logger()
-            if logger:
-                logger.log_upstream_response(request_id, upstream_status, full_sse, duration_ms)
-
-            # Best-effort token stats: scan for "usage" in SSE data
-            if sse_buffer:
-                last_chunk = sse_buffer[-1].decode("utf-8", errors="replace")
-                # Find "usage" key and extract the full nested JSON object
-                usage_start = last_chunk.find('"usage"')
-                if usage_start >= 0:
-                    # Find the colon after "usage"
-                    colon_pos = last_chunk.find(':', usage_start)
-                    if colon_pos >= 0:
-                        # Find the opening brace
-                        brace_pos = last_chunk.find('{', colon_pos)
-                        if brace_pos >= 0:
-                            # Count braces to find the matching closing brace
-                            depth = 0
-                            end_pos = brace_pos
-                            for i in range(brace_pos, len(last_chunk)):
-                                if last_chunk[i] == '{':
-                                    depth += 1
-                                elif last_chunk[i] == '}':
-                                    depth -= 1
-                                    if depth == 0:
-                                        end_pos = i + 1
-                                        break
-                            if end_pos > brace_pos:
-                                try:
-                                    final_usage = json.loads(last_chunk[brace_pos:end_pos])
-                                except json.JSONDecodeError:
-                                    pass
-                if final_usage:
-                    record_token_stats(final_usage, {
-                        "request_id": request_id,
-                        "agent": _extract_agent(self.headers.get("User-Agent", "")),
-                        "model": model_name,
-                        "target_model": target,
-                        "request_ts": request_ts,
-                        "duration_ms": duration_ms,
-                    })
-                else:
-                    logging.warning(f"透传流式: 无法从 SSE 提取 usage，跳过 token_stats")
-
-        except Exception as e:
-            logging.exception(f"透传流式失败: {e}")
-            logger = get_logger()
-            if logger:
-                logger.log_upstream_response(request_id, upstream_status or 0,
-                    json.dumps({"error": str(e)}), int((time.time() - start) * 1000))
-            try:
-                self.wfile.write(f"data: {{\"error\":\"{str(e)}\"}}\n\n".encode("utf-8"))
-                self.wfile.flush()
-            except (BrokenPipeError, OSError):
-                pass
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
 
 
 # ─── 存储辅助 ──────────────────────────────────────────────────────

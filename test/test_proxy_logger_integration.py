@@ -45,6 +45,10 @@ def _query_token_stats(db_path, request_id=None):
 
 
 def _load_proxy():
+    """动态加载 proxy.py，并重置 shared config_cache 避免测试间状态泄漏。"""
+    import common
+    from config_manager import ConfigCache
+    common.config_cache = ConfigCache(common.CONFIG_DB_PATH)
     spec = importlib.util.spec_from_file_location("proxy_test", Path(__file__).parent.parent / "proxy.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

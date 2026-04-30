@@ -49,7 +49,10 @@ upstream:
             db.close()
 
             mod = load_proxy_module(Path(tmp_path))
-            mod.config_cache = ConfigCache(db_path)
+            # 直接设置 common 模块的变量，因为 load_config/resolve_model 在 common.py 中
+            import common
+            common.config_cache = ConfigCache(db_path)
+            common.CONFIG_PATH = Path(tmp_path)
             mod.load_config()
             cfg = mod.resolve_model("gpt-4o")
             self.assertEqual(cfg["target"], "claude-sonnet-4-6")
@@ -61,14 +64,16 @@ upstream:
 
     def test_missing_config_file(self):
         """配置文件不存在应导致 sys.exit(1)。"""
-        mod = load_proxy_module(Path("/nonexistent/path.yaml"))
+        import common
+        common.CONFIG_PATH = Path("/nonexistent/path.yaml")
+        mod = load_proxy_module()
         with self.assertRaises(SystemExit):
             mod.load_config()
 
 
 class TestYamlParser(unittest.TestCase):
     def test_parse_basic_types(self):
-        from proxy import _parse_yaml
+        from common import _parse_yaml
         result = _parse_yaml("""
 proxy:
   host: "127.0.0.1"
@@ -82,7 +87,7 @@ proxy:
         self.assertTrue(result["proxy"]["enabled"])
 
     def test_parse_nested_structure(self):
-        from proxy import _parse_yaml
+        from common import _parse_yaml
         result = _parse_yaml("""
 upstream:
   base_url: "https://example.com/v1"
@@ -94,7 +99,7 @@ upstream:
         self.assertEqual(result["upstream"]["retry"], 0)
 
     def test_parse_comments_and_blanks(self):
-        from proxy import _parse_yaml
+        from common import _parse_yaml
         result = _parse_yaml("""
 # This is a comment
 proxy:
