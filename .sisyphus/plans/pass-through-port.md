@@ -282,7 +282,7 @@ Wave FINAL：
 
 ## Final Verification Wave
 
-- [ ] F1-F4: oracle x3 + general x1 — 合规、质量、QA、保真度
+- [x] F1-F4: oracle x3 + general x1 — 合规、质量、QA、保真度
 
 ---
 
