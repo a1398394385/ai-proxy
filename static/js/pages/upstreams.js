@@ -22,16 +22,16 @@ async function loadUpstreamTable() {
   document.getElementById('upstream-count').textContent = data.upstreams.length + ' 个上游';
   const tbody = document.querySelector('#upstream-table tbody');
   tbody.innerHTML = data.upstreams.map(u =>
-    `<tr style="${u.is_active ? '' : 'opacity:0.5'}">
-      <td style="cursor:pointer" onclick="toggleModelDrawer(event, '${escHtml(u.id)}')"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${u.is_active ? 'hsl(var(--green))' : 'hsl(var(--red))'};"></span> ${u.is_active ? '活跃' : '已禁用'}</td>
-      <td style="cursor:pointer" onclick="toggleModelDrawer(event, '${escHtml(u.id)}')"><span class="badge badge-blue">${escHtml(u.id)}</span></td>
+    `<tr style="${u.is_active ? '' : 'opacity:0.5'};cursor:pointer" onclick="toggleModelDrawer(event, '${escHtml(u.id)}')">
+      <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${u.is_active ? 'hsl(var(--green))' : 'hsl(var(--red))'};"></span> ${u.is_active ? '活跃' : '已禁用'}</td>
+      <td><span class="badge badge-blue">${escHtml(u.id)}</span></td>
       <td style="font-family:monospace;font-size:12px">${escHtml(u.base_url)}</td>
       <td>${u.timeout}s</td>
       <td>${u.is_default ? '✅' : ''}</td>
       <td>
-        <button class="btn btn-secondary btn-sm" onclick="showUpstreamModal('${escHtml(u.id)}')">编辑</button>
-        <button class="btn btn-secondary btn-sm" onclick="testUpstream('${escHtml(u.id)}')">测试</button>
-        ${u.is_active ? '<button class="btn btn-danger btn-sm" onclick="confirmDisableUpstream(\'' + escHtml(u.id) + '\')">禁用</button>' : ''}
+        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); showUpstreamModal('${escHtml(u.id)}')">编辑</button>
+        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); testUpstream('${escHtml(u.id)}')">测试</button>
+        ${u.is_active ? '<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); confirmDisableUpstream(\'' + escHtml(u.id) + '\')">禁用</button>' : ''}
       </td>
     </tr>`
   ).join('');
