@@ -106,6 +106,8 @@ def _map_input_item(item: dict, model_cfg: dict) -> list:
 def _map_message(item: dict, model_cfg: dict) -> dict:
     """映射 message 类型的 input 条目。"""
     role = item.get("role", "user")
+    if role == "developer":
+        role = "system"
     content = item.get("content")
 
     if isinstance(content, str):
