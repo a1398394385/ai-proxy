@@ -22,6 +22,15 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 class PassThroughHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def _write_chunk(self, data: bytes) -> None:
+        """写一个 chunked 编码块。"""
+        if data:
+            self.wfile.write(f"{len(data):X}\r\n".encode())
+            self.wfile.write(data)
+            self.wfile.write(b"\r\n")
+
     def do_GET(self):
         self._handle_pass_through()
     
@@ -42,6 +51,15 @@ class PassThroughHandler(BaseHTTPRequestHandler):
         upstream_cfg = model_cfg.get("upstream")
         if upstream_cfg is None:
             upstream_cfg = CONFIG.get("upstream", {})
+        
+        if target != model_name and body_raw:
+            try:
+                body = json.loads(body_raw)
+                if body.get("model") == model_name:
+                    body["model"] = target
+                    body_raw = json.dumps(body).encode("utf-8")
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                pass
         
         forward_path = _normalize_forward_path(self.path)
         if forward_path is None:
@@ -87,10 +105,10 @@ class PassThroughHandler(BaseHTTPRequestHandler):
             conn = None
             try:
                 conn = _create_upstream_conn(upstream_cfg, parsed, port)
-                conn.request(self.command, path, body=body_raw, headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": content_type,
-                })
+                headers = {"Content-Type": content_type}
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                conn.request(self.command, path, body=body_raw, headers=headers)
                 
                 start = time.time()
                 resp = conn.getresponse()
@@ -130,6 +148,7 @@ class PassThroughHandler(BaseHTTPRequestHandler):
                 
                 self.send_response(resp.status)
                 self.send_header("Content-Type", resp.getheader("Content-Type", "application/json"))
+                self.send_header("Content-Length", str(len(resp_body)))
                 self.end_headers()
                 self.wfile.write(resp_body)
                 return
@@ -152,41 +171,46 @@ class PassThroughHandler(BaseHTTPRequestHandler):
         timeout = upstream_cfg.get("timeout", 120)
         connect_timeout = upstream_cfg.get("connect_timeout", 10)
         retries = upstream_cfg.get("retry", 0) + 1
-        
+
         parsed = urllib.parse.urlparse(base_url)
         path = parsed.path.rstrip("/") + forward_path
         port = parsed.port or (80 if parsed.scheme == "http" else 443)
         content_type = self.headers.get("Content-Type", "application/json")
-        
+
         start = 0
         upstream_status = None
-        
+
         for attempt in range(retries):
             conn = None
             try:
+                logging.info(f"[DBG:{request_id[:8]}] 1_create_conn target={target}")
                 conn = _create_upstream_conn(upstream_cfg, parsed, port)
-                conn.request(self.command, path, body=body_raw, headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": content_type,
-                    "Accept": "text/event-stream",
-                })
-                
+                headers = {"Content-Type": content_type, "Accept": "text/event-stream", "Connection": "close"}
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                logging.info(f"[DBG:{request_id[:8]}] 2_send_upstream_req path={path}")
+                conn.request(self.command, path, body=body_raw, headers=headers)
+
+                logging.info(f"[DBG:{request_id[:8]}] 3_send_response_headers")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-cache")
                 self.send_header("X-Accel-Buffering", "no")
+                self.send_header("Transfer-Encoding", "chunked")
                 self.end_headers()
-                
+
                 start = time.time()
                 sse_buffer = []
                 final_usage = None
                 upstream_status = None
-                
+
+                logging.info(f"[DBG:{request_id[:8]}] 4_getresponse (waiting upstream headers)")
                 resp = conn.getresponse()
                 if conn.sock:
                     conn.sock.settimeout(timeout)
                 upstream_status = resp.status
-                
+                logging.info(f"[DBG:{request_id[:8]}] 5_upstream_headers_received status={resp.status}")
+
                 if resp.status != 200:
                     error_body = resp.read()
                     self.wfile.write(error_body)
@@ -196,57 +220,79 @@ class PassThroughHandler(BaseHTTPRequestHandler):
                         logger.log_upstream_response(request_id, upstream_status,
                             error_body.decode("utf-8", errors="replace")[:5000], 0)
                     return
-                
+
+                buf = b""
+                final_usage = None
+                done_received = False
+                chunk_count = 0
                 while True:
+                    logging.info(f"[DBG:{request_id[:8]}] 6_read_chunk#{chunk_count} (blocking...)")
                     chunk = resp.read(4096)
+                    logging.info(f"[DBG:{request_id[:8]}] 6_read_chunk#{chunk_count} got={len(chunk)}bytes")
+                    chunk_count += 1
                     if not chunk:
+                        logging.info(f"[DBG:{request_id[:8]}] 7_upstream_eof break")
                         break
-                    self.wfile.write(chunk)
-                    self.wfile.flush()
-                    sse_buffer.append(chunk)
+                    buf += chunk
+                    while b"\n\n" in buf:
+                        event_raw, buf = buf.split(b"\n\n", 1)
+                        event_bytes = event_raw + b"\n\n"
+                        logging.info(f"[DBG:{request_id[:8]}] 8_write_event len={len(event_bytes)} preview={event_raw[:60]}")
+                        self._write_chunk(event_bytes)
+                        self.wfile.flush()
+                        sse_buffer.append(event_bytes)
+
+                        # OpenAI [DONE] 或 Anthropic message_stop 均视为流结束
+                        if b"data: [DONE]" in event_raw or b"message_stop" in event_raw:
+                            logging.info(f"[DBG:{request_id[:8]}] 9_done_signal detected break")
+                            done_received = True
+                            break
+                        if b'"usage"' in event_raw:
+                            try:
+                                for line in event_raw.split(b"\n"):
+                                    if line.startswith(b"data: "):
+                                        data_json = json.loads(line[6:])
+                                        if data_json.get("usage"):
+                                            final_usage = data_json["usage"]
+                            except (json.JSONDecodeError, UnicodeDecodeError):
+                                pass
+                    else:
+                        continue
+                    break
                 
+                if buf and not done_received:
+                    self._write_chunk(buf)
+                    self.wfile.flush()
+                    sse_buffer.append(buf)
+
+                # chunked 终止块，立即通知客户端流结束
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+
+                logging.info(f"[DBG:{request_id[:8]}] A_loop_exited done_received={done_received} buf_remaining={len(buf)}")
+
                 duration_ms = int((time.time() - start) * 1000)
                 full_sse = b"".join(sse_buffer).decode("utf-8", errors="replace")[:5000]
                 logger = get_logger()
                 if logger:
                     logger.log_upstream_response(request_id, upstream_status, full_sse, duration_ms)
-                
-                if sse_buffer:
-                    last_chunk = sse_buffer[-1].decode("utf-8", errors="replace")
-                    import re
-                    # Brace-balanced usage extraction (handles nested JSON)
-                    usage_start = last_chunk.find('"usage"')
-                    if usage_start >= 0:
-                        colon_pos = last_chunk.find(':', usage_start)
-                        if colon_pos >= 0:
-                            brace_pos = last_chunk.find('{', colon_pos)
-                            if brace_pos >= 0:
-                                depth = 0
-                                end_pos = brace_pos
-                                for i in range(brace_pos, len(last_chunk)):
-                                    if last_chunk[i] == '{':
-                                        depth += 1
-                                    elif last_chunk[i] == '}':
-                                        depth -= 1
-                                        if depth == 0:
-                                            end_pos = i + 1
-                                            break
-                                if end_pos > brace_pos:
-                                    try:
-                                        final_usage = json.loads(last_chunk[brace_pos:end_pos])
-                                    except json.JSONDecodeError:
-                                        pass
-                    if final_usage:
-                        record_token_stats(final_usage, {
-                            "request_id": request_id,
-                            "agent": _extract_agent(self.headers.get("User-Agent", "")),
-                            "model": model_name,
-                            "target_model": target,
-                            "request_ts": request_ts,
-                            "duration_ms": duration_ms,
-                        })
-                    else:
-                        logging.warning("透传流式: 无法从 SSE 提取 usage，跳过 token_stats")
+
+                if final_usage:
+                    record_token_stats(final_usage, {
+                        "request_id": request_id,
+                        "agent": _extract_agent(self.headers.get("User-Agent", "")),
+                        "model": model_name,
+                        "target_model": target,
+                        "request_ts": request_ts,
+                        "duration_ms": duration_ms,
+                    })
+                else:
+                    logging.warning("透传流式: 无法从 SSE 提取 usage，跳过 token_stats")
+
+                # 主动关闭写端，立即向客户端发出 TCP FIN，不等 handle() 后处理链
+                logging.info(f"[DBG:{request_id[:8]}] B_shutdown_write")
+                self.close_connection = True
+                logging.info(f"[DBG:{request_id[:8]}] C_return")
                 return
                 
             except (socket.timeout, http.client.HTTPException, OSError) as e:
@@ -281,10 +327,12 @@ class PassThroughHandler(BaseHTTPRequestHandler):
                     except Exception: pass
     
     def _send_json(self, status, data):
+        body = json.dumps(data).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(json.dumps(data).encode("utf-8"))
+        self.wfile.write(body)
 
 def main():
     load_config()
