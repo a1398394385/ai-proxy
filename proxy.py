@@ -162,8 +162,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
         model_name = body.get("model", "*")
         model_cfg = resolve_model(model_name, proxy_type='codex')
         target = model_cfg["target"]
-        upstream_cfg = model_cfg.get("upstream")
-        if upstream_cfg is None:
+        upstream_cfg = model_cfg.get("upstream") or CONFIG.get("upstream", {})
+        if not upstream_cfg:
             logging.error(f"模型 {model_name} 无法解析上游配置")
             self._send_json(500, {"error": {"type": "internal_error", "message": "模型路由不可用"}})
             return
