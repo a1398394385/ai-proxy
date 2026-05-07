@@ -43,6 +43,25 @@ def _read_json(handler):
         return None
 
 
+def _reload_proxies():
+    try:
+        proxy_port = get_port("codex_proxy", 48743)
+        conn = http.client.HTTPConnection("127.0.0.1", proxy_port, timeout=2)
+        conn.request("POST", "/admin/reload")
+        conn.getresponse().read()
+        conn.close()
+    except Exception:
+        pass
+    try:
+        pt_port = get_port("pass_through", 48744)
+        conn = http.client.HTTPConnection("127.0.0.1", pt_port, timeout=2)
+        conn.request("POST", "/admin/reload")
+        conn.getresponse().read()
+        conn.close()
+    except Exception:
+        pass
+
+
 def _test_upstream_connectivity(upstream: dict) -> dict:
     """测试上游连通性：TCP + HTTP GET。"""
     parsed = urlparse(upstream["base_url"])
@@ -794,6 +813,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             try:
                 uid = db.add_upstream(data)
                 db.close()
+                _reload_proxies()
                 return json_response(self, {"id": uid, "message": "Created"}, 201)
             except sqlite3.IntegrityError as e:
                 db.close()
@@ -818,6 +838,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             try:
                 mid = db.add_model(data)
                 db.close()
+                _reload_proxies()
                 return json_response(self, {"id": mid, "message": "Created"}, 201)
             except sqlite3.IntegrityError as e:
                 db.close()
@@ -844,6 +865,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             try:
                 rid = db.add_route(data)
                 db.close()
+                _reload_proxies()
                 return json_response(self, {"id": rid, "message": "Created"}, 201)
             except (sqlite3.IntegrityError, ValueError) as e:
                 db.close()
@@ -944,6 +966,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             try:
                 db.update_upstream(m.group(1), data)
                 db.close()
+                _reload_proxies()
                 return json_response(self, {"message": "Updated"})
             except sqlite3.IntegrityError as e:
                 db.close()
@@ -958,6 +981,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             try:
                 db.update_model(int(m.group(1)), data)
                 db.close()
+                _reload_proxies()
                 return json_response(self, {"message": "Updated"})
             except sqlite3.IntegrityError as e:
                 db.close()
@@ -972,6 +996,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             try:
                 db.update_route(int(m.group(1)), data)
                 db.close()
+                _reload_proxies()
                 return json_response(self, {"message": "Updated"})
             except (sqlite3.IntegrityError, ValueError) as e:
                 db.close()
@@ -1026,6 +1051,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 }, 409)
             db.disable_upstream(uid)
             db.close()
+            _reload_proxies()
             return json_response(self, {"message": "Disabled"})
 
         m = re.match(r"/api/models/(\d+)$", parsed.path)
@@ -1036,6 +1062,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             db.close()
             if "error" in result:
                 return json_response(self, result, 409)
+            _reload_proxies()
             return json_response(self, {"message": "Deleted"})
 
         m = re.match(r"/api/routes/(\d+)$", parsed.path)
@@ -1057,6 +1084,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             try:
                 db.delete_route(rid)
                 db.close()
+                _reload_proxies()
                 return json_response(self, {"message": "Deleted"})
             except sqlite3.IntegrityError as e:
                 db.close()

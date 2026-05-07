@@ -122,23 +122,17 @@ function loadAllModelConfigTables() {
   loadUpstreamTable();
   if (wasOpen) {
     // Re-open the drawer by simulating a click on the matching row
-    const row = document.querySelector('#upstream-table tbody tr');
-    if (row) {
-      // Find the row that matches the previously open upstream
+    requestAnimationFrame(() => {
       const allRows = document.querySelectorAll('#upstream-table tbody tr');
       for (const r of allRows) {
         const badge = r.querySelector('.badge-blue');
         if (badge && badge.textContent === wasOpen) {
-          const td = r.querySelector('td[onclick*="toggleModelDrawer"]');
-          if (td) {
-            // Reconstruct the event and call toggleModelDrawer
-            const fakeEvent = { stopPropagation: () => {}, currentTarget: td };
-            toggleModelDrawer(fakeEvent, wasOpen);
-          }
+          const fakeEvent = { stopPropagation: () => {}, currentTarget: r };
+          toggleModelDrawer(fakeEvent, wasOpen);
           break;
         }
       }
-    }
+    });
   }
 }
 
@@ -189,7 +183,6 @@ async function saveUpstream(editId) {
   }
   closeModal();
   bus.emit('config:upstream-changed', {});
-  bus.emit('config:dirty', { source: 'upstream' });
   loadAllModelConfigTables();
 }
 
@@ -216,7 +209,6 @@ async function confirmDisableUpstream(id) {
     alert('❌ 无法禁用: ' + result.error + '\n\n被引用的路由: ' + (result.referenced_routes || []).join(', '));
   } else {
     bus.emit('config:upstream-changed', {});
-    bus.emit('config:dirty', { source: 'upstream' });
     loadAllModelConfigTables();
   }
 }
@@ -264,8 +256,11 @@ async function saveModel(editId) {
   }
   closeModal();
   bus.emit('config:model-changed', {});
-  bus.emit('config:dirty', { source: 'model' });
-  loadAllModelConfigTables();
+  if (openDrawerUpstreamId) {
+    loadModelTable(openDrawerUpstreamId);
+  } else {
+    loadAllModelConfigTables();
+  }
 }
 
 async function confirmDeleteModel(id, name) {
@@ -275,8 +270,11 @@ async function confirmDeleteModel(id, name) {
     alert('❌ 无法删除: ' + result.error + '\n\n被引用的路由: ' + (result.referenced_routes || []).join(', '));
   } else {
     bus.emit('config:model-changed', {});
-    bus.emit('config:dirty', { source: 'model' });
-    loadAllModelConfigTables();
+    if (openDrawerUpstreamId) {
+      loadModelTable(openDrawerUpstreamId);
+    } else {
+      loadAllModelConfigTables();
+    }
   }
 }
 
@@ -285,32 +283,6 @@ async function confirmDeleteModel(id, name) {
 async function loadUpstreamPage() {
   await refreshConfigStatus();
   loadUpstreamTable();
-}
-
-async function applyConfig() {
-  const btn = document.getElementById('apply-config-btn');
-  if (!btn) return;
-  btn.textContent = '⏳ 应用中...'; btn.disabled = true;
-  try {
-    const result = await api('/api/config/reload', { method: 'POST' });
-    const proxyOk = result.proxy && result.proxy.status === 'ok';
-    const ptOk = result.pass_through && result.pass_through.status === 'ok';
-    if (proxyOk) {
-      bus.emit('config:applied', { reloaded_at: result.proxy.reloaded_at });
-      btn.classList.remove('pulse-orange'); btn.textContent = '✅ 应用配置';
-      refreshConfigStatus();
-      const extra = ptOk ? '' : ' (pass_through 未响应)';
-      alert('配置已生效 (' + result.proxy.reloaded_at + ')' + extra);
-    } else {
-      const msg = result.proxy ? result.proxy.message : '重载失败';
-      alert('⚠️ ' + msg);
-      btn.textContent = '🔄 重试';
-    }
-  } catch (e) {
-    alert('⚠️ proxy 未运行，配置将在 TTL 过期后自动生效');
-    btn.textContent = '🔄 重试';
-  }
-  btn.disabled = false;
 }
 
 function initUpstreamPage() {
@@ -330,6 +302,4 @@ window.confirmDeleteModel = confirmDeleteModel;
 window.toggleModelDrawer = toggleModelDrawer;
 window.loadUpstreamPage = loadUpstreamPage;
 window.refreshConfigStatus = refreshConfigStatus;
-window.applyConfig = applyConfig;
-
-export { loadUpstreamPage, initUpstreamPage, refreshConfigStatus, applyConfig };
+export { loadUpstreamPage, initUpstreamPage, refreshConfigStatus };

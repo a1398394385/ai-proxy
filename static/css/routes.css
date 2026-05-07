@@ -1,30 +1,134 @@
-/* Proxy 路由 Tab 切换 */
-.proxy-tabs {
+/* ===== 路由映射页面 — 精致仪表盘风格 ===== */
+
+/* Proxy 类型切换 Tab */
+#page-routes .proxy-tabs {
   display: flex;
-  gap: 8px;
-  margin-bottom: 16px;
+  gap: 6px;
+  margin-bottom: 20px;
+  padding: 4px;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  box-shadow: 0 2px 12px -4px rgba(0, 0, 0, 0.2),
+              inset 0 1px 0 hsl(var(--foreground) / 0.02);
 }
 
-.proxy-tab {
-  padding: 6px 14px;
-  border-radius: calc(var(--radius) / 2);
-  border: 1px solid hsl(var(--border));
+#page-routes .proxy-tab {
+  padding: 8px 18px;
+  border-radius: calc(var(--radius) - 2px);
+  border: none;
   background: transparent;
   color: hsl(var(--muted-foreground));
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.2s ease;
+  position: relative;
 }
 
-.proxy-tab:hover {
+#page-routes .proxy-tab:hover {
   color: hsl(var(--foreground));
-  background: hsl(var(--muted));
-  border-color: hsl(var(--primary) / 0.3);
+  background: hsl(var(--muted) / 0.5);
 }
 
-.proxy-tab.active {
-  background: hsl(var(--primary));
-  color: hsl(var(--primary-foreground));
-  border-color: hsl(var(--primary));
+#page-routes .proxy-tab.active {
+  background: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(220 80% 48%) 100%);
+  color: white;
+  box-shadow: 0 2px 8px hsl(var(--primary) / 0.3);
+}
+
+/* 路由表格卡片 */
+#page-routes .table-card {
+  background: linear-gradient(160deg, hsl(var(--card)) 0%, hsl(var(--secondary) / 0.6) 100%);
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  box-shadow: 0 4px 24px -4px rgba(0, 0, 0, 0.25),
+              0 0 0 1px hsl(var(--foreground) / 0.02);
+  overflow: hidden;
+  position: relative;
+}
+
+#page-routes .table-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, hsl(var(--purple) / 0.4) 50%, transparent 100%);
+}
+
+/* 表头区域 */
+#page-routes .table-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-bottom: 1px solid hsl(var(--border) / 0.6);
+  background: linear-gradient(180deg, hsl(var(--foreground) / 0.02) 0%, transparent 100%);
+}
+
+#page-routes .table-title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: hsl(var(--foreground));
+}
+
+/* 表格 */
+#page-routes table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+
+#page-routes th {
+  text-align: left;
+  padding: 12px 20px;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--secondary) / 0.5);
+  border-bottom: 1px solid hsl(var(--border) / 0.8);
+}
+
+#page-routes td {
+  padding: 14px 20px;
+  border-bottom: 1px solid hsl(var(--border) / 0.4);
+  color: hsl(var(--foreground));
+  transition: background 0.2s ease;
+}
+
+#page-routes tbody tr:hover td {
+  background: hsl(var(--primary) / 0.05);
+}
+
+#page-routes tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* fallback 行高亮 */
+#page-routes tbody tr[style*="primary"] td {
+  border-left: 2px solid hsl(var(--primary) / 0.3);
+}
+
+/* 滚动条 */
+#page-routes .table-scroll::-webkit-scrollbar {
+  height: 4px;
+}
+
+#page-routes .table-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#page-routes .table-scroll::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 2px;
+}
+
+#page-routes .table-scroll::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground));
 }

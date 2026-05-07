@@ -17,15 +17,6 @@ initFactPage();
 initTokenPage();
 initUpstreamPage(); initRoutePage();
 
-bus.on('config:dirty', () => {
-  const btn = document.getElementById('apply-config-btn');
-  if (btn) { btn.classList.add('pulse-orange'); btn.textContent = '⚠️ 应用配置'; }
-});
-bus.on('config:applied', () => {
-  const btn = document.getElementById('apply-config-btn');
-  if (btn) { btn.classList.remove('pulse-orange'); btn.textContent = '✅ 应用配置'; }
-});
-
 bus.on('config:upstream-changed', () => { window.refreshUpstreamDropdown?.(); window.refreshConfigStatus?.(); });
 bus.on('config:model-changed', () => { window.refreshConfigStatus?.(); });
 bus.on('config:route-changed', () => { window.refreshConfigStatus?.(); });
@@ -38,9 +29,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const settingsBtn = document.getElementById('settings-btn');
   if (settingsBtn) settingsBtn.addEventListener('click', showSettings);
-
-  const applyBtn = document.getElementById('apply-config-btn');
-  if (applyBtn) applyBtn.addEventListener('click', () => window.applyConfig?.());
 
   document.querySelectorAll('.nav-tab').forEach(tab => {
     tab.addEventListener('click', () => {

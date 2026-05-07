@@ -55,19 +55,43 @@ async function showRouteModal(editId) {
     .map(pt => `<option value="${pt}" ${data.proxy_type === pt ? 'selected' : ''}>${pt}</option>`)
     .join('');
   showModal(title,
-    `<div class="form-group"><label class="form-label">源模型名</label><input type="text" class="form-input" id="r-source" value="${escHtml(data.source)}" placeholder="如 gpt-4o 或 * (fallback)"></div>
+    `<div class="form-group"><label class="form-label">源模型名</label><input type="text" class="form-input" id="r-source" value="${escHtml(data.source)}" placeholder="如 gpt-4o"></div>
      <div class="form-group"><label class="form-label">目标模型</label><select class="form-input" id="r-target">${modelOpts}</select></div>
-     <div class="form-group"><label class="form-label">Proxy 类型</label><select class="form-input" id="r-proxy">${proxyTypeOptions}</select></div>`,
+     <input type="hidden" id="r-proxy" value="${escHtml(data.proxy_type)}">`,
     `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveRoute(${editId || 0})">保存</button>`);
 }
 
-async function saveRoute(editId) {
+async function showFallbackModal() {
+  const data = { source: '*', target_model_id: '', proxy_type: currentProxyType };
+  const title = '新增回退路由';
+  const models = await api('/api/models');
+  const byUpstream = {};
+  models.models.forEach(m => {
+    if (!byUpstream[m.upstream_name]) byUpstream[m.upstream_name] = [];
+    byUpstream[m.upstream_name].push(m);
+  });
+  let modelOpts = '';
+  for (const [upstream, mlist] of Object.entries(byUpstream)) {
+    modelOpts += '<optgroup label="' + escHtml(upstream) + '">';
+    mlist.forEach(m => { modelOpts += '<option value="' + m.id + '">' + escHtml(m.name) + '</option>'; });
+    modelOpts += '</optgroup>';
+  }
+  showModal(title,
+    `<div class="form-group"><label class="form-label">源模型名</label><input type="text" class="form-input" value="* (fallback)" readonly style="background:hsl(var(--muted));color:hsl(var(--muted-foreground));cursor:not-allowed"></div>
+     <input type="hidden" id="r-source" value="*">
+     <div class="form-group"><label class="form-label">目标模型</label><select class="form-input" id="r-target">${modelOpts}</select></div>
+     <input type="hidden" id="r-proxy" value="${escHtml(data.proxy_type)}">`,
+    `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveRoute(0, true)">保存</button>`);
+}
+
+async function saveRoute(editId, allowFallback = false) {
   const data = {
     source: document.getElementById('r-source').value.trim(),
     target_model_id: parseInt(document.getElementById('r-target').value),
     proxy_type: document.getElementById('r-proxy').value,
   };
   if (!data.source) { alert('源模型名不能为空'); return; }
+  if (!editId && data.source === '*' && !allowFallback) { alert('❌ 不能通过此按钮添加回退路由，请使用「新增回退路由」按钮'); return; }
   if (editId) {
     await api('/api/routes/' + editId, { method: 'PUT', body: JSON.stringify(data) });
   } else {
@@ -75,7 +99,6 @@ async function saveRoute(editId) {
   }
   closeModal();
   bus.emit('config:route-changed', {});
-  bus.emit('config:dirty', { source: 'route' });
   loadRouteTable(currentProxyType);
 }
 
@@ -88,7 +111,7 @@ async function confirmDeleteRoute(id, source) {
   if (!confirm('确认删除路由 "' + source + '"？')) return;
   const result = await api('/api/routes/' + id, { method: 'DELETE' });
   if (result.error) { alert('❌ ' + result.error); }
-  else { bus.emit('config:route-changed', {}); bus.emit('config:dirty', { source: 'route' }); loadRouteTable(currentProxyType); }
+  else { bus.emit('config:route-changed', {}); loadRouteTable(currentProxyType); }
 }
 
 // ===== Page Loader =====
@@ -102,7 +125,10 @@ async function loadRoutePage() {
     <div class="table-card" style="margin-bottom:20px">
       <div class="table-header">
         <span class="table-title">🔀 路由映射</span>
-        <button class="btn btn-primary btn-sm" onclick="showRouteModal()">+ 新增路由</button>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-primary btn-sm" onclick="showRouteModal()">+ 新增路由</button>
+          <button class="btn btn-secondary btn-sm" onclick="showFallbackModal()">+ 新增回退路由</button>
+        </div>
       </div>
       <div class="table-scroll">
         <table id="route-table">
@@ -119,11 +145,12 @@ function initRoutePage() {
 }
 
 // ===== Exports =====
-export { loadRoutePage, initRoutePage, loadRouteTable, showRouteModal, saveRoute, confirmDeleteRoute, switchProxyType };
+export { loadRoutePage, initRoutePage, loadRouteTable, showRouteModal, showFallbackModal, saveRoute, confirmDeleteRoute, switchProxyType };
 
 // ===== Global Scope Mounting =====
 window.switchProxyType = switchProxyType;
 window.showRouteModal = showRouteModal;
+window.showFallbackModal = showFallbackModal;
 window.saveRoute = saveRoute;
 window.confirmDeleteRoute = confirmDeleteRoute;
 window.loadRoutePage = loadRoutePage;
