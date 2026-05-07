@@ -29,12 +29,17 @@ class RequestLogger:
                     model       TEXT,
                     target_model TEXT,
                     status_code INTEGER,
+                    proxy_type  TEXT,
                     data        TEXT,
                     created_at  TEXT NOT NULL
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_debug_request_id ON debug_log(request_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_debug_created_at ON debug_log(created_at)")
+            try:
+                conn.execute("ALTER TABLE debug_log ADD COLUMN proxy_type TEXT")
+            except Exception:
+                pass  # 列已存在
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS token_stats (
@@ -69,7 +74,7 @@ class RequestLogger:
     def close(self):
         pass
 
-    def log_raw_request(self, request_id: str, model: str, target: str, body: str | dict):
+    def log_raw_request(self, request_id: str, model: str, target: str, body: str | dict, proxy_type: str = None):
         """阶段 1：记录 agent 原始请求。"""
         try:
             conn = self._get_conn()
@@ -77,9 +82,9 @@ class RequestLogger:
                 data = body if isinstance(body, str) else json.dumps(body)
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn.execute(
-                    "INSERT INTO debug_log (request_id, stage, model, target_model, data, created_at) "
-                    "VALUES (?, 'raw_request', ?, ?, ?, ?)",
-                    (request_id, model, target, data, now),
+                    "INSERT INTO debug_log (request_id, stage, model, target_model, proxy_type, data, created_at) "
+                    "VALUES (?, 'raw_request', ?, ?, ?, ?, ?)",
+                    (request_id, model, target, proxy_type, data, now),
                 )
                 conn.commit()
             finally:
@@ -87,7 +92,7 @@ class RequestLogger:
         except Exception as e:
             logging.warning(f"日志写入失败 (raw_request): {e}")
 
-    def log_converted_request(self, request_id: str, model: str, target: str, body: dict):
+    def log_converted_request(self, request_id: str, model: str, target: str, body: dict, proxy_type: str = None):
         """阶段 2：记录 proxy 转换后的请求。"""
         try:
             conn = self._get_conn()
@@ -95,9 +100,9 @@ class RequestLogger:
                 data = json.dumps(body)
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn.execute(
-                    "INSERT INTO debug_log (request_id, stage, model, target_model, data, created_at) "
-                    "VALUES (?, 'converted_request', ?, ?, ?, ?)",
-                    (request_id, model, target, data, now),
+                    "INSERT INTO debug_log (request_id, stage, model, target_model, proxy_type, data, created_at) "
+                    "VALUES (?, 'converted_request', ?, ?, ?, ?, ?)",
+                    (request_id, model, target, proxy_type, data, now),
                 )
                 conn.commit()
             finally:
@@ -105,7 +110,7 @@ class RequestLogger:
         except Exception as e:
             logging.warning(f"日志写入失败 (converted_request): {e}")
 
-    def log_upstream_response(self, request_id: str, status_code: int, body: str | dict, duration_ms: int):
+    def log_upstream_response(self, request_id: str, status_code: int, body: str | dict, duration_ms: int, proxy_type: str = None):
         """阶段 3：记录上游原始响应。"""
         try:
             conn = self._get_conn()
@@ -113,9 +118,9 @@ class RequestLogger:
                 data = body if isinstance(body, str) else json.dumps(body)
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn.execute(
-                    "INSERT INTO debug_log (request_id, stage, status_code, data, created_at) "
-                    "VALUES (?, 'upstream_response', ?, ?, ?)",
-                    (request_id, status_code, data, now),
+                    "INSERT INTO debug_log (request_id, stage, status_code, proxy_type, data, created_at) "
+                    "VALUES (?, 'upstream_response', ?, ?, ?, ?)",
+                    (request_id, status_code, proxy_type, data, now),
                 )
                 conn.commit()
             finally:
@@ -123,7 +128,7 @@ class RequestLogger:
         except Exception as e:
             logging.warning(f"日志写入失败 (upstream_response): {e}")
 
-    def log_converted_response(self, request_id: str, model: str, target: str, body: dict):
+    def log_converted_response(self, request_id: str, model: str, target: str, body: dict, proxy_type: str = None):
         """阶段 4：记录 proxy 转换后的响应。"""
         try:
             conn = self._get_conn()
@@ -131,9 +136,9 @@ class RequestLogger:
                 data = json.dumps(body)
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn.execute(
-                    "INSERT INTO debug_log (request_id, stage, model, target_model, data, created_at) "
-                    "VALUES (?, 'converted_response', ?, ?, ?, ?)",
-                    (request_id, model, target, data, now),
+                    "INSERT INTO debug_log (request_id, stage, model, target_model, proxy_type, data, created_at) "
+                    "VALUES (?, 'converted_response', ?, ?, ?, ?, ?)",
+                    (request_id, model, target, proxy_type, data, now),
                 )
                 conn.commit()
             finally:

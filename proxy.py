@@ -174,7 +174,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         # 阶段 1：记录原始请求
         logger = get_logger()
         if logger:
-            logger.log_raw_request(request_id, model_name, target, body)
+            logger.log_raw_request(request_id, model_name, target, body, proxy_type='codex')
 
         # 转换请求体
         try:
@@ -182,13 +182,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
         except Exception as e:
             logging.exception("responses_to_chat 转换失败")
             if logger:
-                logger.log_converted_request(request_id, model_name, target, {"error": str(e)})
+                logger.log_converted_request(request_id, model_name, target, {"error": str(e)}, proxy_type='codex')
             self._send_json(500, {"error": {"type": "internal_error", "message": str(e)}})
             return
 
         # 阶段 2：记录转换后的请求
         if logger:
-            logger.log_converted_request(request_id, model_name, target, chat_body)
+            logger.log_converted_request(request_id, model_name, target, chat_body, proxy_type='codex')
 
         # previous_response_id：从 store 读取历史 conversation 并注入到本轮 messages
         prev_id = body.get("previous_response_id")
@@ -209,11 +209,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
         store_enabled = body.get("store", True)
         if is_stream:
             self._forward_streaming(chat_body, model_cfg, request_id, model_name, target, request_ts,
-                                    store_enabled=store_enabled, upstream_cfg=upstream_cfg)
+                                    store_enabled=store_enabled, upstream_cfg=upstream_cfg,
+                                    proxy_type='codex')
         else:
             self._forward_non_streaming(chat_body, request_id, model_name, target, request_ts,
                                         store_enabled=store_enabled, is_responses_api=True,
-                                        upstream_cfg=upstream_cfg)
+                                        upstream_cfg=upstream_cfg, proxy_type='codex')
 
     def _handle_messages(self):
         """核心：Anthropic Messages → Chat → Anthropic Messages 转换。"""
@@ -238,7 +239,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         logger = get_logger()
         if logger:
-            logger.log_raw_request(request_id, model_name, target, body)
+            logger.log_raw_request(request_id, model_name, target, body, proxy_type='claude')
 
         # 请求转换
         try:
@@ -246,12 +247,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
         except Exception as e:
             logging.exception("anthropic_to_chat 转换失败")
             if logger:
-                logger.log_converted_request(request_id, model_name, target, {"error": str(e)})
+                logger.log_converted_request(request_id, model_name, target, {"error": str(e)}, proxy_type='claude')
             self._send_json(500, {"error": {"type": "internal_error", "message": str(e)}})
             return
 
         if logger:
-            logger.log_converted_request(request_id, model_name, target, chat_body)
+            logger.log_converted_request(request_id, model_name, target, chat_body, proxy_type='claude')
 
         # 转发（response_converter 始终为 chat_to_anthropic，store_enabled=False 防止 kwargs 注入给 create_anthropic_sse_stream）
         upstream_cfg = model_cfg.get("upstream") or CONFIG.get("upstream", {})
@@ -259,13 +260,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._forward_streaming(chat_body, model_cfg, request_id, model_name, target, request_ts,
                                     response_converter=chat_to_anthropic,
                                     sse_stream_factory=create_anthropic_sse_stream,
-                                    store_enabled=False, upstream_cfg=upstream_cfg)
+                                    store_enabled=False, upstream_cfg=upstream_cfg,
+                                    proxy_type='claude')
         else:
             self._forward_non_streaming(chat_body, request_id, model_name, target, request_ts,
                                         response_converter=chat_to_anthropic,
-                                        upstream_cfg=upstream_cfg)
+                                        upstream_cfg=upstream_cfg, proxy_type='claude')
 
-    def _forward_non_streaming(self, chat_body: dict, request_id: str, model: str, target: str, request_ts: str, response_converter=None, store_enabled: bool = True, is_responses_api: bool = False, upstream_cfg: dict = None):
+    def _forward_non_streaming(self, chat_body: dict, request_id: str, model: str, target: str, request_ts: str, response_converter=None, store_enabled: bool = True, is_responses_api: bool = False, upstream_cfg: dict = None, proxy_type: str = None):
         """非流式：转发到上游，转换响应，返回。
 
         response_converter: callable, chat_response -> format_response
@@ -319,7 +321,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 if resp.status != 200:
                     logger = get_logger()
                     if logger:
-                        logger.log_upstream_response(request_id, resp.status, resp_body.decode("utf-8", errors="replace"), duration_ms)
+                        logger.log_upstream_response(request_id, resp.status, resp_body.decode("utf-8", errors="replace"), duration_ms, proxy_type=proxy_type)
                     self.send_response(resp.status)
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
@@ -334,13 +336,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
                 logger = get_logger()
                 if logger:
-                    logger.log_upstream_response(request_id, resp.status, chat_response, duration_ms)
+                    logger.log_upstream_response(request_id, resp.status, chat_response, duration_ms, proxy_type=proxy_type)
 
                 # 阶段 4 + 5：转换响应 + Token 统计
                 try:
                     responses_response = response_converter(chat_response)
                     if logger:
-                        logger.log_converted_response(request_id, model, target, responses_response)
+                        logger.log_converted_response(request_id, model, target, responses_response, proxy_type=proxy_type)
 
                         usage = chat_response.get("usage", {})
                         if usage:
@@ -355,7 +357,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 except Exception as e:
                     logging.exception("chat_to_responses 转换失败")
                     if logger:
-                        logger.log_converted_response(request_id, model, target, {"error": str(e)})
+                        logger.log_converted_response(request_id, model, target, {"error": str(e)}, proxy_type=proxy_type)
                     self._send_json(500, {"error": {"type": "internal_error", "message": str(e)}})
                     return
 
@@ -386,7 +388,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
 
-    def _forward_streaming(self, chat_body: dict, model_cfg: dict, request_id: str, model: str, target: str, request_ts: str, response_converter=None, sse_stream_factory=None, store_enabled: bool = True, upstream_cfg: dict = None):
+    def _forward_streaming(self, chat_body: dict, model_cfg: dict, request_id: str, model: str, target: str, request_ts: str, response_converter=None, sse_stream_factory=None, store_enabled: bool = True, upstream_cfg: dict = None, proxy_type: str = None):
         """流式：直连上游 SSE，通过 sse_stream_factory 转换后逐事件返回。
 
         response_converter: callable（本函数内用于 token_stats 的 context，不直接调用）
@@ -477,7 +479,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         pass
                     logger = get_logger()
                     if logger:
-                        logger.log_upstream_response(request_id, resp.status, resp.read().decode("utf-8", errors="replace"), 0)
+                        logger.log_upstream_response(request_id, resp.status, resp.read().decode("utf-8", errors="replace"), 0, proxy_type=proxy_type)
                     return
 
                 if "text/event-stream" not in ct:
@@ -520,7 +522,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         pass
                     logger = get_logger()
                     if logger:
-                        logger.log_upstream_response(request_id, upstream_status, resp.read().decode("utf-8", errors="replace"), 0)
+                        logger.log_upstream_response(request_id, upstream_status, resp.read().decode("utf-8", errors="replace"), 0, proxy_type=proxy_type)
                     return
 
                 # 核心：通过 sse_stream_factory 逐事件转换并发送
@@ -589,7 +591,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 if logger:
                     logger.log_upstream_response(request_id, upstream_status,
                         json.dumps({"error": {"type": "server_error", "message": str(e)}}),
-                        int((time.time() - start) * 1000))
+                        int((time.time() - start) * 1000), proxy_type=proxy_type)
 
             duration_ms = int((time.time() - start) * 1000)
             full_sse = "".join(sse_buffer)
@@ -601,8 +603,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
             logger = get_logger()
             if logger:
-                logger.log_upstream_response(request_id, upstream_status, full_sse, duration_ms)
-                logger.log_converted_response(request_id, model, target, {"streaming": True, "note": "SSE 流式响应，无 converted_response"})
+                logger.log_upstream_response(request_id, upstream_status, full_sse, duration_ms, proxy_type=proxy_type)
+                logger.log_converted_response(request_id, model, target, {"streaming": True, "note": "SSE 流式响应，无 converted_response"}, proxy_type=proxy_type)
                 agent = _extract_agent(self.headers.get("User-Agent", ""))
                 if final_usage:
                     record_token_stats(final_usage, {

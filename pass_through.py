@@ -81,7 +81,8 @@ class PassThroughHandler(BaseHTTPRequestHandler):
         if logger:
             log_body = body_raw.decode("utf-8", errors="replace")[:5000] if body_raw else "(empty)"
             logger.log_raw_request(request_id, model_name, target,
-                {"method": self.command, "path": self.path, "forward_path": forward_path, "body": log_body})
+                {"method": self.command, "path": self.path, "forward_path": forward_path, "body": log_body},
+                proxy_type='pass_through')
         
         if is_stream:
             self._forward_pass_through_streaming(body_raw, request_id, model_name, target, request_ts, upstream_cfg, forward_path)
@@ -126,7 +127,7 @@ class PassThroughHandler(BaseHTTPRequestHandler):
                 logger = get_logger()
                 if logger:
                     log_data = resp_body.decode("utf-8", errors="replace")[:5000]
-                    logger.log_upstream_response(request_id, resp.status, log_data, duration_ms)
+                    logger.log_upstream_response(request_id, resp.status, log_data, duration_ms, proxy_type='pass_through')
                 
                 if resp.status == 200:
                     try:
@@ -218,7 +219,7 @@ class PassThroughHandler(BaseHTTPRequestHandler):
                     logger = get_logger()
                     if logger:
                         logger.log_upstream_response(request_id, upstream_status,
-                            error_body.decode("utf-8", errors="replace")[:5000], 0)
+                            error_body.decode("utf-8", errors="replace")[:5000], 0, proxy_type='pass_through')
                     return
 
                 buf = b""
@@ -275,7 +276,7 @@ class PassThroughHandler(BaseHTTPRequestHandler):
                 full_sse = b"".join(sse_buffer).decode("utf-8", errors="replace")[:5000]
                 logger = get_logger()
                 if logger:
-                    logger.log_upstream_response(request_id, upstream_status, full_sse, duration_ms)
+                    logger.log_upstream_response(request_id, upstream_status, full_sse, duration_ms, proxy_type='pass_through')
 
                 if final_usage:
                     record_token_stats(final_usage, {
@@ -302,7 +303,7 @@ class PassThroughHandler(BaseHTTPRequestHandler):
                 logger = get_logger()
                 if logger:
                     logger.log_upstream_response(request_id, 0,
-                        json.dumps({"error": str(e)}), int((time.time() - start) * 1000))
+                        json.dumps({"error": str(e)}), int((time.time() - start) * 1000), proxy_type='pass_through')
                 try:
                     self.wfile.write(f"data: {{\"error\":\"{str(e)}\"}}\n\n".encode("utf-8"))
                     self.wfile.flush()
@@ -314,7 +315,7 @@ class PassThroughHandler(BaseHTTPRequestHandler):
                 logger = get_logger()
                 if logger:
                     logger.log_upstream_response(request_id, upstream_status or 0,
-                        json.dumps({"error": str(e)}), int((time.time() - start) * 1000))
+                        json.dumps({"error": str(e)}), int((time.time() - start) * 1000), proxy_type='pass_through')
                 try:
                     self.wfile.write(f"data: {{\"error\":\"{str(e)}\"}}\n\n".encode("utf-8"))
                     self.wfile.flush()
