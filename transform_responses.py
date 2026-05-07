@@ -258,6 +258,15 @@ def chat_to_responses(response: dict) -> dict:
 
     output = []
 
+    # reasoning_content（DeepSeek thinking mode）— 必须在 message 之前插入
+    reasoning_content = message.get("reasoning_content") or message.get("thinking")
+    if reasoning_content:
+        output.append({
+            "type": "reasoning",
+            "id": f"rs_{uuid.uuid4().hex[:8]}",
+            "summary": [{"type": "summary_text", "text": reasoning_content}],
+        })
+
     # 文本和拒绝内容合并到同一 message item
     content = message.get("content")
     refusal = message.get("refusal")
@@ -857,16 +866,22 @@ def create_codex_sse_stream(upstream_response, request_messages: list = None, re
 def output_items_to_messages(output_items: list) -> list:
     """将 Responses API output items 反转为 Chat Messages 格式（用于 conversation 历史）。
 
+    - type=reasoning: 收集 summary 文本，注入到下一条 assistant message 的 reasoning_content 字段
     - type=message: 取第一个 output_text block 的 text；纯拒绝时 fallback ""
     - type=function_call: 全部收集后合并为单条 tool_calls 消息
-    - type=reasoning: 跳过
     """
     result = []
     tool_calls = []
+    pending_reasoning = None
 
     for item in output_items:
         itype = item.get("type")
-        if itype == "message":
+        if itype == "reasoning":
+            summary = item.get("summary", [])
+            text = "".join(s.get("text", "") for s in summary if s.get("type") == "summary_text")
+            if text:
+                pending_reasoning = text
+        elif itype == "message":
             # 先 flush 积累的 tool_calls
             if tool_calls:
                 result.append({"role": "assistant", "content": None, "tool_calls": tool_calls})
@@ -875,7 +890,11 @@ def output_items_to_messages(output_items: list) -> list:
                 (b["text"] for b in item.get("content", []) if b.get("type") == "output_text"),
                 "",
             )
-            result.append({"role": "assistant", "content": text})
+            msg = {"role": "assistant", "content": text}
+            if pending_reasoning:
+                msg["reasoning_content"] = pending_reasoning
+                pending_reasoning = None
+            result.append(msg)
         elif itype == "function_call":
             tool_calls.append({
                 "id": item.get("call_id", item.get("id", "")),
@@ -885,7 +904,6 @@ def output_items_to_messages(output_items: list) -> list:
                     "arguments": item.get("arguments", ""),
                 },
             })
-        # reasoning: 跳过
 
     if tool_calls:
         result.append({"role": "assistant", "content": None, "tool_calls": tool_calls})
