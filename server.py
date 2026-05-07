@@ -11,7 +11,7 @@ import http.client
 import socket
 from datetime import datetime, timedelta
 from http.server import HTTPServer, SimpleHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 from pathlib import Path
 
 from config_manager import ConfigDB, Migrations
@@ -20,6 +20,7 @@ from common import get_port, get_host, load_config, CONFIG, CONFIG_PATH
 # 配置
 DB_PATH = os.path.expanduser("~/.hermes/memory_store.db")
 CONFIG_DB_PATH = Path(os.path.expanduser("~/.hermes/config.db"))
+ACCESS_LOG_DB_PATH = Path("data/access_log.db")
 
 
 def get_config_db():
@@ -82,7 +83,7 @@ def _test_upstream_connectivity(upstream: dict) -> dict:
     finally:
         sock.close()
 
-    http_path = parsed.path.rstrip("/") + "/" if parsed.path else "/"
+    http_path = path.rstrip("/") + "/" if path else "/"
     start = time.time()
     conn = http.client.HTTPConnection(host, port, timeout=5)
     try:
@@ -600,7 +601,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        path = parsed.path
+        path = unquote(parsed.path)
         qs = parse_qs(parsed.query)
 
         # ===== 模型配置 API =====
@@ -797,15 +798,16 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        path = unquote(parsed.path)
         # ===== 模型配置 API =====
-        if parsed.path == "/api/migrate":
+        if path == "/api/migrate":
             try:
                 result = Migrations(Path.home() / ".hermes" / "config.db").migrate()
                 return json_response(self, result)
             except Exception as e:
                 return json_response(self, {"error": str(e)}, 500)
 
-        if parsed.path == "/api/upstreams":
+        if path == "/api/upstreams":
             data = _read_json(self)
             if not data:
                 return
@@ -819,7 +821,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 db.close()
                 return json_response(self, {"error": str(e)}, 409)
 
-        test_m = re.match(r"/api/upstreams/([^/]+)/test$", parsed.path)
+        test_m = re.match(r"/api/upstreams/([^/]+)/test$", path)
         if test_m:
             uid = test_m.group(1)
             db = get_config_db()
@@ -830,7 +832,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             result = _test_upstream_connectivity(u)
             return json_response(self, result)
 
-        if parsed.path == "/api/models":
+        if path == "/api/models":
             data = _read_json(self)
             if not data:
                 return
@@ -844,7 +846,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 db.close()
                 return json_response(self, {"error": str(e)}, 409)
 
-        if parsed.path == "/api/routes":
+        if path == "/api/routes":
             data = _read_json(self)
             if not data:
                 return
@@ -871,7 +873,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 db.close()
                 return json_response(self, {"error": str(e)}, 409)
 
-        if parsed.path == "/api/config/reload":
+        if path == "/api/config/reload":
             result = {}
             # Reload codex proxy
             try:
@@ -898,7 +900,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             return json_response(self, result)
 
         # ===== Fact Store API =====
-        if parsed.path == "/api/facts":
+        if path == "/api/facts":
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)
             try:
@@ -936,8 +938,8 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 conn.close()
                 return json_response(self, {"error": str(e)}, 409)
 
-        if re.match(r"/api/facts/\d+/feedback", parsed.path):
-            fact_id = int(parsed.path.split("/")[-2])
+        if re.match(r"/api/facts/\d+/feedback", path):
+            fact_id = int(path.split("/")[-2])
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)
             data = json.loads(body)
@@ -956,8 +958,9 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
 
     def do_PUT(self):
         parsed = urlparse(self.path)
+        path = unquote(parsed.path)
         # ===== 模型配置 API =====
-        m = re.match(r"/api/upstreams/([^/]+)$", parsed.path)
+        m = re.match(r"/api/upstreams/([^/]+)$", path)
         if m:
             data = _read_json(self)
             if not data:
@@ -972,7 +975,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 db.close()
                 return json_response(self, {"error": str(e)}, 409)
 
-        m = re.match(r"/api/models/(\d+)$", parsed.path)
+        m = re.match(r"/api/models/(\d+)$", path)
         if m:
             data = _read_json(self)
             if not data:
@@ -987,7 +990,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 db.close()
                 return json_response(self, {"error": str(e)}, 409)
 
-        m = re.match(r"/api/routes/(\d+)$", parsed.path)
+        m = re.match(r"/api/routes/(\d+)$", path)
         if m:
             data = _read_json(self)
             if not data:
@@ -1003,7 +1006,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 return json_response(self, {"error": str(e)}, 409)
 
         # ===== Fact Store API =====
-        m = re.match(r"/api/facts/(\d+)$", parsed.path)
+        m = re.match(r"/api/facts/(\d+)$", path)
         if m:
             fact_id = int(m.group(1))
             length = int(self.headers.get("Content-Length", 0))
@@ -1033,8 +1036,9 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self):
         parsed = urlparse(self.path)
+        path = unquote(parsed.path)
         # ===== 模型配置 API =====
-        m = re.match(r"/api/upstreams/([^/]+)$", parsed.path)
+        m = re.match(r"/api/upstreams/([^/]+)$", path)
         if m:
             uid = m.group(1)
             db = get_config_db()
@@ -1054,7 +1058,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             _reload_proxies()
             return json_response(self, {"message": "Disabled"})
 
-        m = re.match(r"/api/models/(\d+)$", parsed.path)
+        m = re.match(r"/api/models/(\d+)$", path)
         if m:
             mid = int(m.group(1))
             db = get_config_db()
@@ -1065,7 +1069,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             _reload_proxies()
             return json_response(self, {"message": "Deleted"})
 
-        m = re.match(r"/api/routes/(\d+)$", parsed.path)
+        m = re.match(r"/api/routes/(\d+)$", path)
         if m:
             rid = int(m.group(1))
             db = get_config_db()
@@ -1091,7 +1095,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 return json_response(self, {"error": str(e)}, 409)
 
         # ===== Fact Store API =====
-        m = re.match(r"/api/facts/(\d+)$", parsed.path)
+        m = re.match(r"/api/facts/(\d+)$", path)
         if m:
             fact_id = int(m.group(1))
             conn = get_db()
