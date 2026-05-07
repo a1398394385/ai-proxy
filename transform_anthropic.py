@@ -306,6 +306,7 @@ class AnthropicStreamState:
     finish_reason: str = ""
     usage: dict = field(default_factory=dict)
     message_start_sent: bool = False
+    message_delta_sent: bool = False  # 防止重复发送 message_delta
     open_blocks: set = field(default_factory=set)  # 未关闭的 content block 索引
 
 
@@ -354,11 +355,11 @@ def create_anthropic_sse_stream(upstream_response):
             if "usage" in data and data["usage"]:
                 state.usage = data["usage"]
 
-            # 捕获 finish_reason
+            # 捕获 finish_reason（独立于 delta，防止最后一个 chunk 有 finish_reason 但 delta 为空）
             choices = data.get("choices", [])
             if choices:
                 choice = choices[0]
-                if choice.get("finish_reason"):
+                if choice.get("finish_reason") and not state.finish_reason:
                     state.finish_reason = choice["finish_reason"]
 
                 delta = choice.get("delta", {})
@@ -375,6 +376,30 @@ def create_anthropic_sse_stream(upstream_response):
         }
         yield _format_sse_event("error", error_data)
         return
+
+    # finish_reason 出现但 delta 为空时，_process_anthropic_delta 不会被调用，
+    # 需要在此补发 message_delta 以携带 usage 和 stop_reason
+    if state.finish_reason and not state.message_delta_sent:
+        state.message_delta_sent = True
+        events = _close_open_blocks(state)
+        for event_str in events:
+            yield event_str
+
+        stop_reason = _STREAM_FINISH_MAP.get(state.finish_reason, "end_turn")
+        delta_event = {
+            "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+        }
+        if state.usage:
+            usage_out = {
+                "input_tokens": state.usage.get("prompt_tokens", 0),
+                "output_tokens": state.usage.get("completion_tokens", 0),
+            }
+            cached = state.usage.get("prompt_tokens_details", {}).get("cached_tokens")
+            if cached is not None:
+                usage_out["cache_read_input_tokens"] = cached
+            delta_event["usage"] = usage_out
+
+        yield _format_sse_event("message_delta", delta_event)
 
     # 读完所有 chunk，发送 message_stop
     yield _format_sse_event("message_stop", {})
@@ -486,7 +511,8 @@ def _process_anthropic_delta(delta: dict, state: AnthropicStreamState) -> list:
                 }))
 
     # finish_reason → message_delta
-    if state.finish_reason:
+    if state.finish_reason and not state.message_delta_sent:
+        state.message_delta_sent = True
         events.extend(_close_open_blocks(state))
 
         stop_reason = _STREAM_FINISH_MAP.get(state.finish_reason, "end_turn")
