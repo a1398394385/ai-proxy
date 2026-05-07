@@ -11,6 +11,9 @@ __pycache__/
 # Sisyphus planner state
 .sisyphus/
 
+# VSCode local state
+.vscode/
+
 # OMC state
 .omc/
 
@@ -21,7 +24,7 @@ __pycache__/
 .claude/
 
 # Working docs
-docs/superpowers/
+docs/
 task_plan.md
 progress.md
 findings.md
