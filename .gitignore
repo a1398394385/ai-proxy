@@ -1,5 +1,9 @@
 # Runtime
 .server.pid
+.pass_through.pid
+
+# Sisyphus planner state
+.sisyphus/
 
 # OMC state
 .omc/
