@@ -41,9 +41,29 @@ def responses_to_chat(body: dict, model_cfg: dict) -> dict:
         messages.append({"role": "system", "content": instructions})
 
     # input → messages
+    # reasoning 追踪：上游 thinking mode 要求 assistant 消息必须携带 reasoning_content
+    # Responses API 中 reasoning 项紧跟在 assistant 交互之后，需要注入到下一条 assistant 消息
+    pending_reasoning = None  # 待注入的 reasoning 文本
     for item in body.get("input", []):
+        if item.get("type") == "reasoning":
+            # 收集 reasoning 文本，等待下一条 assistant 消息时注入
+            summary = item.get("summary", [])
+            text = "".join(s.get("text", "") for s in summary if s.get("type") == "summary_text")
+            if text:
+                pending_reasoning = text
+            continue
+        if item.get("type") in ("web_search_call", "code_interpreter_call", "mcp_call"):
+            logger.warning(f"[transform] 丢弃不支持的 input 类型: {item.get('type')}")
+            continue
+
         msg = _map_input_item(item, model_cfg)
         if msg is not None:
+            # 如果有 pending 的 reasoning，仅在实际注入到 assistant 消息后才消费
+            if pending_reasoning:
+                for m in msg:
+                    if m.get("role") == "assistant":
+                        m["reasoning_content"] = pending_reasoning
+                        pending_reasoning = None  # 仅在实际注入后消费
             messages.extend(msg)
 
     # 基础字段映射

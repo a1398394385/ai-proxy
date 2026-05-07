@@ -138,7 +138,7 @@ function loadAllModelConfigTables() {
 
 // ─── 上游模态框 ───
 async function showUpstreamModal(editId) {
-  let data = { id: '', base_url: '', api_key: '', timeout: 120, connect_timeout: 10, ssl_verify: 1, retry: 1, is_default: 0 };
+  let data = { id: '', base_url: '', api_key: '', timeout: 120, connect_timeout: 30, ssl_verify: 1, retry: 1, is_default: 0 };
   let title = '新增上游';
   if (editId) {
     title = '编辑上游: ' + editId;
@@ -151,7 +151,7 @@ async function showUpstreamModal(editId) {
      <div class="form-group"><label class="form-label">Base URL</label><input type="text" class="form-input" id="up-url" value="${escHtml(data.base_url)}"></div>
      <div class="form-group"><label class="form-label">API Key</label><input type="text" class="form-input" id="up-key" value="${escHtml(data.api_key)}"></div>
      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-       <div class="form-group"><label class="form-label">超时 (s)</label><input type="number" class="form-input" id="up-timeout" value="${data.timeout}" min="1"></div>
+       <div class="form-group"><label class="form-label">响应超时 (s)</label><input type="number" class="form-input" id="up-timeout" value="${data.timeout}" min="1"></div>
        <div class="form-group"><label class="form-label">连接超时 (s)</label><input type="number" class="form-input" id="up-conn-timeout" value="${data.connect_timeout}" min="1"></div>
      </div>
      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
@@ -168,7 +168,7 @@ async function saveUpstream(editId) {
     base_url: document.getElementById('up-url').value,
     api_key: document.getElementById('up-key').value,
     timeout: parseInt(document.getElementById('up-timeout').value) || 120,
-    connect_timeout: parseInt(document.getElementById('up-conn-timeout').value) || 10,
+    connect_timeout: parseInt(document.getElementById('up-conn-timeout').value) || 30,
     ssl_verify: parseInt(document.getElementById('up-ssl').value),
     retry: parseInt(document.getElementById('up-retry').value) || 1,
     is_default: parseInt(document.getElementById('up-default').value),
