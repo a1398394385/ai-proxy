@@ -1,0 +1,227 @@
+/* 数据库查询页面样式 */
+
+/* ===== SQL 编辑器区域 ===== */
+.dbquery-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+#sql-editor {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  width: 100%;
+  padding: 14px 16px;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  color: hsl(var(--foreground));
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  tab-size: 2;
+}
+
+#sql-editor:focus {
+  border-color: hsl(var(--primary) / 0.5);
+  box-shadow: 0 0 0 3px hsl(var(--primary) / 0.1);
+}
+
+#sql-editor::placeholder {
+  color: hsl(var(--muted-foreground));
+}
+
+/* 编辑器行号区备用 */
+#sql-editor.code-dark {
+  background: hsl(var(--secondary));
+  border-color: hsl(var(--input));
+}
+
+#execute-sql {
+  align-self: flex-start;
+}
+
+/* ===== 快捷查询按钮 ===== */
+.quick-query-btn {
+  font-size: 12px !important;
+  padding: 4px 10px !important;
+  white-space: nowrap;
+}
+
+.quick-query-btn:hover {
+  border-color: hsl(var(--primary) / 0.3);
+  color: hsl(var(--foreground));
+}
+
+/* ===== 结果容器 ===== */
+.dbquery-result {
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: 600px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  background: hsl(var(--card));
+}
+
+/* ===== 结果表格 ===== */
+.dbquery-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.dbquery-table thead th {
+  padding: 10px 14px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  border-bottom: 2px solid hsl(var(--border));
+  background: hsl(var(--secondary));
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.dbquery-table tbody td {
+  padding: 9px 14px;
+  border-bottom: 1px solid hsl(var(--border));
+  color: hsl(var(--foreground));
+  vertical-align: top;
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dbquery-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.dbquery-table tbody tr:hover td {
+  background: hsl(var(--muted) / 0.35);
+}
+
+/* NULL 值样式 */
+.dbquery-table .cell-null {
+  color: hsl(var(--muted-foreground));
+  font-style: italic;
+  opacity: 0.6;
+}
+
+/* 数字列右对齐 */
+.dbquery-table .cell-numeric {
+  text-align: right;
+  font-feature-settings: "tnum";
+  font-variant-numeric: tabular-nums;
+}
+
+/* 行号列 */
+.dbquery-table .row-num {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  text-align: right;
+  width: 40px;
+  min-width: 40px;
+}
+
+/* ===== 结果统计信息 ===== */
+.dbquery-result-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid hsl(var(--border));
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--secondary));
+}
+
+.dbquery-result-count {
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
+
+/* ===== 错误显示 ===== */
+.dbquery-error {
+  padding: 14px 18px;
+  background: hsl(var(--red) / 0.1);
+  border: 1px solid hsl(var(--red) / 0.2);
+  border-radius: var(--radius);
+  color: hsl(var(--red));
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.dbquery-error-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.dbquery-error-detail {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 12px;
+  opacity: 0.9;
+  word-break: break-all;
+}
+
+/* ===== 加载中状态 ===== */
+.dbquery-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 40px;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+}
+
+.dbquery-loading::before {
+  content: '';
+  width: 20px;
+  height: 20px;
+  border: 2px solid hsl(var(--border));
+  border-top-color: hsl(var(--primary));
+  border-radius: 50%;
+  animation: dbquery-spin 0.8s linear infinite;
+}
+
+@keyframes dbquery-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ===== 空状态（增强） ===== */
+.dbquery-result .empty-state {
+  padding: 80px 20px;
+}
+
+/* ===== 响应式 ===== */
+@media (max-width: 768px) {
+  .dbquery-editor {
+    gap: 8px;
+  }
+
+  .dbquery-table thead th,
+  .dbquery-table tbody td {
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+
+  .dbquery-table tbody td {
+    max-width: 200px;
+  }
+
+  .dbquery-result {
+    max-height: 400px;
+  }
+
+  #sql-editor {
+    font-size: 12px;
+    padding: 10px 12px;
+  }
+}

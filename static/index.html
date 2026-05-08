@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="css/tokens.css">
 <link rel="stylesheet" href="css/models.css">
 <link rel="stylesheet" href="css/routes.css">
+<link rel="stylesheet" href="css/dbquery.css">
 </head>
 <body>
 <div class="app">
@@ -30,6 +31,9 @@
       </button>
       <button class="nav-tab" data-page="routes">
         <span>🔀</span> 路由映射
+      </button>
+      <button class="nav-tab" data-page="dbquery">
+        <span>🗼️</span> 数据库查询
       </button>
     </div>
     <div class="nav-actions">
@@ -196,6 +200,28 @@
 
   <!-- 路由映射页面 -->
   <div id="page-routes" class="main-content hidden"></div>
+<!-- 数据库查询页面 -->
+<div id="page-dbquery" class="main-content hidden">
+  <div class="toolbar">
+    <div class="toolbar-group">
+      <button class="toolbar-btn quick-query-btn" data-sql="SELECT id, request_id, stage, model, created_at FROM debug_log ORDER BY created_at DESC LIMIT 10">最近 10 条 debug_log</button>
+      <button class="toolbar-btn quick-query-btn" data-sql="SELECT id, request_id, model, input_tokens, output_tokens, request_ts FROM token_stats ORDER BY request_ts DESC LIMIT 10">最近 10 条 token_stats</button>
+      <button class="toolbar-btn quick-query-btn" data-sql="SELECT stage, COUNT(*) as count FROM debug_log GROUP BY stage">debug_log 阶段统计</button>
+    </div>
+  </div>
+  <div class="dbquery-editor">
+    <textarea id="sql-editor" placeholder="输入 SQL 查询..." rows="6"></textarea>
+    <button class="btn btn-primary" id="execute-sql">
+      <span>▶</span> 执行查询
+    </button>
+  </div>
+  <div class="dbquery-result" id="query-result">
+    <div class="empty-state">
+      <div class="empty-state-icon">🔍</div>
+      <p>输入 SQL 并点击执行</p>
+    </div>
+  </div>
+</div>
 
 <!-- 模态框 -->
 <div class="modal-overlay" id="modal-overlay">

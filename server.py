@@ -184,6 +184,13 @@ def get_state_db():
     return conn
 
 
+def get_access_log_db():
+    conn = sqlite3.connect(str(ACCESS_LOG_DB_PATH), timeout=5)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+
 def json_response(handler, data, status=200):
     body = json.dumps(data, ensure_ascii=False).encode("utf-8")
     handler.send_response(status)
@@ -898,6 +905,49 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             except Exception as e:
                 result["pass_through"] = {"status": "error", "message": str(e)}
             return json_response(self, result)
+
+        if path == "/api/db/query":
+            data = _read_json(self)
+            if not data:
+                return
+            sql = data.get("sql", "").strip()
+
+            # 安全校验：只允许 SELECT
+            if not sql.upper().startswith("SELECT"):
+                return json_response(self, {"error": "只允许 SELECT 查询"}, 400)
+
+            # 安全校验：禁止多语句
+            if ";" in sql:
+                return json_response(self, {"error": "禁止多语句 SQL"}, 400)
+
+            # 白名单表名校验
+            table_pattern = re.compile(r"FROM\s+(\w+)", re.IGNORECASE)
+            for match in table_pattern.finditer(sql):
+                table_name = match.group(1)
+                if table_name not in ("debug_log", "token_stats"):
+                    return json_response(self, {"error": f"禁止访问表: {table_name}"}, 403)
+
+            # LIMIT 处理
+            limit_pattern = re.compile(r"LIMIT\s+(\d+)", re.IGNORECASE)
+            limit_match = limit_pattern.search(sql)
+            if limit_match:
+                limit_val = int(limit_match.group(1))
+                if limit_val > 500:
+                    sql = limit_pattern.sub("LIMIT 500", sql)
+            else:
+                sql += " LIMIT 500"
+
+            # 执行查询
+            conn = get_access_log_db()
+            try:
+                cursor = conn.execute(sql)
+                columns = [col[0] for col in cursor.description]
+                rows = [list(row) for row in cursor.fetchall()]
+                conn.close()
+                return json_response(self, {"columns": columns, "rows": rows})
+            except Exception as e:
+                conn.close()
+                return json_response(self, {"error": str(e)}, 400)
 
         # ===== Fact Store API =====
         if path == "/api/facts":

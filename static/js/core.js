@@ -51,7 +51,7 @@ export function initSettings() {
 }
 
 export function applyDefaultPage(page) {
-  const validPages = ['facts', 'tokens', 'models', 'routes'];
+  const validPages = ['facts', 'tokens', 'models', 'routes', 'dbquery'];
   if (!page || !validPages.includes(page)) {
     page = 'facts';
   }
@@ -68,12 +68,14 @@ export function applyDefaultPage(page) {
   document.getElementById('page-tokens').classList.toggle('hidden', page !== 'tokens');
   document.getElementById('page-models').classList.toggle('hidden', page !== 'models');
   document.getElementById('page-routes').classList.toggle('hidden', page !== 'routes');
+  document.getElementById('page-dbquery').classList.toggle('hidden', page !== 'dbquery');
 
   // 加载数据（通过回调注册表，避免跨模块导入）
   if (page === 'facts' && pageLoaders.facts) pageLoaders.facts();
   if (page === 'tokens' && pageLoaders.tokens) pageLoaders.tokens();
   if (page === 'models' && pageLoaders.models) pageLoaders.models();
   if (page === 'routes' && pageLoaders.routes) pageLoaders.routes();
+  if (page === 'dbquery' && pageLoaders.dbquery) pageLoaders.dbquery();
 }
 
 export function showSettings() {
@@ -92,6 +94,7 @@ export function showSettings() {
           <option value="tokens">📊 Token 统计</option>
           <option value="models">🔌 模型管理</option>
           <option value="routes">🔀 路由映射</option>
+          <option value="dbquery">🗄️ 数据库查询</option>
         </select>
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;">
@@ -189,7 +192,7 @@ export const bus = {
 };
 
 // Callback registry for cross-page data loading (avoids circular imports)
-export const pageLoaders = { facts: null, tokens: null, models: null, routes: null };
+export const pageLoaders = { facts: null, tokens: null, models: null, routes: null, dbquery: null };
 
 // Global scope mounting for onclick handlers (required by ES modules)
 window.api = api;

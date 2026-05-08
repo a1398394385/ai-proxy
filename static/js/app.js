@@ -7,11 +7,13 @@ import { loadFacts, initFactPage } from './pages/facts.js';
 import { loadTokenStats, initTokenPage } from './pages/tokens.js';
 import { loadUpstreamPage, initUpstreamPage } from './pages/upstreams.js';
 import { loadRoutePage, initRoutePage } from './pages/routes.js';
+import { loadDbQuery } from './pages/dbquery.js';
 
 pageLoaders.facts = loadFacts;
 pageLoaders.tokens = loadTokenStats;
 pageLoaders.models = loadUpstreamPage;
 pageLoaders.routes = loadRoutePage;
+pageLoaders.dbquery = loadDbQuery;
 
 initFactPage();
 initTokenPage();
@@ -42,11 +44,13 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('page-tokens').classList.toggle('hidden', page !== 'tokens');
       document.getElementById('page-models').classList.toggle('hidden', page !== 'models');
       document.getElementById('page-routes').classList.toggle('hidden', page !== 'routes');
+      document.getElementById('page-dbquery').classList.toggle('hidden', page !== 'dbquery');
 
       if (page === 'facts') loadFacts();
       if (page === 'tokens') loadTokenStats();
       if (page === 'models') loadUpstreamPage();
       if (page === 'routes') loadRoutePage();
+      if (page === 'dbquery') loadDbQuery();
     });
   });
 
