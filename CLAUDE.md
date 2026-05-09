@@ -1,133 +1,170 @@
-# CLAUDE.md
+**生成时间:** 2026-05-09
+**提交:** 17f5dc9
+**分支:** main
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## 概述
 
-## 项目概述
+两个独立 HTTP 服务，由 `./server.sh` 统一管理，纯 Python 标准库（无外部依赖）。
 
-本项目包含三个独立 HTTP 服务，统一由 `./server.sh` 管理：
+| 服务 | 入口文件 | 端口 | 用途 |
+|------|----------|------|------|
+| Hermes Data Browser | `server.py` | 18742 | Web UI — Fact Store / Token 统计 / 模型路由 CRUD / SQL 查询 |
+| Codex Proxy | `proxy.py` | 48743 | 统一代理 — 协议转换 + 透传（OpenAI Responses / Anthropic Messages → Chat Completions）|
 
-| 服务 | 文件 | 端口 | 用途 |
-|------|------|------|------|
-| Hermes Data Browser | `server.py` | 18742 | Web UI — Fact Store 浏览 / Token 统计 / 动态模型路由管理 |
-| Codex Proxy | `proxy.py` | 48743 | OpenAI Responses API + Anthropic Messages API → Chat Completions 代理 |
-| Pass-Through Proxy | `pass_through.py` | 48744 | 纯透传代理，不做协议转换 — `/v1/` 请求原样转发到上游 |
+> **注意**：`pass_through.py` 已删除，其功能合并到 `proxy/handler.py` 的 `_handle_passthrough()` 中。不再有独立的 48744 端口服务。
+
+## 项目结构
+
+```
+├── proxy.py                    # 瘦入口 (96行) — ThreadedHTTPServer 启动 + 日志轮转
+├── server.py                   # Hermes Data Browser HTTP server (1157行)
+├── server.sh                   # 服务管理（start/stop/status/restart）
+├── proxy_config.yaml           # 全局配置（端口/上游/日志/模型映射）
+├── quick_test.py               # Token 统计快速冒烟
+│
+├── proxy/                      # ★ Codex Proxy 核心包 (11 文件)
+│   ├── __init__.py             # 公共 API re-export
+│   ├── handler.py              # 统一 ProxyHandler — 路由/透传/转换 (1057行)
+│   ├── common.py               # 共享模块 — 配置/模型解析/上游连接
+│   ├── config_manager.py       # ConfigDB + ConfigCache + Migrations
+│   ├── transform.py            # Re-export shim
+│   ├── transform_responses.py  # Responses API ↔ Chat Completions 转换
+│   ├── transform_anthropic.py  # Anthropic Messages ↔ Chat Completions 转换
+│   ├── sse_utils.py            # SSE 事件格式化
+│   ├── request_logger.py       # 四阶段请求/响应日志
+│   ├── token_stats.py          # Token 统计写入
+│   └── response_store.py       # 内存 ResponseStore (LRU+TTL)
+│
+├── static/                     # Web UI 前端
+│   ├── index.html              # 入口 HTML — 5 Tab 导航
+│   ├── css/                    # 6 文件 — 每页面独立样式
+│   └── js/
+│       ├── app.js              # ES Module 入口 + 页面加载器注册
+│       ├── core.js             # 核心工具 — 主题/事件总线/API/格式化
+│       └── pages/
+│           ├── facts.js        # Fact Store CRUD
+│           ├── tokens.js       # Token 统计 + SVG 图表
+│           ├── upstreams.js    # 上游/模型管理（替代旧 models.js）
+│           ├── routes.js       # 路由映射 CRUD
+│           └── dbquery.js      # SQL 查询编辑器
+│
+├── test/                       # 406 tests (14 文件)
+│   ├── test_transform.py       # Responses API 转换 (2030行, 138 tests)
+│   ├── test_transform_anthropic.py  # Anthropic 转换 (689行, 44 tests)
+│   ├── test_handler.py         # 统一 Handler (555行, 20 tests)
+│   ├── test_db_query.py        # SQL 查询端点 (398行, 35 tests)
+│   ├── test_config_manager.py  # ConfigDB/ConfigCache (445行, 46 tests)
+│   ├── test_request_logger.py  # RequestLogger (465行, 26 tests)
+│   ├── test_proxy_logger_integration.py  # proxy+logger 集成 (468行, 9 tests)
+│   ├── test_response_store.py  # ResponseStore LRU/TTL (397行, 21 tests)
+│   ├── test_proxy_pass_through.py  # 透传功能 (307行, 15 tests)
+│   ├── test_token_stats.py     # Token 统计 (247行, 19 tests)
+│   ├── test_e2e_smoke.py       # 端对端冒烟 (221行, 7 tests)
+│   ├── test_sse_utils.py       # SSE 格式化 (121行, 9 tests)
+│   ├── test_proxy_config.py    # 配置加载 (116行, 5 tests)
+│   └── test_config_integration.py  # 配置集成 (99行, 12 tests)
+│
+├── data/                       # 运行时数据（access_log.db）
+└── docs/superpowers/           # 设计文稿 + 实施计划
+```
+
+## 代码速查
+
+| 任务 | 位置 | 备注 |
+|------|------|------|
+| 添加 API 路由 | `proxy/handler.py` → `do_GET`/`do_POST` | 按路径分派 request_type |
+| 协议转换 | `proxy/transform_responses.py` / `proxy/transform_anthropic.py` | 含状态机 |
+| 模型路由 | `proxy/config_manager.py` → `ConfigCache.resolve()` | TTL 5s, 精确→`*` fallback |
+| SSE 格式 | `proxy/sse_utils.py` → `_format_sse_event()` | type 注入 + 紧凑 JSON |
+| 日志记录 | `proxy/request_logger.py` → `RequestLogger` | 四阶段 + token_stats |
+| 上游连接 | `proxy/common.py` → `_create_upstream_conn()` | 支持 HTTP 代理/HTTPS Tunneling |
+| 配置管理 | `proxy_config.yaml` + `~/.hermes/config.db` | 静态 YAML + 动态 SQLite |
+| Data Browser API | `server.py` → `HermesDataHandler` | 全部 /api/* 路由 |
+| 前端页面 | `static/js/pages/*.js` | 每页面一个模块 |
 
 ## 开发命令
 
 ```bash
-# 服务管理（三个服务同时管理）
-./server.sh start     # 启动 Data Browser + Codex Proxy + Pass-Through
-./server.sh stop      # 停止三个服务
+# 服务管理
+./server.sh start     # 启动 Data Browser + Codex Proxy
+./server.sh stop      # 停止两个服务
 ./server.sh status    # 查看状态
 ./server.sh restart   # 重启（修改代码后必须执行，无热重载）
 
 # 测试
-cd /Users/xys/Github/ai-agent-tools
-python3 -m pytest test/ -q                    # 全量（348 tests，约 4s）
+python3 -m pytest test/ -q                    # 全量（406 tests）
 python3 -m pytest test/test_transform.py -q  # 单文件
+python3 -m pytest test/test_handler.py -q    # Handler 测试
 
-# 快速 API 冒烟
+# 快速冒烟
 python3 quick_test.py
 ```
-
-## 文件模块
-
-### Codex Proxy 核心
-
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `proxy.py` | 706 | ThreadedHTTPServer — HTTP 路由、请求转发、日志串联入口 |
-| `transform.py` | 41 | Re-export shim — 对外统一公共接口（不含实现） |
-| `transform_responses.py` | 891 | OpenAI Responses API ↔ Chat Completions 转换，含 `CodexStreamConverter` 状态机 |
-| `transform_anthropic.py` | 510 | Anthropic Messages API ↔ Chat Completions 转换，含 `AnthropicStreamState` 状态机 |
-| `sse_utils.py` | 13 | `_format_sse_event()` — 两个转换模块共用的 SSE 格式化 |
-| `common.py` | 192 | 共享模块 — CONFIG 变量、`load_config`、模型解析、上游连接、路径工具函数 |
-| `config_manager.py` | 563 | `ConfigDB`（SQLite CRUD）+ `ConfigCache`（内存缓存，TTL 5s）+ 内联 YAML 解析器 |
-| `request_logger.py` | 206 | 四阶段请求/响应日志，写入 `data/access_log.db`（SQLite WAL） |
-| `token_stats.py` | 157 | Token 统计写入，三种 usage 格式兼容（Anthropic / OpenAI Chat / OpenAI Responses） |
-| `response_store.py` | 72 | 内存 `ResponseStore`（LRU + TTL），支持 `previous_response_id` 多轮对话 |
-| `proxy_config.yaml` | 48 | proxy/pass_through host/port、upstream 静态连接参数、logging 设置 |
-
-### Pass-Through Proxy
-
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `pass_through.py` | 323 | ThreadedHTTPServer — 纯透传，`PassThroughHandler` 原样转发 `/v1/` 请求 |
-
-### Data Browser
-
-| 文件 | 职责 |
-|------|------|
-| `server.py` | HTTP server — Fact Store API + Token 统计 API + ConfigDB 管理 API（上游/模型/路由 CRUD）|
-| `static/index.html` | 前端 HTML 入口（11K）— 导航框架，三 Tab：Fact Store / Token 统计 / 模型管理 |
-| `static/js/app.js` | ES Module 入口 — 组装页面模块、注册事件总线监听 |
-| `static/js/core.js` | 核心工具 — 主题切换、设置对话框、事件总线（bus）、Tab 路由 |
-| `static/js/pages/facts.js` | Fact Store 页面逻辑 — 搜索、增删、分类过滤 |
-| `static/js/pages/tokens.js` | Token 统计页面逻辑 — 用量图表、模型分布、时段筛选 |
-| `static/js/pages/models.js` | 模型管理页面逻辑 — 上游 / 模型 / 路由 CRUD，上游连通性测试 |
-| `static/css/base.css` | 全局基础样式 — 主题变量、导航、通用组件 |
-| `static/css/facts.css` | Fact Store 页面样式 |
-| `static/css/tokens.css` | Token 统计页面样式 |
-| `static/css/models.css` | 模型管理页面样式 |
-
-## 数据库
-
-| 数据库 | 路径 | 核心表 | 用途 |
-|--------|------|--------|------|
-| memory_store.db | `~/.hermes/memory_store.db` | `facts`, `facts_fts`, `entities`, `fact_entities` | Fact Store |
-| state.db | `~/.hermes/state.db` | `sessions`, `messages` | Hermes 会话 Token 统计 |
-| cc-switch.db | `~/.cc-switch/cc-switch.db` | `model_pricing` | 模型计费规则（5min 缓存）|
-| config.db | `~/.hermes/config.db` | `upstreams`, `target_models`, `model_routes` | 动态模型路由配置 |
-| access_log.db | `data/access_log.db` | `debug_log`, `token_stats` | 代理请求日志（7天保留）|
-
-### config.db 表结构
-```sql
-upstreams      (id, base_url, api_key, timeout, connect_timeout, ssl_verify, retry, is_active, is_default)
-target_models  (id, name, upstream_id, multimodal, format)
-model_routes   (id, source, target_model_id)   -- source 支持精确名称或 "*" fallback
-```
-
-### memory_store.db 表结构
-```sql
-facts         (fact_id, content, category, tags, trust_score, helpful_count, created_at)
-facts_fts     -- FTS5 虚拟表（content + tags 全文索引）
-entities      (entity_id, name, entity_type)
-fact_entities (fact_id, entity_id)  -- 多对多
-```
-
-**规则：每次查询新建 SQLite 连接，用完立即关闭（无连接池）。**
-
-## 代理 API 端点（port 48743）
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/health` | 健康检查，返回 `{status: ok, pid}` |
-| GET | `/v1/models` | 返回 config.db 中所有非 `*` 源模型列表 |
-| GET | `/v1/responses` | 返回 426（触发 Codex CLI 回退到 POST+SSE 模式）|
-| POST | `/v1/responses` | OpenAI Responses API（Codex CLI 主路径）|
-| POST | `/v1/responses/compact` | 同上 |
-| POST | `/v1/messages` | Anthropic Messages API（Claude Code）|
-| POST | `/admin/reload` | 强制刷新 ConfigCache（仅 127.0.0.1/::1）|
-
-> **注意**：透传（pass-through）功能已从 proxy.py 移到独立的 `pass_through.py` 服务（port 48744）。未匹配以上路由的 `/v1/*` 请求现在由 pass_through.py 在 48744 端口处理，proxy.py:48743 不再响应透传路径（返回 404）。
 
 ## 代理请求流程
 
 ```
 客户端（Codex/Claude）
   ↓  POST /v1/responses 或 /v1/messages
-ProxyHandler
-  ↓  ConfigCache.resolve(model) → upstream_cfg（TTL 5s，自动刷新 config.db）
-  ↓  responses_to_chat() / anthropic_to_chat()   ← 请求格式转换
-  ↓  （可选）previous_response_id → ResponseStore.get() → 注入历史 messages
-  ↓  HTTP POST → upstream /chat/completions
-非流式：chat_to_responses() / chat_to_anthropic()
-流式：  create_codex_sse_stream() / create_anthropic_sse_stream()（逐事件 yield）
+ProxyHandler.do_POST()
+  ↓  路径 → request_type（responses / messages / chat_completions）
+  ↓  ConfigCache.resolve(model) → upstream_cfg
+  ↓  request_type == upstream_cfg.format ?
+  │   是 → _handle_passthrough() → 原样转发 + 日志 + token_stats
+  │   否 → _handle_convert() → Chat Completions 中间格式转换
+  ↓
+上游 /chat/completions
+  ↓
+非流式：chat_to_xxx()
+流式：  create_xxx_sse_stream()（逐事件 yield）
   ↓  record_token_stats() → data/access_log.db
-  ↓  ResponseStore.put() → 内存（供下轮 previous_response_id 使用）
+  ↓  ResponseStore.put() → 内存（供 previous_response_id 使用）
 ```
 
-## 动态模型路由
+## 数据库
+
+| 数据库 | 路径 | 核心表 | 用途 |
+|--------|------|--------|------|
+| memory_store.db | `~/.hermes/memory_store.db` | `facts`, `facts_fts`, `entities`, `fact_entities` | Fact Store |
+| config.db | `~/.hermes/config.db` | `upstreams`, `target_models`, `model_routes` | 动态模型路由 |
+| access_log.db | `data/access_log.db` | `debug_log`, `token_stats` | 代理请求日志（7天保留）|
+
+**SQLite 规则**：每次查询新建连接，用完立即关闭（无连接池）。每次连接必须 `PRAGMA foreign_keys = ON`。
+
+### config.db 表结构
+
+```sql
+upstreams      (id, base_url, api_key, timeout, connect_timeout, ssl_verify, retry, is_active, is_default)
+target_models  (id, name, upstream_id, multimodal, format)
+model_routes   (id, source, target_model_id)   -- source 支持精确名称或 "*" fallback
+```
+
+## 约定
+
+### 开发流程
+1. **TDD** — 先写失败测试 → 实现最小代码 → 验证通过 → commit
+2. **修改后必须重启** — `./server.sh restart`（无热重载）
+3. **不破坏现有功能** — 任何修改后确认 406 tests 仍全部通过
+4. **commit message 用中文** — 解释 "why" 而非 "what"，格式 `feat:`/`fix:`/`refactor:`/`docs:`/`chore:`，禁止 `--no-verify`
+5. **先计划后实现** — 复杂改动先写设计文稿（`docs/superpowers/specs/`），用户审阅批准后再执行
+
+### 测试
+- 继承 `unittest.TestCase`，用 pytest 运行
+- `setUp`/`tearDown` 模式管理临时数据库（非 pytest fixtures）
+- 无 conftest.py，无 pytest markers，无外部测试依赖
+
+### 代码风格
+- 纯 Python 标准库 — 无 Flask/Django/第三方依赖
+- Docstring 标注模块和函数职责
+- Re-export 模式：`proxy/__init__.py` 统一公开 API（`# noqa: F401`）
+- 注释分隔线：`# ─── 标题 ───` 格式
+- 无 linter 配置（.flake8/.pylintrc/.editorconfig 均不存在）
+
+### 导入约定
+- proxy 包内：相对导入 `from .common import CONFIG`
+- proxy 包外：绝对导入 `from proxy.handler import ProxyHandler`
+- 禁止从 `proxy.transform_responses` 直接导入（走 `proxy.transform` shim）
+
+## 模型路由
 
 `ConfigCache` 从 `~/.hermes/config.db` 读取路由（TTL 5s），是代理的模型解析核心。
 
@@ -137,46 +174,11 @@ ProxyHandler
 
 配置变更后通过 `POST /admin/reload` 立即生效（清零 `_loaded_at` 触发下次强制刷新）。
 
-## SSE 格式要求
+## 注意事项
 
-所有 SSE 事件由 `sse_utils._format_sse_event(event_type, data)` 生成：
-- 将 `event_type` 注入为 data JSON 顶层 `"type"` 字段（Codex `ResponsesStreamEvent` 要求）
-- 统一 `separators=(',', ':')` 紧凑格式
-
-**流式状态机**：
-- `CodexStreamConverter`（`transform_responses.py`）— 维护 text / refusal / reasoning / tool_calls 各块的打开/关闭状态；`output_item.added` 延迟到 `call_id + name` 均就绪后才发送
-- `AnthropicStreamState`（`transform_anthropic.py`）— 维护 content block index，工具调用 start 延迟到 `id + name` 就绪
-
-## 测试
-
-```
-test/
-├── test_transform.py                 # Responses API 转换 + SSE 格式（最大，90K）
-├── test_transform_anthropic.py       # Anthropic Messages 转换（30K）
-├── test_config_manager.py            # ConfigDB / ConfigCache 单元测试（15K）
-├── test_request_logger.py            # 请求日志单元测试（16K）
-├── test_proxy_logger_integration.py  # proxy + logger 集成（17K）
-├── test_response_store.py            # ResponseStore LRU/TTL（17K）
-├── test_token_stats.py               # Token 统计写入（9K）
-├── test_sse_utils.py                 # SSE 格式化（5K）
-├── test_proxy_config.py              # 配置加载校验（3.5K）
-├── test_config_integration.py        # 配置集成（3.4K）
-├── test_e2e_smoke.py                 # 端对端冒烟，启动真实 proxy（6.7K）
-├── test_proxy_pass_through.py         # pass-through 透传功能测试（15 tests）
-```
-
-**当前：348 tests passing**
-
-## 开发规范
-
-### 开发流程
-
-1. **TDD** — 先写失败测试 → 实现最小代码 → 验证通过 → commit
-2. **修改后必须重启** — `./server.sh restart`（无热重载）
-3. **不破坏现有功能** — 任何修改后确认 348 tests 仍全部通过
-4. **commit message 用中文** — 解释 "why" 而非 "what"，`--no-verify` 禁止使用
-
-### 协作规范
-
-- **先计划后实现** — 复杂改动先写设计文稿，用户审阅批准后再执行
-- **每个 Task 完成后审阅再 commit** — 确认改动正确
+- **models.js 是死代码**（338行）：`static/js/pages/models.js` 存在但未被 `app.js` 导入，实际逻辑在 `upstreams.js`
+- **透传/转换判定**：取决于 `request_type == upstream_cfg.format`，并非按路径固定
+- **no conftest.py**：测试间无共享 fixture，DB 测试用 `TemporaryDirectory`
+- **调试日志**：流式模式需查看 `proxy.log`，结构化日志在 `data/access_log.db`
+- **proxy/ 包依赖**：`sse_utils`/`token_stats`/`config_manager`/`request_logger`/`response_store` 为第 0 层（零内部依赖）
+- **无 CI/CD**：无 GitHub Actions、Makefile 等自动化
