@@ -438,8 +438,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         if b'"usage"' in event_raw:
                             try:
                                 for line in event_raw.split(b"\n"):
-                                    if line.startswith(b"data: "):
-                                        data_json = json.loads(line[6:])
+                                    if line.startswith(b"data:"):
+                                        json_str = line[5:]  # 去掉 "data:" 前缀
+                                        if json_str.startswith(b" "):
+                                            json_str = json_str[1:]  # 去掉可选的前导空格
+                                        data_json = json.loads(json_str)
                                         usage = data_json.get("usage") or data_json.get("message", {}).get("usage")
                                         if usage:
                                             if final_usage:

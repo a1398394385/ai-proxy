@@ -304,6 +304,56 @@ class TestHandlerPassthrough(unittest.TestCase):
 
         handler.send_header.assert_any_call("Content-Type", "text/event-stream")
 
+    def test_anthropic_sse_no_space_after_data(self):
+        """Anthropic SSE data: 无空格 → usage 提取成功，record_token_stats 被调用。"""
+        # Anthropic 上游发送 data: 后无空格 (合法 SSE 格式)
+        sse_data = (
+            b'event:message_start\n'
+            b'data:{"message":{"id":"msg_1","role":"assistant","type":"message",'
+            b'"usage":{"input_tokens":1000,"output_tokens":0}},"type":"message_start"}\n\n'
+            b'event:content_block_delta\n'
+            b'data:{"type":"content_block_delta","delta":{"text":"hello"}}\n\n'
+            b'event:message_delta\n'
+            b'data:{"type":"message_delta","delta":{"stop_reason":"end_turn"},'
+            b'"usage":{"output_tokens":50}}\n\n'
+            b'event:message_stop\n'
+            b'data:{"type":"message_stop"}\n\n'
+        )
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read = MagicMock(side_effect=[sse_data, b""])
+        mock_conn = MagicMock()
+        mock_conn.getresponse.return_value = mock_resp
+
+        handler = _make_real_handler(b'{"model":"claude-sonnet-4-6","stream":true}')
+
+        mock_token_stats = MagicMock()
+        with patch("proxy.handler.get_logger", return_value=self.logger),\
+             patch("proxy.handler.record_token_stats", mock_token_stats),\
+             patch("proxy.handler.urllib.parse.urlparse") as mock_parse,\
+             patch("proxy.handler._create_upstream_conn") as mock_cconn:
+            mock_parse.return_value = MagicMock(path="/", port=4000, scheme="http")
+            mock_cconn.return_value = mock_conn
+
+            handler._forward_pass_through_streaming(
+                b'{"model":"claude-sonnet-4-6","stream":true}',
+                "rid-anthro", "claude-sonnet-4-6", "qwen3.6-plus",
+                "ts", _default_upstream_cfg(),
+                "/v1/messages", "messages",
+            )
+
+        # 验证 record_token_stats 被调用，且 usage 合并了 message_start 和 message_delta
+        mock_token_stats.assert_called_once()
+        call_args = mock_token_stats.call_args[0]
+        usage = call_args[0]
+        context = call_args[1]
+        self.assertEqual(context["request_id"], "rid-anthro")
+        self.assertEqual(context["request_type"], "messages")
+        self.assertEqual(context["model"], "claude-sonnet-4-6")
+        self.assertEqual(context["target_model"], "qwen3.6-plus")
+        # message_start 的 input_tokens=1000，message_delta 的 output_tokens=50
+        self.assertEqual(usage["input_tokens"], 1000)
+        self.assertEqual(usage["output_tokens"], 50)
 
 # ─── 转换路径测试 ──────────────────────────────────────────────────────
 
