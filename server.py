@@ -9,6 +9,7 @@ import re
 import time
 import http.client
 import socket
+import ssl
 from datetime import datetime, timedelta
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, unquote
@@ -92,6 +93,71 @@ def _test_upstream_connectivity(upstream: dict) -> dict:
         result["error"] = str(e)
     finally:
         conn.close()
+
+    return result
+
+
+# ─── 自动检测上游模型 ───
+
+def _call_upstream_models(upstream: dict) -> dict:
+    """调用上游 /v1/models 获取可用模型列表。"""
+    parsed = urlparse(upstream["base_url"])
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    scheme = parsed.scheme
+
+    # 构建请求路径
+    base_path = parsed.path.rstrip("/")
+    request_path = base_path + "/models"
+
+    # 构建请求头
+    headers = {"Accept": "application/json"}
+    api_key = upstream.get("api_key", "")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    # 确定 SSL 上下文
+    ssl_context = None
+    if scheme == "https" and not upstream.get("ssl_verify", True):
+        ssl_context = ssl._create_unverified_context()
+
+    result = {"reachable": False, "model_ids": [], "error": None}
+
+    try:
+        if scheme == "https":
+            conn = http.client.HTTPSConnection(host, port, timeout=15, context=ssl_context)
+        else:
+            conn = http.client.HTTPConnection(host, port, timeout=15)
+
+        try:
+            conn.request("GET", request_path, headers=headers)
+            resp = conn.getresponse()
+            raw_body = resp.read()
+            status = resp.status
+
+            if 200 <= status < 300:
+                result["reachable"] = True
+                try:
+                    data = json.loads(raw_body)
+                except json.JSONDecodeError as e:
+                    result["error"] = f"上游返回了无效 JSON: {e}"
+                    return result
+
+                model_list = data.get("data", [])
+                model_ids = [
+                    item["id"]
+                    for item in model_list
+                    if isinstance(item, dict) and item.get("id")
+                ]
+                result["model_ids"] = model_ids
+            else:
+                # 4xx/5xx：服务器应答了，网络可达
+                result["reachable"] = True
+                result["error"] = f"HTTP {status}"
+        finally:
+            conn.close()
+    except (socket.gaierror, socket.timeout, OSError) as e:
+        result["error"] = str(e)
 
     return result
 STATE_DB_PATH = os.path.expanduser("~/.hermes/state.db")
@@ -819,6 +885,68 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 return json_response(self, {"error": "Not found"}, 404)
             result = _test_upstream_connectivity(u)
             return json_response(self, result)
+
+        # ─── 自动检测 + 批量添加模型 ───
+        detect_m = re.match(r"/api/upstreams/([^/]+)/detect-models$", path)
+        if detect_m:
+            uid = detect_m.group(1)
+            db = get_config_db()
+            u = db.get_upstream(uid)
+            db.close()
+            if not u:
+                return json_response(self, {"error": "Not found"}, 404)
+
+            # 校验格式：仅支持 chat_completions
+            if u.get("format") != "chat_completions":
+                return json_response(self, {
+                    "error": "仅支持 chat_completions 格式的上游自动检测模型"
+                }, 400)
+
+            # 校验上游处于启用状态
+            if not u.get("is_active"):
+                return json_response(self, {"error": "上游已禁用"}, 400)
+
+            # 调用检测函数
+            detect_result = _call_upstream_models(u)
+
+            # 获取该上游已有模型名
+            db = get_config_db()
+            existing_models = [m["name"] for m in db.list_models(upstream_id=uid)]
+            db.close()
+
+            # 构建响应：discovered = 不在已有模型中的新模型
+            all_ids = detect_result.get("model_ids", [])
+            discovered = [mid for mid in all_ids if mid not in existing_models]
+
+            return json_response(self, {
+                "reachable": detect_result["reachable"],
+                "discovered": discovered,
+                "existing": [mid for mid in all_ids if mid in existing_models],
+                "error": detect_result.get("error")
+            })
+
+        bulk_m = re.match(r"/api/upstreams/([^/]+)/models/bulk$", path)
+        if bulk_m:
+            uid = bulk_m.group(1)
+            data = _read_json(self)
+            if not data:
+                return  # _read_json 已发送 400
+
+            models = data.get("models")
+            if not isinstance(models, list):
+                return json_response(self, {"error": "缺少 models 数组"}, 400)
+
+            db = get_config_db()
+            u = db.get_upstream(uid)
+            if not u:
+                db.close()
+                return json_response(self, {"error": "Not found"}, 404)
+
+            result = db.add_models_bulk(uid, models)
+            db.close()
+
+            status = 201 if result["added"] > 0 else 200
+            return json_response(self, result, status)
 
         if path == "/api/models":
             data = _read_json(self)

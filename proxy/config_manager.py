@@ -245,6 +245,31 @@ class ConfigDB:
         finally:
             conn.close()
 
+    def add_models_bulk(self, upstream_id: str, models: list) -> dict:
+        """批量新增模型到指定上游（INSERT OR IGNORE 幂等）。
+
+        返回:
+            {"added": int, "skipped": int}
+        """
+        conn = self._connect()
+        try:
+            if not models:
+                return {"added": 0, "skipped": 0}
+            added = 0
+            skipped = 0
+            for m in models:
+                cursor = conn.execute(
+                    "INSERT OR IGNORE INTO target_models (name, upstream_id, multimodal) VALUES (?, ?, ?)",
+                    (m["name"], upstream_id, m.get("multimodal", 1)),
+                )
+                if cursor.rowcount == 1:
+                    added += 1
+                else:
+                    skipped += 1
+            conn.commit()
+            return {"added": added, "skipped": skipped}
+        finally:
+            conn.close()
     def update_model(self, model_id: int, data: dict):
         conn = self._connect()
         try:
