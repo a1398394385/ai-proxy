@@ -57,8 +57,11 @@ async function showRouteModal(editId) {
   const requestTypeOptions = ['responses', 'messages', 'chat_completions']
     .map(rt => `<option value="${rt}" ${data.request_type === rt ? 'selected' : ''}>${rt}</option>`)
     .join('');
+  const sourceField = data.source === '*'
+    ? `<input type="text" class="form-input" value="* (fallback)" readonly style="background:hsl(var(--muted));color:hsl(var(--muted-foreground));cursor:not-allowed"><input type="hidden" id="r-source" value="*">`
+    : `<input type="text" class="form-input" id="r-source" value="${escHtml(data.source)}" placeholder="如 gpt-4o">`;
   showModal(title,
-    `<div class="form-group"><label class="form-label">源模型名</label><input type="text" class="form-input" id="r-source" value="${escHtml(data.source)}" placeholder="如 gpt-4o"></div>
+    `<div class="form-group"><label class="form-label">源模型名</label>${sourceField}</div>
      <div class="form-group"><label class="form-label">目标模型</label><select class="form-input" id="r-target">${modelOpts}</select></div>
      <input type="hidden" id="r-proxy" value="${escHtml(data.request_type)}">`,
     `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveRoute(${editId || 0})">保存</button>`);

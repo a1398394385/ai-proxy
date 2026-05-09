@@ -360,6 +360,14 @@ class ConfigDB:
     def update_route(self, route_id: int, data: dict):
         conn = self._connect()
         try:
+            # 保护回退路由：不允许修改 source
+            if data.get("source") and data["source"] != "*":
+                existing_source = conn.execute(
+                    "SELECT source FROM model_routes WHERE id = ?",
+                    (route_id,),
+                ).fetchone()
+                if existing_source and existing_source["source"] == "*":
+                    raise ValueError("不能修改回退路由的源模型名")
             fields = []
             values = []
             for key in ("source", "target_model_id", "request_type"):

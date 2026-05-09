@@ -247,6 +247,24 @@ class TestRouteCRUD(unittest.TestCase):
         self.assertEqual(r["source"], "gpt-4o")
         self.assertEqual(r["target_name"], "claude")
 
+    def test_update_route_rejects_fallback_source_change(self):
+        """更新回退路由 (source=*) 时不允许修改 source。"""
+        rid = self.db.add_route({"source": "*", "target_model_id": self.mid})
+        with self.assertRaises(ValueError):
+            self.db.update_route(rid, {"source": "gpt-4o"})
+        # 确认 source 保持不变
+        r = self.db.get_route(rid)
+        self.assertEqual(r["source"], "*")
+
+    def test_update_route_allows_fallback_update_without_source(self):
+        """编辑回退路由时不传 source 字段 → 正常更新（如只改目标模型）。"""
+        rid = self.db.add_route({"source": "*", "target_model_id": self.mid})
+        mid2 = self.db.add_model({"name": "claude", "upstream_id": "up-a"})
+        # 不传 source，只改 target_model_id
+        self.db.update_route(rid, {"target_model_id": mid2})
+        r = self.db.get_route(rid)
+        self.assertEqual(r["source"], "*")
+        self.assertEqual(r["target_name"], "claude")
     def test_delete_route(self):
         rid = self.db.add_route({"source": "z-model", "target_model_id": self.mid})
         self.db.delete_route(rid)
