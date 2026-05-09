@@ -1,0 +1,555 @@
+"""测试 proxy/handler.py 统一请求处理器的路由与透传/转换逻辑。
+
+测试覆盖:
+- do_POST 路径路由 (responses / messages / chat_completions / fallback)
+- 透传判定 (request_type == upstream.format)
+- 转换判定 (request_type != upstream.format)
+- 透传模式日志 (passthrough=True 标记)
+- 转换模式日志 (4 阶段完整)
+- 非流式响应结构
+- 流式 SSE 事件格式
+"""
+
+import io
+import json
+import sys
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from proxy.request_logger import (
+    REQUEST_TYPE_RESPONSES,
+    REQUEST_TYPE_MESSAGES,
+    REQUEST_TYPE_CHAT_COMPLETIONS,
+)
+from proxy.handler import ProxyHandler
+
+
+# ─── 测试辅助 ──────────────────────────────────────────────────────────
+
+
+def _default_upstream_cfg():
+    """标准上游配置。"""
+    return {
+        "base_url": "http://127.0.0.1:4000/",
+        "api_key": "test-key",
+        "timeout": 120,
+        "connect_timeout": 10,
+        "ssl_verify": True,
+        "retry": 0,
+    }
+
+
+def _resolve_result(target_name="gpt-4o", format_type="chat_completions"):
+    """模拟 config_cache.resolve() 返回值。"""
+    return {
+        "target_name": target_name,
+        "multimodal": False,
+        "format": format_type,
+        "matched_source": "*",
+        "upstream": _default_upstream_cfg(),
+    }
+
+
+def _make_real_handler(body_bytes, path="/v1/chat/completions", method="POST"):
+    """构建拥有真实 ProxyHandler 方法的测试 handler。
+
+    通过创建 ProxyHandler 子类并覆盖 __init__，绕过 BaseHTTPRequestHandler
+    的网络初始化，同时保留所有方法可正常调用。
+
+    所有 send_* / wfile 等均 mock，供测试断言。
+    """
+    body_bytes = body_bytes or b'{"model":"gpt-4o"}'
+
+    class _TestHandler(ProxyHandler):
+        def __init__(self):
+            # 不调用 super().__init__——绕过 BaseHTTPRequestHandler 的网络层
+            self.rfile = io.BytesIO(body_bytes)
+            self.wfile = io.BytesIO()
+
+            hdr = MagicMock()
+            hdr.get = lambda k, d=None: {
+                "Content-Length": str(len(body_bytes)),
+                "Content-Type": "application/json",
+                "User-Agent": "codex-cli/1.0",
+            }.get(k, d)
+            self.headers = hdr
+
+            self.path = path
+            self.command = method
+            self.client_address = ("127.0.0.1", 0)
+            self.request_version = "HTTP/1.1"
+
+            # 响应方法全部 mock
+            self.send_response = MagicMock()
+            self.send_header = MagicMock()
+            self.end_headers = MagicMock()
+            self.close_connection = False
+
+            # server 模拟
+            self.server = MagicMock()
+            self.server.response_store = None
+
+    return _TestHandler()
+
+
+def _mock_logger():
+    """返回 mock logger，记录所有调用。"""
+    logger = MagicMock()
+    logger.log_raw_request = MagicMock()
+    logger.log_converted_request = MagicMock()
+    logger.log_upstream_response = MagicMock()
+    logger.log_converted_response = MagicMock()
+    return logger
+
+
+# ─── 路由测试 ──────────────────────────────────────────────────────────
+
+
+class TestHandlerRouting(unittest.TestCase):
+    """测试 do_POST 根据路径确定 request_type 并路由正确。"""
+
+    def setUp(self):
+        self.logger = _mock_logger()
+
+    def _route_test(self, path, expected_method, upstream_format="chat_completions"):
+        """通用路由测试辅助。返回 handler 供断言。"""
+        handler = _make_real_handler(b'{"model":"gpt-4o"}', path=path)
+
+        # mock 内部处理方法，避免真实网络调用
+        handler._handle_passthrough = MagicMock()
+        handler._handle_convert = MagicMock()
+
+        upstream = _resolve_result(format_type=upstream_format)
+
+        with patch("proxy.handler.config_cache") as mock_cc,\
+             patch("proxy.handler.get_logger") as mock_gl,\
+             patch("proxy.handler.CONFIG") as mock_cfg:
+            mock_cc.resolve.return_value = upstream
+            mock_gl.return_value = self.logger
+            mock_cfg.get.return_value = _default_upstream_cfg()
+
+            handler.do_POST()
+
+        return handler
+
+    def test_post_responses_route_to_convert(self):
+        """POST /v1/responses + format=chat_completions → 转换路径。"""
+        handler = self._route_test("/v1/responses", "_handle_convert",
+                                   upstream_format="chat_completions")
+        handler._handle_convert.assert_called_once()
+        self.assertEqual(handler._handle_convert.call_args[0][0],
+                         REQUEST_TYPE_RESPONSES)
+
+    def test_post_messages_route_to_convert(self):
+        """POST /v1/messages → request_type=messages。"""
+        handler = self._route_test("/v1/messages", "_handle_convert",
+                                   upstream_format="chat_completions")
+        handler._handle_convert.assert_called_once()
+        self.assertEqual(handler._handle_convert.call_args[0][0],
+                         REQUEST_TYPE_MESSAGES)
+
+    def test_post_chat_completions_route_to_passthrough(self):
+        """POST /v1/chat/completions + format=chat_completions → 透传。"""
+        handler = self._route_test("/v1/chat/completions", "_handle_passthrough",
+                                   upstream_format="chat_completions")
+        handler._handle_passthrough.assert_called_once()
+
+    def test_post_v1_other_fallback_to_passthrough(self):
+        """POST /v1/embeddings → fallback chat_completions + format 匹配 → 透传。"""
+        handler = self._route_test("/v1/embeddings", "_handle_passthrough",
+                                   upstream_format="chat_completions")
+        handler._handle_passthrough.assert_called_once()
+
+    def test_post_unknown_path_404(self):
+        """POST 非 /v1/ 路径 → 404。"""
+        handler = _make_real_handler(b'{}', path="/some/random")
+
+        with patch("proxy.handler.config_cache") as mock_cc,\
+             patch("proxy.handler.get_logger") as mock_gl,\
+             patch("proxy.handler.CONFIG"):
+            mock_cc.resolve.return_value = _resolve_result()
+            mock_gl.return_value = self.logger
+            handler.do_POST()
+
+        handler.send_response.assert_called_with(404)
+
+    def test_get_health_200(self):
+        """GET /health → 200 OK。"""
+        handler = _make_real_handler(b'', path="/health", method="GET")
+        handler.do_GET()
+        handler.send_response.assert_called_with(200)
+
+    def test_get_v1_responses_426(self):
+        """GET /v1/responses → 426 Upgrade Required。"""
+        handler = _make_real_handler(b'', path="/v1/responses", method="GET")
+        handler.do_GET()
+        handler.send_response.assert_called_with(426)
+
+
+# ─── 透传判定测试 ──────────────────────────────────────────────────────
+
+
+class TestHandlerPassthrough(unittest.TestCase):
+    """测试透传/转换判定逻辑及透传模式下的日志行为。"""
+
+    def setUp(self):
+        self.logger = _mock_logger()
+
+    def _run_do_post(self, path, upstream_format, body_bytes=None):
+        """运行 do_POST，mock 网络层依赖，返回 handler。"""
+        body = body_bytes or b'{"model":"gpt-4o"}'
+        handler = _make_real_handler(body, path=path)
+
+        # mock 转发方法防止网络调用
+        handler._forward_pass_through_non_streaming = MagicMock()
+        handler._forward_pass_through_streaming = MagicMock()
+        handler._forward_non_streaming = MagicMock()
+        handler._forward_streaming = MagicMock()
+
+        upstream = _resolve_result(format_type=upstream_format)
+
+        with patch("proxy.handler.config_cache") as mock_cc,\
+             patch("proxy.handler.get_logger") as mock_gl,\
+             patch("proxy.handler.CONFIG") as mock_cfg:
+            mock_cc.resolve.return_value = upstream
+            mock_gl.return_value = self.logger
+            mock_cfg.get.return_value = _default_upstream_cfg()
+
+            handler.do_POST()
+
+        return handler
+
+    def test_passthrough_when_format_matches(self):
+        """request_type == upstream.format → 透传。"""
+        handler = self._run_do_post("/v1/responses", "responses")
+        handler._forward_pass_through_non_streaming.assert_called_once()
+
+    def test_convert_when_format_mismatch(self):
+        """request_type != upstream.format → 转换。"""
+        handler = self._run_do_post("/v1/responses", "messages")
+        handler._forward_non_streaming.assert_called_once()
+
+    def test_convert_when_no_format(self):
+        """upstream.format 为空 → 转换路径。"""
+        handler = self._run_do_post("/v1/chat/completions", "")
+        handler._forward_non_streaming.assert_called_once()
+
+    def test_passthrough_log_stage2_mark(self):
+        """透传阶段 2: log_converted_request 含 passthrough=True。"""
+        handler = self._run_do_post("/v1/responses", "responses")
+
+        log_calls = self.logger.log_converted_request.call_args_list
+        self.assertGreaterEqual(len(log_calls), 1)
+
+        passthrough_data = log_calls[0][0][3]  # data 是第 4 位参
+        self.assertTrue(passthrough_data.get("passthrough"))
+        self.assertTrue(passthrough_data.get("format_match"))
+
+    def test_passthrough_non_streaming_response(self):
+        """非流式透传: 响应正确转发。"""
+        mock_resp_body = b'{"id":"ok","choices":[{"message":{"content":"hi"}}]}'
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.getheader.return_value = "application/json"
+        mock_resp.read.return_value = mock_resp_body
+        mock_conn = MagicMock()
+        mock_conn.getresponse.return_value = mock_resp
+
+        handler = _make_real_handler(b'{"model":"gpt-4o"}')
+
+        with patch("proxy.handler.get_logger", return_value=self.logger),\
+             patch("proxy.handler.record_token_stats"),\
+             patch("proxy.handler.urllib.parse.urlparse") as mock_parse,\
+             patch("proxy.handler._create_upstream_conn") as mock_cconn:
+            mock_parse.return_value = MagicMock(path="/", port=4000, scheme="http")
+            mock_cconn.return_value = mock_conn
+
+            handler._forward_pass_through_non_streaming(
+                b'{"model":"gpt-4o"}',
+                "rid-001", "gpt-4o", "gpt-4o",
+                "ts", _default_upstream_cfg(),
+                "/v1/chat/completions", "chat_completions",
+            )
+
+        handler.send_response.assert_called_with(200)
+        handler.send_header.assert_any_call("Content-Type", "application/json")
+
+    def test_passthrough_streaming_sse(self):
+        """流式透传: SSE Content-Type + chunked 写入。"""
+        sse_data = b'data: {"id":"evt-1","type":"response.created"}\n\ndata: [DONE]\n\n'
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read = MagicMock(side_effect=[sse_data, b""])
+        mock_conn = MagicMock()
+        mock_conn.getresponse.return_value = mock_resp
+
+        handler = _make_real_handler(b'{"model":"gpt-4o","stream":true}')
+
+        with patch("proxy.handler.get_logger", return_value=self.logger),\
+             patch("proxy.handler.record_token_stats"),\
+             patch("proxy.handler.urllib.parse.urlparse") as mock_parse,\
+             patch("proxy.handler._create_upstream_conn") as mock_cconn:
+            mock_parse.return_value = MagicMock(path="/", port=4000, scheme="http")
+            mock_cconn.return_value = mock_conn
+
+            handler._forward_pass_through_streaming(
+                b'{"model":"gpt-4o","stream":true}',
+                "rid-001", "gpt-4o", "gpt-4o",
+                "ts", _default_upstream_cfg(),
+                "/v1/chat/completions", "chat_completions",
+            )
+
+        handler.send_header.assert_any_call("Content-Type", "text/event-stream")
+
+
+# ─── 转换路径测试 ──────────────────────────────────────────────────────
+
+
+class TestHandlerConvert(unittest.TestCase):
+    """测试转换路径: 请求转换、4 阶段日志、响应格式。"""
+
+    def setUp(self):
+        self.logger = _mock_logger()
+
+    def _run_convert(self, path, body, upstream_format):
+        """运行 do_POST → _handle_convert，mock 网络层。"""
+        body_bytes = json.dumps(body).encode()
+        handler = _make_real_handler(body_bytes, path=path)
+        handler._forward_non_streaming = MagicMock()
+        handler._forward_streaming = MagicMock()
+
+        upstream = _resolve_result(format_type=upstream_format)
+
+        with patch("proxy.handler.config_cache") as mock_cc,\
+             patch("proxy.handler.get_logger") as mock_gl,\
+             patch("proxy.handler.CONFIG") as mock_cfg:
+            mock_cc.resolve.return_value = upstream
+            mock_gl.return_value = self.logger
+            mock_cfg.get.return_value = _default_upstream_cfg()
+
+            handler.do_POST()
+
+        return handler
+
+    def test_convert_logging_stages(self):
+        """转换模式: 阶段 1/2 日志记录。"""
+        body = {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}
+        handler = self._run_convert("/v1/chat/completions", body, "responses")
+
+        # 阶段 1: (request_id, model_name, target, body, ...)
+        self.logger.log_raw_request.assert_called()
+        raw_args = self.logger.log_raw_request.call_args[0]
+        self.assertEqual(raw_args[1], "gpt-4o", "阶段 1: model_name")
+
+        # 阶段 2: (request_id, model_name, target, chat_body, ...)
+        self.logger.log_converted_request.assert_called()
+        conv_args = self.logger.log_converted_request.call_args[0]
+        self.assertEqual(conv_args[1], "gpt-4o", "阶段 2: model_name")
+
+    def test_convert_responses_to_chat(self):
+        """responses body → Chat Completions 格式。"""
+        body = {
+            "model": "gpt-4o",
+            "instructions": "You are helpful.",
+            "input": [{"type": "message", "role": "user", "content": "Hello"}],
+        }
+        handler = self._run_convert("/v1/responses", body, "chat_completions")
+
+        handler._forward_non_streaming.assert_called_once()
+        chat_body = handler._forward_non_streaming.call_args[0][0]
+        self.assertIn("messages", chat_body)
+        self.assertEqual(chat_body["messages"][0]["role"], "system")
+
+    def test_convert_messages_to_chat(self):
+        """Anthropic Messages body → Chat Completions 格式。"""
+        body = {
+            "model": "claude-sonnet",
+            "system": "You are helpful.",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 1000,
+        }
+        handler = self._run_convert("/v1/messages", body, "chat_completions")
+
+        handler._forward_non_streaming.assert_called_once()
+        chat_body = handler._forward_non_streaming.call_args[0][0]
+        self.assertIn("messages", chat_body)
+        self.assertEqual(chat_body["messages"][0]["role"], "system")
+
+    def test_convert_non_streaming_response(self):
+        """非流式转换: Chat Completions → 最终响应。"""
+        chat_resp = {
+            "id": "chatcmpl-abc",
+            "model": "gpt-4o",
+            "choices": [{"message": {"content": "Hello"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps(chat_resp).encode()
+        mock_conn = MagicMock()
+        mock_conn.getresponse.return_value = mock_resp
+
+        handler = _make_real_handler(b'{"model":"gpt-4o"}')
+
+        with patch("proxy.handler.get_logger", return_value=self.logger),\
+             patch("proxy.handler.record_token_stats"),\
+             patch("proxy.handler.urllib.parse.urlparse") as mock_parse,\
+             patch("proxy.handler._create_upstream_conn") as mock_cconn:
+            mock_parse.return_value = MagicMock(path="/", port=4000, scheme="http")
+            mock_cconn.return_value = mock_conn
+
+            handler._forward_non_streaming(
+                {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
+                "rid-001", "gpt-4o", "gpt-4o", "ts",
+                response_converter=lambda r: r,
+                upstream_cfg=_default_upstream_cfg(),
+                request_type="chat_completions",
+            )
+
+        handler.send_response.assert_called_with(200)
+
+    def test_convert_streaming_sse(self):
+        """流式转换: SSE 事件 type 字段正确注入。"""
+        sse_payload = (
+            b'data: {"id":"chatcmpl-1","object":"chat.completion.chunk",'
+            b'"choices":[{"delta":{"content":"Hello"},"index":0}]}\n\n'
+            b'data: [DONE]\n\n'
+        )
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.getheader.return_value = "text/event-stream"
+        mock_resp.read = MagicMock(side_effect=[sse_payload, b""])
+        mock_conn = MagicMock()
+        mock_conn.getresponse.return_value = mock_resp
+
+        handler = _make_real_handler(b'{"model":"gpt-4o","stream":true}')
+        written = []
+        handler.wfile.write = lambda d: written.append(d)
+        handler.wfile.flush = MagicMock()
+        handler.wfile.close = MagicMock()
+
+        with patch("proxy.handler.get_logger", return_value=self.logger),\
+             patch("proxy.handler.record_token_stats"),\
+             patch("proxy.handler.urllib.parse.urlparse") as mock_parse,\
+             patch("proxy.handler._create_upstream_conn") as mock_cconn,\
+             patch("proxy.handler.ssl.create_default_context") as mock_ssl:
+            mock_parse.return_value = MagicMock(path="/", port=4000, scheme="http")
+            mock_ssl.return_value = MagicMock()
+            mock_cconn.return_value = mock_conn
+
+            handler._forward_streaming(
+                {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}],
+                 "stream": True},
+                {"target": "gpt-4o", "multimodal": False},
+                "rid-001", "gpt-4o", "gpt-4o", "ts",
+                upstream_cfg=_default_upstream_cfg(),
+                request_type="chat_completions",
+            )
+
+        handler.send_header.assert_any_call("Content-Type", "text/event-stream")
+        self.assertGreater(len(written), 0)
+        all_out = b"".join(written)
+        self.assertIn(b'"type"', all_out, "SSE 事件需包含 type 字段")
+
+
+# ─── 端到端流程 ────────────────────────────────────────────────────────
+
+
+class TestHandlerEndToEnd(unittest.TestCase):
+    """mock 全部外部依赖，验证 do_POST 完整流程。"""
+
+    def setUp(self):
+        self.logger = _mock_logger()
+
+    def test_full_flow_passthrough(self):
+        """透传全流程: do_POST → passthrough → non_streaming → 4 阶段日志。"""
+        upstream = _resolve_result(format_type="chat_completions")
+        mock_resp_body = b'{"id":"ok","choices":[]}'
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.getheader.return_value = "application/json"
+        mock_resp.read.return_value = mock_resp_body
+        mock_conn = MagicMock()
+        mock_conn.getresponse.return_value = mock_resp
+
+        handler = _make_real_handler(b'{"model":"gpt-4o"}', path="/v1/chat/completions")
+
+        # urlparse 同时被 do_POST（路由）和 forwarding（上游）调用，用 side_effect 区分
+        from urllib.parse import urlparse as _real_urlparse
+
+        with patch("proxy.handler.config_cache") as mock_cc,\
+             patch("proxy.handler.get_logger") as mock_gl,\
+             patch("proxy.handler.CONFIG") as mock_cfg,\
+             patch("proxy.handler.record_token_stats"),\
+             patch("proxy.handler.urllib.parse.urlparse") as mock_parse,\
+             patch("proxy.handler._create_upstream_conn") as mock_cconn:
+            mock_cc.resolve.return_value = upstream
+            mock_gl.return_value = self.logger
+            mock_cfg.get.return_value = _default_upstream_cfg()
+            mock_parse.side_effect = lambda u: (
+                MagicMock(path="/", port=4000, scheme="http")
+                if u.startswith("http")
+                else _real_urlparse(u)
+            )
+            mock_cconn.return_value = mock_conn
+
+            handler.do_POST()
+
+        handler.send_response.assert_called_with(200)
+        self.logger.log_raw_request.assert_called()
+        self.logger.log_converted_request.assert_called()
+        self.logger.log_upstream_response.assert_called()
+        self.logger.log_converted_response.assert_called()
+    def test_full_flow_convert(self):
+        """转换全流程: do_POST → convert → non_streaming → 4 阶段日志。"""
+        upstream = _resolve_result(format_type="messages")  # mismatch
+        chat_resp = {
+            "id": "chatcmpl-1", "model": "gpt-4o",
+            "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps(chat_resp).encode()
+        mock_conn = MagicMock()
+        mock_conn.getresponse.return_value = mock_resp
+
+        body = {
+            "model": "gpt-4o",
+            "instructions": "Be helpful",
+            "input": [{"type": "message", "role": "user", "content": "hi"}],
+        }
+        handler = _make_real_handler(json.dumps(body).encode(), path="/v1/responses")
+
+        from urllib.parse import urlparse as _real_urlparse
+
+        with patch("proxy.handler.config_cache") as mock_cc,\
+             patch("proxy.handler.get_logger") as mock_gl,\
+             patch("proxy.handler.CONFIG") as mock_cfg,\
+             patch("proxy.handler.record_token_stats"),\
+             patch("proxy.handler.urllib.parse.urlparse") as mock_parse,\
+             patch("proxy.handler._create_upstream_conn") as mock_cconn:
+            mock_cc.resolve.return_value = upstream
+            mock_gl.return_value = self.logger
+            mock_cfg.get.return_value = _default_upstream_cfg()
+            mock_parse.side_effect = lambda u: (
+                MagicMock(path="/", port=4000, scheme="http")
+                if u.startswith("http")
+                else _real_urlparse(u)
+            )
+            mock_cconn.return_value = mock_conn
+
+            handler.do_POST()
+
+        self.logger.log_raw_request.assert_called()
+        self.logger.log_converted_request.assert_called()
+        self.logger.log_upstream_response.assert_called()
+        self.logger.log_converted_response.assert_called()
+        handler.send_response.assert_called_with(200)
+
+
+if __name__ == "__main__":
+    unittest.main()

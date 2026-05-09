@@ -15,8 +15,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from token_stats import _find_first
-from sse_utils import _format_sse_event
+from .token_stats import _find_first
+from .sse_utils import _format_sse_event
 
 logger = logging.getLogger(__name__)
 
@@ -862,7 +862,7 @@ def create_codex_sse_stream(upstream_response, request_messages: list = None, re
 
     # finish() 返回后 output_items 已按 output_index 排序为 (index, item) 元组
     if response_store is not None:
-        from response_store import ResponseRecord
+        from .response_store import ResponseRecord
         output_list = [item for _, item in converter.output_items]
         assistant_msgs = output_items_to_messages(output_list)
         conversation = [

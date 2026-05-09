@@ -49,7 +49,8 @@ class ConfigDB:
                     retry           INTEGER NOT NULL DEFAULT 1    CHECK(retry >= 0),
                     is_active       INTEGER NOT NULL DEFAULT 1    CHECK(is_active IN (0, 1)),
                     is_default      INTEGER NOT NULL DEFAULT 0    CHECK(is_default IN (0, 1)),
-                    format          TEXT NOT NULL DEFAULT 'openai_chat',
+                    format          TEXT NOT NULL DEFAULT 'openai_chat'
+                                    CHECK(format IN ('responses', 'messages', 'chat_completions')),
                     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
                 );
@@ -67,11 +68,11 @@ class ConfigDB:
                     id              INTEGER PRIMARY KEY AUTOINCREMENT,
                     source          TEXT NOT NULL CHECK(length(source) > 0),
                     target_model_id INTEGER NOT NULL REFERENCES target_models(id) ON DELETE RESTRICT,
-                    proxy_type      TEXT NOT NULL DEFAULT 'codex'
-                                    CHECK(proxy_type IN ('codex', 'claude', 'pass_through')),
+                    request_type    TEXT NOT NULL DEFAULT 'responses'
+                                    CHECK(request_type IN ('responses', 'messages', 'chat_completions')),
                     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
-                    UNIQUE(source, proxy_type)
+                    UNIQUE(source, request_type)
                 );
             """)
         finally:
@@ -136,7 +137,7 @@ class ConfigDB:
                     data.get("ssl_verify", 1),
                     data.get("retry", 1),
                     data.get("is_default", 0),
-                    data.get("format", "openai_chat"),
+                    data.get("format", "chat_completions"),
                 ),
             )
             conn.commit()
@@ -294,14 +295,14 @@ class ConfigDB:
 
     # ─── 路由映射 CRUD ────────────────────────────────────────────
 
-    def list_routes(self, proxy_type: Optional[str] = None):
+    def list_routes(self, request_type: Optional[str] = None):
         conn = self._connect()
         try:
             params = []
             where = ""
-            if proxy_type is not None:
-                where = "WHERE mr.proxy_type = ?"
-                params.append(proxy_type)
+            if request_type is not None:
+                where = "WHERE mr.request_type = ?"
+                params.append(request_type)
             rows = conn.execute(
                 f"""SELECT mr.*, tm.name as target_name, tm.upstream_id,
                           u.is_active as upstream_active
@@ -333,9 +334,9 @@ class ConfigDB:
             conn.close()
 
     def add_route(self, data: dict) -> int:
-        proxy_type = data.get("proxy_type", "codex")
-        if proxy_type not in ("codex", "claude", "pass_through"):
-            raise ValueError("proxy_type must be one of: codex, claude, pass_through")
+        request_type = data.get("request_type", "responses")
+        if request_type not in ("responses", "messages", "chat_completions"):
+            raise ValueError("request_type must be one of: responses, messages, chat_completions")
         conn = self._connect()
         try:
             # 校验目标模型所属上游是否活跃
@@ -348,8 +349,8 @@ class ConfigDB:
             if not active:
                 raise ValueError("目标模型不存在或所属上游已禁用")
             cursor = conn.execute(
-                "INSERT INTO model_routes (source, target_model_id, proxy_type) VALUES (?, ?, ?)",
-                (data["source"], data["target_model_id"], proxy_type),
+                "INSERT INTO model_routes (source, target_model_id, request_type) VALUES (?, ?, ?)",
+                (data["source"], data["target_model_id"], request_type),
             )
             conn.commit()
             return cursor.lastrowid
@@ -361,10 +362,10 @@ class ConfigDB:
         try:
             fields = []
             values = []
-            for key in ("source", "target_model_id", "proxy_type"):
+            for key in ("source", "target_model_id", "request_type"):
                 if key in data:
-                    if key == "proxy_type" and data[key] not in ("codex", "claude", "pass_through"):
-                        raise ValueError("proxy_type must be one of: codex, claude, pass_through")
+                    if key == "request_type" and data[key] not in ("responses", "messages", "chat_completions"):
+                        raise ValueError("request_type must be one of: responses, messages, chat_completions")
                     fields.append(f"{key} = ?")
                     values.append(data[key])
             if not fields:
@@ -428,19 +429,19 @@ class ConfigDB:
 
     # ─── 配置查询（供 proxy 使用）────────────────────────────────
 
-    def resolve_model(self, source_name: str, proxy_type: str = "codex") -> Optional[dict]:
+    def resolve_model(self, source_name: str, request_type: str = "responses") -> Optional[dict]:
         """返回值约定：
         - 找到可用匹配（路由存在 + 上游 is_active=1）→ 返回完整配置 dict
         - 匹配到但上游禁用 → 跳过，继续尝试 "*" fallback
         - "*" 也找不到或也禁用 → 返回 None
         """
         for name in (source_name, "*"):
-            row = self.resolve_one(name, proxy_type)
+            row = self.resolve_one(name, request_type)
             if row is not None:
                 return row
         return None
 
-    def resolve_one(self, source_name: str, proxy_type: str = "codex") -> Optional[dict]:
+    def resolve_one(self, source_name: str, request_type: str = "responses") -> Optional[dict]:
         """精确匹配单个 source 的路由配置，无 fallback（供 ConfigCache 内部使用）。"""
         conn = self._connect()
         try:
@@ -451,8 +452,8 @@ class ConfigDB:
                    FROM model_routes mr
                    JOIN target_models tm ON mr.target_model_id = tm.id
                    JOIN upstreams u ON tm.upstream_id = u.id
-                   WHERE mr.source = ? AND mr.proxy_type = ? AND u.is_active = 1""",
-                (source_name, proxy_type),
+                   WHERE mr.source = ? AND mr.request_type = ? AND u.is_active = 1""",
+                (source_name, request_type),
             ).fetchone()
             if row is None:
                 return None
@@ -475,16 +476,16 @@ class ConfigDB:
         finally:
             conn.close()
 
-    def get_all_routes(self, proxy_type: Optional[str] = None) -> dict:
+    def get_all_routes(self, request_type: Optional[str] = None) -> dict:
         conn = self._connect()
         try:
             params = []
             where = "WHERE u.is_active = 1"
-            if proxy_type is not None:
-                where += " AND mr.proxy_type = ?"
-                params.append(proxy_type)
+            if request_type is not None:
+                where += " AND mr.request_type = ?"
+                params.append(request_type)
             rows = conn.execute(
-                f"""SELECT mr.source, mr.proxy_type, tm.name as target_name, tm.multimodal,
+                f"""SELECT mr.source, mr.request_type, tm.name as target_name, tm.multimodal,
                           u.format, tm.upstream_id
                    FROM model_routes mr
                    JOIN target_models tm ON mr.target_model_id = tm.id
@@ -499,14 +500,14 @@ class ConfigDB:
                     "multimodal": r["multimodal"],
                     "format": r["format"],
                     "upstream_id": r["upstream_id"],
-                    "proxy_type": r["proxy_type"],
+                    "request_type": r["request_type"],
                 }
             return result
         finally:
             conn.close()
 
-    def validate_star_fallback(self, proxy_type: str = "codex") -> bool:
-        return self.resolve_model("*", proxy_type) is not None
+    def validate_star_fallback(self, request_type: str = "responses") -> bool:
+        return self.resolve_model("*", request_type) is not None
 
     def get_counts(self) -> dict:
         conn = self._connect()
@@ -541,7 +542,7 @@ class Migrations:
         return conn
 
     def status(self) -> dict:
-        """返回当前迁移状态。version 0 = 未迁移，version >= 2 = 已迁移。"""
+        """返回当前迁移状态。version 0 = 未迁移，version >= 3 = 已迁移。"""
         conn = self._connect()
         try:
             row = conn.execute(
@@ -549,10 +550,20 @@ class Migrations:
             ).fetchone()
             version = row["version"] if row else 0
             if version == 0:
+                # 可能是真正的 v0，也可能是 _ensure_db() 创建的新 v3 数据库但没有 schema_version 行
+                has_request_type = conn.execute(
+                    "SELECT 1 FROM pragma_table_info('model_routes') WHERE name = 'request_type'"
+                ).fetchone()
+                if has_request_type:
+                    return {
+                        "migrated": True,
+                        "version": 3,
+                        "details": "已迁移到 v3: 数据库由更新的 _ensure_db() 直接创建",
+                    }
                 return {
                     "migrated": False,
                     "version": 0,
-                    "details": "尚未执行迁移: model_routes 表缺少 proxy_type 列",
+                    "details": "尚未执行迁移: model_routes 表缺少 request_type 列",
                 }
             if version == 1:
                 return {
@@ -560,16 +571,22 @@ class Migrations:
                     "version": 1,
                     "details": "需要执行迁移: format 字段需要从 target_models 迁移到 upstreams",
                 }
+            if version == 2:
+                return {
+                    "migrated": False,
+                    "version": 2,
+                    "details": "需要执行迁移: proxy_type 列需要重命名为 request_type，数据值需要映射",
+                }
             return {
                 "migrated": True,
                 "version": version,
-                "details": f"已迁移到 v{version}: format 字段在 upstreams 表中",
+                "details": f"已迁移到 v{version}: request_type 和 format 约束已更新",
             }
         finally:
             conn.close()
 
     def migrate(self) -> dict:
-        """执行迁移（幂等）。v0 → v1 → v2 按序执行。"""
+        """执行迁移（幂等）。v0 → v1 → v2 → v3 按序执行。"""
         s = self.status()
         if s["migrated"]:
             logging.info(f"[Migrations] 数据库已是最新版本 v{s['version']}，跳过迁移")
@@ -588,10 +605,12 @@ class Migrations:
             self._migrate_v0_to_v1(backup_path)
         if version <= 1:
             self._migrate_v1_to_v2(backup_path)
+        if version <= 2:
+            self._migrate_v2_to_v3(backup_path)
 
         return {
             "status": "ok",
-            "version": 2,
+            "version": 3,
             "backup_path": str(backup_path),
         }
 
@@ -754,6 +773,155 @@ class Migrations:
         finally:
             conn.close()
 
+    def _migrate_v2_to_v3(self, backup_path: Path):
+        """执行 v2 → v3 迁移。
+
+        model_routes:
+          - proxy_type 重命名为 request_type
+          - 数据映射: codex → responses, claude → messages, pass_through → chat_completions
+          - CHECK 约束更新为 (responses, messages, chat_completions)
+        upstreams:
+          - format 列增加 CHECK 约束: (responses, messages, chat_completions)
+          - 数据映射: openai_chat → chat_completions, anthropic → messages
+        """
+        conn = self._connect()
+        try:
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.execute("BEGIN TRANSACTION")
+            try:
+                # ── model_routes: 重建表 ──
+                old_route_count = conn.execute(
+                    "SELECT COUNT(*) FROM model_routes"
+                ).fetchone()[0]
+                logging.info(
+                    f"[Migrations] v2→v3 STEP 1: 原始 model_routes 记录数 = {old_route_count}"
+                )
+
+                conn.execute("""
+                    CREATE TABLE model_routes_new (
+                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source          TEXT NOT NULL CHECK(length(source) > 0),
+                        target_model_id INTEGER NOT NULL REFERENCES target_models(id) ON DELETE RESTRICT,
+                        request_type    TEXT NOT NULL DEFAULT 'responses'
+                                        CHECK(request_type IN ('responses', 'messages', 'chat_completions')),
+                        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                        UNIQUE(source, request_type)
+                    );
+                """)
+                logging.info("[Migrations] v2→v3 STEP 2: model_routes_new 表创建完成")
+
+                conn.execute("""
+                    INSERT INTO model_routes_new
+                        (id, source, target_model_id, request_type, created_at, updated_at)
+                    SELECT id, source, target_model_id,
+                           CASE proxy_type
+                               WHEN 'codex' THEN 'responses'
+                               WHEN 'claude' THEN 'messages'
+                               WHEN 'pass_through' THEN 'chat_completions'
+                               ELSE 'responses'
+                           END,
+                           created_at, updated_at
+                    FROM model_routes;
+                """)
+                logging.info("[Migrations] v2→v3 STEP 3: model_routes 数据复制完成")
+
+                conn.execute("DROP TABLE model_routes;")
+                conn.execute(
+                    "ALTER TABLE model_routes_new RENAME TO model_routes;"
+                )
+                logging.info("[Migrations] v2→v3 STEP 4: model_routes 表替换完成")
+
+                new_route_count = conn.execute(
+                    "SELECT COUNT(*) FROM model_routes"
+                ).fetchone()[0]
+                if new_route_count < old_route_count:
+                    raise sqlite3.OperationalError(
+                        f"model_routes 迁移验证失败: 原有 {old_route_count} 条记录, 现有 {new_route_count} 条记录"
+                    )
+                logging.info(
+                    f"[Migrations] v2→v3 STEP 5: model_routes 验证通过, {new_route_count} 条记录"
+                )
+
+                # ── upstreams: 重建表以添加 format CHECK 约束 ──
+                old_upstream_count = conn.execute(
+                    "SELECT COUNT(*) FROM upstreams"
+                ).fetchone()[0]
+                logging.info(
+                    f"[Migrations] v2→v3 STEP 6: 原始 upstreams 记录数 = {old_upstream_count}"
+                )
+
+                conn.execute("""
+                    CREATE TABLE upstreams_new (
+                        id              TEXT PRIMARY KEY,
+                        base_url        TEXT NOT NULL,
+                        api_key         TEXT NOT NULL DEFAULT '',
+                        timeout         INTEGER NOT NULL DEFAULT 120  CHECK(timeout > 0),
+                        connect_timeout INTEGER NOT NULL DEFAULT 10   CHECK(connect_timeout > 0),
+                        ssl_verify      INTEGER NOT NULL DEFAULT 1    CHECK(ssl_verify IN (0, 1)),
+                        retry           INTEGER NOT NULL DEFAULT 1    CHECK(retry >= 0),
+                        is_active       INTEGER NOT NULL DEFAULT 1    CHECK(is_active IN (0, 1)),
+                        is_default      INTEGER NOT NULL DEFAULT 0    CHECK(is_default IN (0, 1)),
+                        format          TEXT NOT NULL DEFAULT 'chat_completions'
+                                        CHECK(format IN ('responses', 'messages', 'chat_completions')),
+                        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+                    );
+                """)
+                logging.info("[Migrations] v2→v3 STEP 7: upstreams_new 表创建完成")
+
+                conn.execute("""
+                    INSERT INTO upstreams_new
+                        (id, base_url, api_key, timeout, connect_timeout,
+                         ssl_verify, retry, is_active, is_default,
+                         format, created_at, updated_at)
+                    SELECT id, base_url, api_key, timeout, connect_timeout,
+                           ssl_verify, retry, is_active, is_default,
+                           CASE format
+                               WHEN 'openai_chat' THEN 'chat_completions'
+                               WHEN 'anthropic' THEN 'messages'
+                               ELSE 'chat_completions'
+                           END,
+                           created_at, updated_at
+                    FROM upstreams;
+                """)
+                logging.info("[Migrations] v2→v3 STEP 8: upstreams 数据复制完成")
+
+                conn.execute("DROP TABLE upstreams;")
+                conn.execute(
+                    "ALTER TABLE upstreams_new RENAME TO upstreams;"
+                )
+                logging.info("[Migrations] v2→v3 STEP 9: upstreams 表替换完成")
+
+                new_upstream_count = conn.execute(
+                    "SELECT COUNT(*) FROM upstreams"
+                ).fetchone()[0]
+                if new_upstream_count < old_upstream_count:
+                    raise sqlite3.OperationalError(
+                        f"upstreams 迁移验证失败: 原有 {old_upstream_count} 条记录, 现有 {new_upstream_count} 条记录"
+                    )
+                logging.info(
+                    f"[Migrations] v2→v3 STEP 10: upstreams 验证通过, {new_upstream_count} 条记录"
+                )
+
+                # ── schema_version ──
+                conn.execute("DELETE FROM schema_version;")
+                conn.execute(
+                    "INSERT INTO schema_version (version) VALUES (3);"
+                )
+                logging.info("[Migrations] v2→v3 STEP 11: schema_version 更新为 3")
+
+                conn.commit()
+                logging.info("[Migrations] v2→v3 迁移成功")
+            except Exception:
+                conn.rollback()
+                logging.error("[Migrations] v2→v3 迁移失败，已回滚", exc_info=True)
+                raise
+            finally:
+                conn.execute("PRAGMA foreign_keys = ON")
+        finally:
+            conn.close()
+
 
 class ConfigCache:
     """内存缓存，供 proxy.py 使用。"""
@@ -769,25 +937,25 @@ class ConfigCache:
         with self._lock:
             self._loaded_at = 0
 
-    def resolve(self, source_name: str, proxy_type: str = "codex") -> Optional[dict]:
+    def resolve(self, source_name: str, request_type: str = "responses") -> Optional[dict]:
         with self._lock:
-            self._refresh_if_stale(proxy_type)
-            key = (source_name, proxy_type)
+            self._refresh_if_stale(request_type)
+            key = (source_name, request_type)
             if key in self._routes:
                 return self._routes[key]
-            return self._routes.get(("*", proxy_type))
+            return self._routes.get(("*", request_type))
 
-    def get_all(self, proxy_type: Optional[str] = None) -> dict:
+    def get_all(self, request_type: Optional[str] = None) -> dict:
         with self._lock:
-            self._refresh_if_stale(proxy_type)
+            self._refresh_if_stale(request_type)
             result = {}
             for (src, pt), cfg in self._routes.items():
-                if proxy_type is not None and pt != proxy_type:
+                if request_type is not None and pt != request_type:
                     continue
                 result[src] = cfg
             return result
 
-    def _refresh_if_stale(self, proxy_type: Optional[str] = None):
+    def _refresh_if_stale(self, request_type: Optional[str] = None):
         now = time.time()
         if self._loaded_at > 0 and now - self._loaded_at < self._ttl:
             return
@@ -795,10 +963,10 @@ class ConfigCache:
             db = ConfigDB(self._db_path)
             try:
                 new_routes = {}
-                all_routes = db.list_routes(proxy_type)
+                all_routes = db.list_routes(request_type)
                 for route in all_routes:
                     source = route["source"]
-                    pt = route.get("proxy_type", "codex")
+                    pt = route.get("request_type", "responses")
                     cfg = db.resolve_one(source, pt)
                     if cfg:
                         new_routes[(source, pt)] = cfg

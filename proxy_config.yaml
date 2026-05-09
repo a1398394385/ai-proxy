@@ -10,9 +10,6 @@ ports:
   codex_proxy:
     host: "127.0.0.1"
     port: 48743
-  pass_through:
-    host: "127.0.0.1"
-    port: 48744
 
 upstream:
   base_url: "https://llm-open-api.cargoware.com/v1"

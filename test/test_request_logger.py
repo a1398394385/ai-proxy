@@ -7,7 +7,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
-from request_logger import RequestLogger, init_logger, get_logger, _generate_request_id
+from proxy.request_logger import RequestLogger, init_logger, get_logger, _generate_request_id
 
 
 def _query_debug_log(db_path, request_id=None):
@@ -109,7 +109,7 @@ class TestDBInitialization(unittest.TestCase):
         expected = {
             "id": "INTEGER",
             "request_id": "TEXT",
-            "agent": "TEXT",
+            "request_type": "TEXT",
             "model": "TEXT",
             "target_model": "TEXT",
             "request_ts": "TEXT",
@@ -145,36 +145,17 @@ class TestGenerateRequestId(unittest.TestCase):
         self.assertEqual(len(ids), 100)
 
 
-class TestExtractAgent(unittest.TestCase):
-    """User-Agent 提取验证。"""
-
-    def test_codex_detected(self):
-        from request_logger import _extract_agent
-        self.assertEqual(_extract_agent("codex-cli/1.0"), "codex")
-
-    def test_codex_case_insensitive(self):
-        from request_logger import _extract_agent
-        self.assertEqual(_extract_agent("CODEX/2.0"), "codex")
-
-    def test_unknown_agent(self):
-        from request_logger import _extract_agent
-        self.assertEqual(_extract_agent("curl/7.0"), "unknown")
-
-    def test_empty_user_agent(self):
-        from request_logger import _extract_agent
-        self.assertEqual(_extract_agent(""), "unknown")
-
 
 class TestGlobalLogger(unittest.TestCase):
     """全局单例 init_logger / get_logger。"""
 
     def setUp(self):
-        import request_logger
+        from proxy import request_logger
         self._prev_logger = request_logger._logger
         request_logger._logger = None
 
     def tearDown(self):
-        import request_logger
+        from proxy import request_logger
         request_logger._logger = self._prev_logger
 
     def test_init_logger_returns_instance(self):
@@ -192,7 +173,7 @@ class TestGlobalLogger(unittest.TestCase):
         tmpdir.cleanup()
 
     def test_get_logger_before_init_returns_none(self):
-        import request_logger
+        from proxy import request_logger
         request_logger._logger = None
         self.assertIsNone(get_logger())
 
@@ -323,7 +304,7 @@ class TestLogTokenStats(unittest.TestCase):
         rid = _generate_request_id()
         self.logger.log_token_stats(
             request_id=rid,
-            agent="codex",
+            request_type="codex",
             model="gpt-4o",
             target_model="qwen3.6-plus",
             request_ts="2026-04-25 15:30:00",
@@ -336,7 +317,7 @@ class TestLogTokenStats(unittest.TestCase):
         )
         rows = _query_token_stats(self.db_path, rid)
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["agent"], "codex")
+        self.assertEqual(rows[0]["request_type"], "codex")
         self.assertEqual(rows[0]["model"], "gpt-4o")
         self.assertEqual(rows[0]["target_model"], "qwen3.6-plus")
         self.assertEqual(rows[0]["request_ts"], "2026-04-25 15:30:00")
@@ -352,7 +333,7 @@ class TestLogTokenStats(unittest.TestCase):
         rid = _generate_request_id()
         self.logger.log_token_stats(
             request_id=rid,
-            agent="unknown",
+            request_type="unknown",
             model="*",
             target_model="qwen3.6-plus",
             request_ts="2026-04-25 15:30:00",
@@ -416,7 +397,7 @@ class TestCleanupExpired(unittest.TestCase):
         conn = sqlite3.connect(str(self.db_path))
         conn.execute(
             "INSERT INTO token_stats "
-            "(request_id, agent, model, target_model, request_ts, duration_ms, "
+            "(request_id, request_type, model, target_model, request_ts, duration_ms, "
             "input_tokens, output_tokens, cached_read_tokens, cached_write_tokens, status, created_at) "
             "VALUES (?, 'codex', 'gpt-4o', 'qwen', ?, 0, 0, 0, 0, 0, 'completed', ?)",
             (request_id, created_at, created_at),

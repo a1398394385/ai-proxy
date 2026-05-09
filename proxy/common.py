@@ -14,20 +14,19 @@ import http.client
 import urllib.parse
 from pathlib import Path
 
-from config_manager import ConfigCache, _parse_yaml, _yaml_scalar
+from .config_manager import ConfigCache, _parse_yaml, _yaml_scalar
 
-from request_logger import (
+from .request_logger import (
     get_logger,
     _generate_request_id,
-    _extract_agent,
 )
 
-from token_stats import record_token_stats
+from .token_stats import record_token_stats
 
 # ─── 配置变量 ──────────────────────────────────────────────────────────
 
 CONFIG = {}
-CONFIG_PATH = Path(__file__).parent / "proxy_config.yaml"
+CONFIG_PATH = Path(__file__).parent.parent / "proxy_config.yaml"
 
 # ─── 动态配置缓存（替代静态 model_map）─────────────────────────────
 CONFIG_DB_PATH = Path(os.path.expanduser("~/.hermes/config.db"))
@@ -68,14 +67,14 @@ def load_config(config_path: Path = None):
         )
 
 
-def resolve_model(model_name: str, proxy_type: str = 'codex') -> dict:
+def resolve_model(model_name: str, request_type: str = 'responses') -> dict:
     """使用动态配置缓存查找模型路由。
 
     返回格式与旧版兼容：
     {"target": str, "multimodal": bool}
     -> 新增 {"target": str, "multimodal": bool, "upstream": dict}
     """
-    cfg = config_cache.resolve(model_name, proxy_type)
+    cfg = config_cache.resolve(model_name, request_type)
     if cfg is None:
         return {"target": model_name, "multimodal": False}
     return {

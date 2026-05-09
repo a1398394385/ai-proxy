@@ -3,8 +3,8 @@ import json
 import logging
 from dataclasses import dataclass, field
 
-from sse_utils import _format_sse_event
-from transform_responses import _parse_sse_event, iter_sse_events
+from .sse_utils import _format_sse_event
+from .transform_responses import _parse_sse_event, iter_sse_events
 
 logger = logging.getLogger(__name__)
 

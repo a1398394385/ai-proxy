@@ -19,9 +19,9 @@
 - create_anthropic_sse_stream: 来自 transform_anthropic — Task 6 后可用
 """
 
-from sse_utils import _format_sse_event  # noqa: F401 — re-export
+from .sse_utils import _format_sse_event  # noqa: F401 — re-export
 
-from transform_responses import (  # noqa: F401 — re-export
+from .transform_responses import (  # noqa: F401 — re-export
     generate_response_id,
     responses_to_chat,
     chat_to_responses,
@@ -37,5 +37,5 @@ from transform_responses import (  # noqa: F401 — re-export
 )
 
 # Task 4-6 完成，激活 Anthropic re-export：
-from transform_anthropic import anthropic_to_chat, chat_to_anthropic, create_anthropic_sse_stream  # noqa: F401
+from .transform_anthropic import anthropic_to_chat, chat_to_anthropic, create_anthropic_sse_stream  # noqa: F401
 

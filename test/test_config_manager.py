@@ -13,13 +13,13 @@ class TestConfigDBInit(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_init_creates_database_file(self):
-        from config_manager import ConfigDB
+        from proxy.config_manager import ConfigDB
         db = ConfigDB(self.db_path)
         self.assertTrue(self.db_path.exists())
         db.close()
 
     def test_init_creates_all_tables(self):
-        from config_manager import ConfigDB
+        from proxy.config_manager import ConfigDB
         db = ConfigDB(self.db_path)
         conn = sqlite3.connect(str(self.db_path))
         tables = [r[0] for r in conn.execute(
@@ -33,7 +33,7 @@ class TestConfigDBInit(unittest.TestCase):
         self.assertIn("model_routes", tables)
 
     def test_pragma_foreign_keys_enabled(self):
-        from config_manager import ConfigDB
+        from proxy.config_manager import ConfigDB
         db = ConfigDB(self.db_path)
         conn = db._connect()
         fk = conn.execute("PRAGMA foreign_keys").fetchone()[0]
@@ -42,7 +42,7 @@ class TestConfigDBInit(unittest.TestCase):
         self.assertEqual(fk, 1)
 
     def test_pragma_wal_mode(self):
-        from config_manager import ConfigDB
+        from proxy.config_manager import ConfigDB
         db = ConfigDB(self.db_path)
         conn = db._connect()
         journal = conn.execute("PRAGMA journal_mode").fetchone()[0]
@@ -51,7 +51,7 @@ class TestConfigDBInit(unittest.TestCase):
         self.assertEqual(journal, "wal")
 
     def test_pragma_busy_timeout(self):
-        from config_manager import ConfigDB
+        from proxy.config_manager import ConfigDB
         db = ConfigDB(self.db_path)
         conn = db._connect()
         timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
@@ -60,7 +60,7 @@ class TestConfigDBInit(unittest.TestCase):
         self.assertEqual(timeout, 3000)
 
     def test_init_idempotent(self):
-        from config_manager import ConfigDB
+        from proxy.config_manager import ConfigDB
         db1 = ConfigDB(self.db_path)
         db1.close()
         db2 = ConfigDB(self.db_path)
@@ -72,7 +72,7 @@ class TestUpstreamCRUD(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmp.name) / "config.db"
-        from config_manager import ConfigDB
+        from proxy.config_manager import ConfigDB
         self.db = ConfigDB(self.db_path)
 
     def tearDown(self):
@@ -145,7 +145,7 @@ class TestModelCRUD(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmp.name) / "config.db"
-        from config_manager import ConfigDB
+        from proxy.config_manager import ConfigDB
         self.db = ConfigDB(self.db_path)
         self.db.add_upstream({"id": "up-a", "base_url": "http://a"})
         self.db.add_upstream({"id": "up-b", "base_url": "http://b"})
@@ -216,7 +216,7 @@ class TestRouteCRUD(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmp.name) / "config.db"
-        from config_manager import ConfigDB
+        from proxy.config_manager import ConfigDB
         self.db = ConfigDB(self.db_path)
         self.db.add_upstream({"id": "up-a", "base_url": "http://a"})
         self.mid = self.db.add_model({"name": "qwen", "upstream_id": "up-a"})
@@ -263,7 +263,7 @@ class TestResolveModel(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmp.name) / "config.db"
-        from config_manager import ConfigDB
+        from proxy.config_manager import ConfigDB
         self.db = ConfigDB(self.db_path)
         self.db.add_upstream({"id": "up-a", "base_url": "http://a", "api_key": "sk-a"})
         self.db.add_upstream({"id": "up-b", "base_url": "http://b", "api_key": "sk-b"})
@@ -335,7 +335,7 @@ class TestConfigCache(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmp.name) / "config.db"
-        from config_manager import ConfigDB, ConfigCache
+        from proxy.config_manager import ConfigDB, ConfigCache
         self.db = ConfigDB(self.db_path)
         self.db.add_upstream({"id": "up-a", "base_url": "http://a"})
         self.m1 = self.db.add_model({"name": "qwen", "upstream_id": "up-a"})
@@ -346,13 +346,13 @@ class TestConfigCache(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_cache_resolve_returns_config(self):
-        from config_manager import ConfigCache
+        from proxy.config_manager import ConfigCache
         cache = ConfigCache(self.db_path, ttl=5)
         cfg = cache.resolve("unknown")
         self.assertEqual(cfg["target_name"], "qwen")
 
     def test_cache_hit_avoids_db_read(self):
-        from config_manager import ConfigCache
+        from proxy.config_manager import ConfigCache
         cache = ConfigCache(self.db_path, ttl=99)
         cfg1 = cache.resolve("*")
         m2 = self.db.add_model({"name": "claude", "upstream_id": "up-a"})
@@ -362,7 +362,7 @@ class TestConfigCache(unittest.TestCase):
         self.assertEqual(cfg1["target_name"], cfg2["target_name"])
 
     def test_reload_refreshes_cache(self):
-        from config_manager import ConfigCache
+        from proxy.config_manager import ConfigCache
         cache = ConfigCache(self.db_path, ttl=99)
         cfg1 = cache.resolve("*")
         m2 = self.db.add_model({"name": "claude", "upstream_id": "up-a"})
@@ -373,13 +373,13 @@ class TestConfigCache(unittest.TestCase):
         self.assertEqual(cfg2["target_name"], "claude")
 
     def test_get_all(self):
-        from config_manager import ConfigCache
+        from proxy.config_manager import ConfigCache
         cache = ConfigCache(self.db_path, ttl=5)
         all_routes = cache.get_all()
         self.assertIn("*", all_routes)
 
     def test_ttl_expiry_refreshes(self):
-        from config_manager import ConfigCache
+        from proxy.config_manager import ConfigCache
         cache = ConfigCache(self.db_path, ttl=0)
         cfg1 = cache.resolve("*")
         m2 = self.db.add_model({"name": "claude", "upstream_id": "up-a"})
@@ -393,7 +393,7 @@ class TestRouteProxyType(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmp.name) / "config.db"
-        from config_manager import ConfigDB
+        from proxy.config_manager import ConfigDB
         self.db = ConfigDB(self.db_path)
         self.db.add_upstream({"id": "up-a", "base_url": "http://a", "api_key": "sk-a"})
         self.db.add_upstream({"id": "up-b", "base_url": "http://b", "api_key": "sk-b"})
@@ -404,42 +404,42 @@ class TestRouteProxyType(unittest.TestCase):
         self.db.close()
         self.tmp.cleanup()
 
-    def test_list_routes_filter_by_proxy_type(self):
-        self.db.add_route({"source": "gpt-4", "target_model_id": self.m1, "proxy_type": "codex"})
-        self.db.add_route({"source": "gpt-4", "target_model_id": self.m2, "proxy_type": "claude"})
-        self.db.add_route({"source": "sonnet", "target_model_id": self.m1, "proxy_type": "claude"})
+    def test_list_routes_filter_by_request_type(self):
+        self.db.add_route({"source": "gpt-4", "target_model_id": self.m1, "request_type": "responses"})
+        self.db.add_route({"source": "gpt-4", "target_model_id": self.m2, "request_type": "messages"})
+        self.db.add_route({"source": "sonnet", "target_model_id": self.m1, "request_type": "messages"})
 
-        codex_routes = self.db.list_routes(proxy_type="codex")
-        claude_routes = self.db.list_routes(proxy_type="claude")
+        responses_routes = self.db.list_routes(request_type="responses")
+        messages_routes = self.db.list_routes(request_type="messages")
         all_routes = self.db.list_routes()
 
-        self.assertEqual(len(codex_routes), 1)
-        self.assertEqual(codex_routes[0]["proxy_type"], "codex")
-        self.assertEqual(len(claude_routes), 2)
+        self.assertEqual(len(responses_routes), 1)
+        self.assertEqual(responses_routes[0]["request_type"], "responses")
+        self.assertEqual(len(messages_routes), 2)
         self.assertEqual(len(all_routes), 3)
 
-    def test_add_route_invalid_proxy_type(self):
+    def test_add_route_invalid_request_type(self):
         with self.assertRaises(ValueError):
-            self.db.add_route({"source": "gpt-4", "target_model_id": self.m1, "proxy_type": "invalid"})
+            self.db.add_route({"source": "gpt-4", "target_model_id": self.m1, "request_type": "invalid"})
 
-    def test_add_route_duplicate_source_same_proxy(self):
-        self.db.add_route({"source": "gpt-4", "target_model_id": self.m1, "proxy_type": "codex"})
+    def test_add_route_duplicate_source_same_request_type(self):
+        self.db.add_route({"source": "gpt-4", "target_model_id": self.m1, "request_type": "responses"})
         with self.assertRaises(sqlite3.IntegrityError):
-            self.db.add_route({"source": "gpt-4", "target_model_id": self.m2, "proxy_type": "codex"})
+            self.db.add_route({"source": "gpt-4", "target_model_id": self.m2, "request_type": "responses"})
 
-    def test_add_route_same_source_different_proxy(self):
-        self.db.add_route({"source": "gpt-4", "target_model_id": self.m1, "proxy_type": "codex"})
-        rid = self.db.add_route({"source": "gpt-4", "target_model_id": self.m2, "proxy_type": "claude"})
+    def test_add_route_same_source_different_request_type(self):
+        self.db.add_route({"source": "gpt-4", "target_model_id": self.m1, "request_type": "responses"})
+        rid = self.db.add_route({"source": "gpt-4", "target_model_id": self.m2, "request_type": "messages"})
         self.assertIsInstance(rid, int)
 
-    def test_resolve_one_proxy_type_isolation(self):
-        self.db.add_route({"source": "gpt-4o", "target_model_id": self.m1, "proxy_type": "codex"})
-        self.db.add_route({"source": "gpt-4o", "target_model_id": self.m2, "proxy_type": "claude"})
+    def test_resolve_one_request_type_isolation(self):
+        self.db.add_route({"source": "gpt-4o", "target_model_id": self.m1, "request_type": "responses"})
+        self.db.add_route({"source": "gpt-4o", "target_model_id": self.m2, "request_type": "messages"})
 
-        codex_result = self.db.resolve_one("gpt-4o", "codex")
-        claude_result = self.db.resolve_one("gpt-4o", "claude")
+        responses_result = self.db.resolve_one("gpt-4o", "responses")
+        messages_result = self.db.resolve_one("gpt-4o", "messages")
 
-        self.assertEqual(codex_result["target_name"], "qwen")
-        self.assertEqual(claude_result["target_name"], "claude")
-        self.assertNotEqual(codex_result["target_name"], claude_result["target_name"])
+        self.assertEqual(responses_result["target_name"], "qwen")
+        self.assertEqual(messages_result["target_name"], "claude")
+        self.assertNotEqual(responses_result["target_name"], messages_result["target_name"])
 

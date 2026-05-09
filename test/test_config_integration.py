@@ -3,7 +3,7 @@ import unittest
 import tempfile
 from pathlib import Path
 
-from config_manager import ConfigDB, ConfigCache, Migrations
+from proxy.config_manager import ConfigDB, ConfigCache, Migrations
 
 
 class TestConfigIntegration(unittest.TestCase):
@@ -90,10 +90,10 @@ class TestConfigIntegration(unittest.TestCase):
         self.assertEqual(result["status"], "already_migrated")
 
     def test_migration_data_preserved(self):
-        """迁移后数据完整性：路由数不变，所有路由 proxy_type 均为 'codex'。"""
+        """迁移后数据完整性：路由数不变，所有路由 request_type 均为 'responses'。"""
         mg = Migrations(self.db_path)
         mg.migrate()
         routes = self.db.list_routes()
         self.assertEqual(len(routes), 3)
         for route in routes:
-            self.assertEqual(route["proxy_type"], "codex")
+            self.assertEqual(route["request_type"], "responses")

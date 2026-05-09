@@ -21,11 +21,16 @@ async function loadUpstreamTable() {
   const data = await api('/api/upstreams');
   document.getElementById('upstream-count').textContent = data.upstreams.length + ' 个上游';
   const tbody = document.querySelector('#upstream-table tbody');
+
+  const formatLabels = { responses: 'Responses', messages: 'Messages', chat_completions: 'Chat' };
+  const formatColors = { responses: 'badge-blue', messages: 'badge-purple', chat_completions: 'badge-green' };
+
   tbody.innerHTML = data.upstreams.map(u =>
     `<tr style="${u.is_active ? '' : 'opacity:0.5'};cursor:pointer" onclick="toggleModelDrawer(event, '${escHtml(u.id)}')">
       <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${u.is_active ? 'hsl(var(--green))' : 'hsl(var(--red))'};"></span> ${u.is_active ? '活跃' : '已禁用'}</td>
       <td><span class="badge badge-blue">${escHtml(u.id)}</span></td>
       <td style="font-family:monospace;font-size:12px">${escHtml(u.base_url)}</td>
+      <td><span class="badge ${formatColors[u.format] || ''}">${formatLabels[u.format] || u.format || '-'}</span></td>
       <td>${u.timeout}s</td>
       <td>${u.is_default ? '✅' : ''}</td>
       <td>
@@ -62,7 +67,7 @@ function toggleModelDrawer(event, upstreamId) {
   drawerRow.className = 'drawer-row';
   drawerRow.id = 'drawer-' + upstreamId;
   drawerRow.innerHTML =
-    '<td colspan="6">' +
+    '<td colspan="7">' +
       '<div class="drawer-content">' +
         '<div class="drawer-header">🤖 模型列表 — 上游: ' + escHtml(upstreamId) +
           '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); showModelModalForUpstream(\'' + escHtml(upstreamId) + '\')" style="margin-left:auto;">＋ 新增模型</button></div>' +
@@ -138,7 +143,7 @@ function loadAllModelConfigTables() {
 
 // ─── 上游模态框 ───
 async function showUpstreamModal(editId) {
-  let data = { id: '', base_url: '', api_key: '', timeout: 120, connect_timeout: 30, ssl_verify: 1, retry: 1, is_default: 0 };
+  let data = { id: '', base_url: '', api_key: '', timeout: 120, connect_timeout: 30, ssl_verify: 1, retry: 1, is_default: 0, format: 'chat_completions' };
   let title = '新增上游';
   if (editId) {
     title = '编辑上游: ' + editId;
@@ -159,7 +164,7 @@ async function showUpstreamModal(editId) {
        <div class="form-group"><label class="form-label">重试</label><input type="number" class="form-input" id="up-retry" value="${data.retry}" min="0"></div>
        <div class="form-group"><label class="form-label">默认</label><select class="form-input" id="up-default"><option value="1" ${data.is_default ? 'selected' : ''}>是</option><option value="0" ${!data.is_default ? 'selected' : ''}>否</option></select></div>
      </div>
-     <div class="form-group"><label class="form-label">Format</label><select class="form-input" id="up-format"><option value="openai_chat" ${data.format === 'openai_chat' ? 'selected' : ''}>openai_chat</option><option value="openai_responses" ${data.format === 'openai_responses' ? 'selected' : ''}>openai_responses</option><option value="anthropic" ${data.format === 'anthropic' ? 'selected' : ''}>anthropic</option></select></div>`,
+     <div class="form-group"><label class="form-label">请求格式</label><select class="form-input" id="up-format"><option value="chat_completions" ${data.format === 'chat_completions' ? 'selected' : ''}>Chat</option><option value="responses" ${data.format === 'responses' ? 'selected' : ''}>Responses</option><option value="messages" ${data.format === 'messages' ? 'selected' : ''}>Messages</option></select></div>`,
     `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveUpstream('${editId || ''}')">保存</button>`);
 }
 

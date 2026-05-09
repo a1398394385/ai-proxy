@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 class TestResponseRecord(unittest.TestCase):
     def test_fields(self):
-        from response_store import ResponseRecord
+        from proxy.response_store import ResponseRecord
         now = time.time()
         r = ResponseRecord(
             response_id="resp_1", model="gpt-4o",
@@ -22,7 +22,7 @@ class TestResponseRecord(unittest.TestCase):
 
 class TestResponseStore(unittest.TestCase):
     def _make_record(self, resp_id="r1", ttl=3600):
-        from response_store import ResponseRecord
+        from proxy.response_store import ResponseRecord
         now = time.time()
         return ResponseRecord(
             response_id=resp_id, model="test",
@@ -37,7 +37,7 @@ class TestResponseStore(unittest.TestCase):
         )
 
     def test_put_and_get(self):
-        from response_store import ResponseStore
+        from proxy.response_store import ResponseStore
         store = ResponseStore()
         store.put("resp_1", self._make_record("resp_1"))
         result = store.get("resp_1")
@@ -45,11 +45,11 @@ class TestResponseStore(unittest.TestCase):
         self.assertEqual(result.response_id, "resp_1")
 
     def test_get_missing_returns_none(self):
-        from response_store import ResponseStore
+        from proxy.response_store import ResponseStore
         self.assertIsNone(ResponseStore().get("nonexistent"))
 
     def test_ttl_expiry(self):
-        from response_store import ResponseStore, ResponseRecord
+        from proxy.response_store import ResponseStore, ResponseRecord
         store = ResponseStore()
         now = time.time()
         expired = ResponseRecord("r_exp", "t", [], [], {}, "c", now, now - 1)
@@ -57,7 +57,7 @@ class TestResponseStore(unittest.TestCase):
         self.assertIsNone(store.get("r_exp"), "TTL 已过期应返回 None")
 
     def test_lru_eviction(self):
-        from response_store import ResponseStore
+        from proxy.response_store import ResponseStore
         store = ResponseStore(max_entries=2)
         store.put("r1", self._make_record("r1"))
         store.put("r2", self._make_record("r2"))
@@ -69,7 +69,7 @@ class TestResponseStore(unittest.TestCase):
 
     def test_get_updates_lru_order(self):
         """get() 将条目移到最近端，防止连续 put 时被误淘汰。"""
-        from response_store import ResponseStore
+        from proxy.response_store import ResponseStore
         store = ResponseStore(max_entries=3)
         store.put("r1", self._make_record("r1"))
         store.put("r2", self._make_record("r2"))
@@ -80,7 +80,7 @@ class TestResponseStore(unittest.TestCase):
         self.assertIsNone(store.get("r2"))
 
     def test_get_conversation(self):
-        from response_store import ResponseStore
+        from proxy.response_store import ResponseStore
         store = ResponseStore()
         store.put("r1", self._make_record("r1"))
         conv = store.get_conversation("r1")
@@ -88,12 +88,12 @@ class TestResponseStore(unittest.TestCase):
         self.assertEqual(conv[0]["role"], "user")
 
     def test_get_conversation_missing_returns_empty(self):
-        from response_store import ResponseStore
+        from proxy.response_store import ResponseStore
         self.assertEqual(ResponseStore().get_conversation("nonexistent"), [])
 
     def test_expired_evicted_on_put(self):
         """put() 先清理已过期条目，避免 max_entries 被占满后再淘汰有效条目。"""
-        from response_store import ResponseStore, ResponseRecord
+        from proxy.response_store import ResponseStore, ResponseRecord
         store = ResponseStore(max_entries=2)
         now = time.time()
         r_exp = ResponseRecord("r_exp", "t", [], [], {}, "c", now, now - 1)
@@ -127,8 +127,8 @@ class TestConversationChain(unittest.TestCase):
         轮次2: 从 store 取 conversation → 注入到新 messages → system 在首位、历史在中间、新 user 在末尾
         """
         import json
-        from transform_responses import create_codex_sse_stream
-        from response_store import ResponseStore
+        from proxy.transform_responses import create_codex_sse_stream
+        from proxy.response_store import ResponseStore
 
         store = ResponseStore()
 
@@ -198,8 +198,8 @@ class TestConversationChain(unittest.TestCase):
 
     def test_pure_refusal_non_streaming_store_uses_empty_string(self):
         """非流式路径：chat_to_responses 纯拒绝输出存入 store 后，content 为空字符串。"""
-        from transform import chat_to_responses, output_items_to_messages
-        from response_store import ResponseStore, ResponseRecord
+        from proxy.transform import chat_to_responses, output_items_to_messages
+        from proxy.response_store import ResponseStore, ResponseRecord
 
         store = ResponseStore()
         chat_resp = {
@@ -232,8 +232,8 @@ class TestConversationChain(unittest.TestCase):
 
     def test_pure_refusal_streaming_conversation_uses_empty_string(self):
         """流式路径：纯拒绝响应存入 store 后，conversation 的 assistant content 为空字符串（不是 None）。"""
-        from transform_responses import create_codex_sse_stream
-        from response_store import ResponseStore
+        from proxy.transform_responses import create_codex_sse_stream
+        from proxy.response_store import ResponseStore
 
         store = ResponseStore()
         refusal_chunks = [
@@ -271,8 +271,8 @@ class TestStreamingStorePath(unittest.TestCase):
 
     def test_streaming_stores_record_in_store(self):
         """耗尽 create_codex_sse_stream 生成器后，store 应有对应的 record。"""
-        from transform_responses import create_codex_sse_stream
-        from response_store import ResponseStore
+        from proxy.transform_responses import create_codex_sse_stream
+        from proxy.response_store import ResponseStore
 
         store = ResponseStore()
         chunks = [
@@ -308,7 +308,7 @@ class TestStreamingStorePath(unittest.TestCase):
 
     def test_streaming_no_store_when_none(self):
         """response_store=None 时不报错，正常流式输出。"""
-        from transform_responses import create_codex_sse_stream
+        from proxy.transform_responses import create_codex_sse_stream
         chunks = [
             b'data: {"id":"c1","model":"test","choices":[{"delta":{"content":"Hi"},"index":0}]}\n\n',
             b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',
@@ -320,9 +320,9 @@ class TestStreamingStorePath(unittest.TestCase):
     def test_forward_streaming_passes_store_to_factory(self):
         """_forward_streaming 应传入 request_messages 和 response_store 参数。"""
         import pathlib
-        src = (pathlib.Path(__file__).parent.parent / "proxy.py").read_text()
+        src = (pathlib.Path(__file__).parent.parent / "proxy" / "handler.py").read_text()
         start = src.index("def _forward_streaming(")
-        end = src.index("\n    def _send_json(", start)
+        end = src.index("\n    def _write_chunk(", start)
         func_body = src[start:end]
         self.assertIn("request_messages", func_body,
                       "_forward_streaming 应向 sse_stream_factory 传 request_messages")
@@ -333,7 +333,7 @@ class TestStreamingStorePath(unittest.TestCase):
 class TestNonStreamingStorePath(unittest.TestCase):
     def _get_non_streaming_body(self):
         import pathlib
-        src = (pathlib.Path(__file__).parent.parent / "proxy.py").read_text()
+        src = (pathlib.Path(__file__).parent.parent / "proxy" / "handler.py").read_text()
         start = src.index("def _forward_non_streaming(")
         end = src.index("\n    def _forward_streaming(", start)
         return src[start:end]
@@ -345,19 +345,19 @@ class TestNonStreamingStorePath(unittest.TestCase):
 
     def test_store_response_helper_exists(self):
         import pathlib
-        src = (pathlib.Path(__file__).parent.parent / "proxy.py").read_text()
+        src = (pathlib.Path(__file__).parent.parent / "proxy" / "handler.py").read_text()
         self.assertIn("def _store_response(", src,
-                      "proxy.py 应有 _store_response 辅助函数")
+                      "proxy/handler.py 应有 _store_response 辅助函数")
         self.assertIn("output_items_to_messages", src)
 
 
 class TestPreviousResponseIdInjection(unittest.TestCase):
     def _get_handle_responses_body(self):
         import pathlib
-        src = (pathlib.Path(__file__).parent.parent / "proxy.py").read_text()
-        start = src.index("def _handle_responses(")
+        src = (pathlib.Path(__file__).parent.parent / "proxy" / "handler.py").read_text()
+        start = src.index("def _handle_convert(")
         # 取到下一个 def（_handle_messages 之前）
-        end = src.index("\n    def _handle_messages(", start)
+        end = src.index("\n    def _forward_non_streaming(", start)
         return src[start:end]
 
     def test_reads_previous_response_id(self):

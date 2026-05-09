@@ -14,8 +14,8 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, unquote
 from pathlib import Path
 
-from config_manager import ConfigDB, Migrations
-from common import get_port, get_host, load_config, CONFIG, CONFIG_PATH
+from proxy.config_manager import ConfigDB, Migrations
+from proxy.common import get_port, get_host, load_config, CONFIG, CONFIG_PATH
 
 # 配置
 DB_PATH = os.path.expanduser("~/.hermes/memory_store.db")
@@ -48,14 +48,6 @@ def _reload_proxies():
     try:
         proxy_port = get_port("codex_proxy", 48743)
         conn = http.client.HTTPConnection("127.0.0.1", proxy_port, timeout=2)
-        conn.request("POST", "/admin/reload")
-        conn.getresponse().read()
-        conn.close()
-    except Exception:
-        pass
-    try:
-        pt_port = get_port("pass_through", 48744)
-        conn = http.client.HTTPConnection("127.0.0.1", pt_port, timeout=2)
         conn.request("POST", "/admin/reload")
         conn.getresponse().read()
         conn.close()
@@ -644,9 +636,9 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             return json_response(self, {"error": "Not found"}, 404)
 
         if path == "/api/routes":
-            proxy_type = qs.get("proxy_type", [None])[0]
+            request_type = qs.get("request_type", [None])[0]
             db = get_config_db()
-            routes = db.list_routes(proxy_type=proxy_type)
+            routes = db.list_routes(request_type=request_type)
             db.close()
             return json_response(self, {"routes": routes})
 
@@ -673,19 +665,8 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 conn.close()
             except Exception:
                 pass
-            pass_through_reachable = False
-            try:
-                pt_port = get_port("pass_through", 48744)
-                conn = http.client.HTTPConnection("127.0.0.1", pt_port, timeout=2)
-                conn.request("GET", "/health")
-                resp = conn.getresponse()
-                pass_through_reachable = resp.status == 200
-                conn.close()
-            except Exception:
-                pass
             return json_response(self, {
                 "proxy_reachable": proxy_reachable,
-                "pass_through_reachable": pass_through_reachable,
                 "config_db": counts,
             })
 
@@ -857,11 +838,11 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             data = _read_json(self)
             if not data:
                 return
-            # 校验 proxy_type
-            proxy_type = data.get("proxy_type", "codex")
-            if proxy_type not in ("codex", "claude", "pass_through"):
+            # 校验 request_type
+            request_type = data.get("request_type", "responses")
+            if request_type not in ("responses", "messages", "chat_completions"):
                 return json_response(self, {
-                    "error": "proxy_type must be one of: codex, claude, pass_through"
+                    "error": "request_type must be one of: responses, messages, chat_completions"
                 }, 400)
             db = get_config_db()
             model = db.get_model(data["target_model_id"])
@@ -893,17 +874,6 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 result["proxy"] = body
             except Exception as e:
                 result["proxy"] = {"status": "error", "message": str(e)}
-            # Reload pass_through proxy
-            try:
-                pt_port = get_port("pass_through", 48744)
-                conn = http.client.HTTPConnection("127.0.0.1", pt_port, timeout=5)
-                conn.request("POST", "/admin/reload")
-                resp = conn.getresponse()
-                body = json.loads(resp.read())
-                conn.close()
-                result["pass_through"] = body
-            except Exception as e:
-                result["pass_through"] = {"status": "error", "message": str(e)}
             return json_response(self, result)
 
         if path == "/api/db/query":

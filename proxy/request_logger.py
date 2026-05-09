@@ -1,13 +1,20 @@
 """Request Logger — 请求/响应日志记录和 Token 统计。"""
 
 import json
+import shutil
 import sqlite3
+import time
 import uuid
 import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+
+# request_type 格式常量
+REQUEST_TYPE_RESPONSES = "responses"
+REQUEST_TYPE_MESSAGES = "messages"
+REQUEST_TYPE_CHAT_COMPLETIONS = "chat_completions"
 
 class RequestLogger:
     """请求日志记录器，短连接方案：每次写入时创建/关闭 SQLite 连接。"""
@@ -36,16 +43,12 @@ class RequestLogger:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_debug_request_id ON debug_log(request_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_debug_created_at ON debug_log(created_at)")
-            try:
-                conn.execute("ALTER TABLE debug_log ADD COLUMN proxy_type TEXT")
-            except Exception:
-                pass  # 列已存在
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS token_stats (
                     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
                     request_id          TEXT NOT NULL,
-                    agent               TEXT NOT NULL,
+                    request_type        TEXT NOT NULL,
                     model               TEXT NOT NULL,
                     target_model        TEXT NOT NULL,
                     request_ts          TEXT NOT NULL,
@@ -66,6 +69,8 @@ class RequestLogger:
 
         self._cleanup_expired()
 
+        self._migrate_access_log()
+
     def _get_conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
@@ -74,7 +79,31 @@ class RequestLogger:
     def close(self):
         pass
 
-    def log_raw_request(self, request_id: str, model: str, target: str, body: str | dict, proxy_type: str = None):
+    def _migrate_access_log(self):
+        """Auto-migration: 备份并重命名 proxy_type→request_type, agent→request_type。"""
+        conn = self._get_conn()
+        try:
+            cols_debug = {row[1] for row in conn.execute('PRAGMA table_info(debug_log)')}
+            cols_stats = {row[1] for row in conn.execute('PRAGMA table_info(token_stats)')}
+
+            needs_debug = 'proxy_type' in cols_debug and 'request_type' not in cols_debug
+            needs_stats = 'agent' in cols_stats and 'request_type' not in cols_stats
+
+            if needs_debug or needs_stats:
+                ts = time.strftime('%Y%m%d_%H%M%S')
+                backup_path = self.db_path.with_suffix('.db.bak.' + ts)
+                shutil.copy2(self.db_path, backup_path)
+
+                if needs_debug:
+                    conn.execute('ALTER TABLE debug_log RENAME COLUMN proxy_type TO request_type')
+                if needs_stats:
+                    conn.execute('ALTER TABLE token_stats RENAME COLUMN agent TO request_type')
+
+                conn.commit()
+        finally:
+            conn.close()
+
+    def log_raw_request(self, request_id: str, model: str, target: str, body: str | dict, request_type: str = None):
         """阶段 1：记录 agent 原始请求。"""
         try:
             conn = self._get_conn()
@@ -82,9 +111,9 @@ class RequestLogger:
                 data = body if isinstance(body, str) else json.dumps(body)
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn.execute(
-                    "INSERT INTO debug_log (request_id, stage, model, target_model, proxy_type, data, created_at) "
+                    "INSERT INTO debug_log (request_id, stage, model, target_model, request_type, data, created_at) "
                     "VALUES (?, 'raw_request', ?, ?, ?, ?, ?)",
-                    (request_id, model, target, proxy_type, data, now),
+                    (request_id, model, target, request_type, data, now),
                 )
                 conn.commit()
             finally:
@@ -92,7 +121,7 @@ class RequestLogger:
         except Exception as e:
             logging.warning(f"日志写入失败 (raw_request): {e}")
 
-    def log_converted_request(self, request_id: str, model: str, target: str, body: dict, proxy_type: str = None):
+    def log_converted_request(self, request_id: str, model: str, target: str, body: dict, request_type: str = None):
         """阶段 2：记录 proxy 转换后的请求。"""
         try:
             conn = self._get_conn()
@@ -100,9 +129,9 @@ class RequestLogger:
                 data = json.dumps(body)
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn.execute(
-                    "INSERT INTO debug_log (request_id, stage, model, target_model, proxy_type, data, created_at) "
+                    "INSERT INTO debug_log (request_id, stage, model, target_model, request_type, data, created_at) "
                     "VALUES (?, 'converted_request', ?, ?, ?, ?, ?)",
-                    (request_id, model, target, proxy_type, data, now),
+                    (request_id, model, target, request_type, data, now),
                 )
                 conn.commit()
             finally:
@@ -110,7 +139,7 @@ class RequestLogger:
         except Exception as e:
             logging.warning(f"日志写入失败 (converted_request): {e}")
 
-    def log_upstream_response(self, request_id: str, status_code: int, body: str | dict, duration_ms: int, proxy_type: str = None):
+    def log_upstream_response(self, request_id: str, status_code: int, body: str | dict, duration_ms: int, request_type: str = None):
         """阶段 3：记录上游原始响应。"""
         try:
             conn = self._get_conn()
@@ -118,9 +147,9 @@ class RequestLogger:
                 data = body if isinstance(body, str) else json.dumps(body)
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn.execute(
-                    "INSERT INTO debug_log (request_id, stage, status_code, proxy_type, data, created_at) "
+                    "INSERT INTO debug_log (request_id, stage, status_code, request_type, data, created_at) "
                     "VALUES (?, 'upstream_response', ?, ?, ?, ?)",
-                    (request_id, status_code, proxy_type, data, now),
+                    (request_id, status_code, request_type, data, now),
                 )
                 conn.commit()
             finally:
@@ -128,7 +157,7 @@ class RequestLogger:
         except Exception as e:
             logging.warning(f"日志写入失败 (upstream_response): {e}")
 
-    def log_converted_response(self, request_id: str, model: str, target: str, body: dict, proxy_type: str = None):
+    def log_converted_response(self, request_id: str, model: str, target: str, body: dict, request_type: str = None):
         """阶段 4：记录 proxy 转换后的响应。"""
         try:
             conn = self._get_conn()
@@ -136,9 +165,9 @@ class RequestLogger:
                 data = json.dumps(body)
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn.execute(
-                    "INSERT INTO debug_log (request_id, stage, model, target_model, proxy_type, data, created_at) "
+                    "INSERT INTO debug_log (request_id, stage, model, target_model, request_type, data, created_at) "
                     "VALUES (?, 'converted_response', ?, ?, ?, ?, ?)",
-                    (request_id, model, target, proxy_type, data, now),
+                    (request_id, model, target, request_type, data, now),
                 )
                 conn.commit()
             finally:
@@ -146,7 +175,7 @@ class RequestLogger:
         except Exception as e:
             logging.warning(f"日志写入失败 (converted_response): {e}")
 
-    def log_token_stats(self, request_id: str, agent: str, model: str, target_model: str,
+    def log_token_stats(self, request_id: str, request_type: str, model: str, target_model: str,
                         request_ts: str, duration_ms: int, input_tokens: int,
                         output_tokens: int, cached_read: int, cached_write: int,
                         status: str):
@@ -157,10 +186,10 @@ class RequestLogger:
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn.execute(
                     "INSERT INTO token_stats "
-                    "(request_id, agent, model, target_model, request_ts, duration_ms, "
+                    "(request_id, request_type, model, target_model, request_ts, duration_ms, "
                     "input_tokens, output_tokens, cached_read_tokens, cached_write_tokens, status, created_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (request_id, agent, model, target_model, request_ts, duration_ms,
+                    (request_id, request_type, model, target_model, request_ts, duration_ms,
                      input_tokens, output_tokens, cached_read, cached_write, status, now),
                 )
                 conn.commit()
@@ -189,13 +218,6 @@ def _generate_request_id() -> str:
     return uuid.uuid4().hex[:16]
 
 
-def _extract_agent(user_agent: str) -> str:
-    ua_lower = user_agent.lower()
-    if "claude" in ua_lower:
-        return "claude"
-    if "codex" in ua_lower:
-        return "codex"
-    return "unknown"
 
 
 _logger: Optional[RequestLogger] = None

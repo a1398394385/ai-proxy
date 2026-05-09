@@ -13,9 +13,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 import importlib.util
 
-import request_logger
-import token_stats
-from request_logger import RequestLogger
+from proxy import request_logger
+from proxy import token_stats
+from proxy.request_logger import RequestLogger
 
 
 def _query_debug_log(db_path, request_id=None):
@@ -45,10 +45,14 @@ def _query_token_stats(db_path, request_id=None):
 
 
 def _load_proxy():
-    """动态加载 proxy.py，并重置 shared config_cache 避免测试间状态泄漏。"""
-    import common
-    from config_manager import ConfigCache
-    common.config_cache = ConfigCache(common.CONFIG_DB_PATH)
+    """动态加载 proxy.py，mock config_cache 返回 None，force handler fallback 到 CONFIG。"""
+    from proxy import common
+    from proxy import handler as _handler
+    mock_cache = MagicMock()
+    mock_cache.resolve = MagicMock(return_value=None)
+    mock_cache.get_all = MagicMock(return_value={})
+    common.config_cache = mock_cache
+    _handler.config_cache = mock_cache
     spec = importlib.util.spec_from_file_location("proxy_test", Path(__file__).parent.parent / "proxy.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -56,7 +60,7 @@ def _load_proxy():
 
 
 def _configure(mod):
-    mod.CONFIG = {
+    cfg = {
         "proxy": {"host": "127.0.0.1", "port": 48743},
         "upstream": {
             "base_url": "http://127.0.0.1:4000/",
@@ -71,6 +75,8 @@ def _configure(mod):
             "*": {"target": "qwen3.6-plus", "multimodal": True},
         },
     }
+    mod.CONFIG.clear()
+    mod.CONFIG.update(cfg)
 
 
 def _make_handler(mod, body: bytes):
@@ -80,13 +86,14 @@ def _make_handler(mod, body: bytes):
     hdr = MagicMock()
     hdr.get = lambda k, d=None: {"Content-Length": str(len(body)), "User-Agent": "codex-cli/1.0"}.get(k, d)
     handler.headers = hdr
-    # Mock HTTP server response methods (send_response, end_headers etc.)
     handler.send_response = MagicMock()
     handler.send_header = MagicMock()
     handler.end_headers = MagicMock()
-    # 绑定真实方法，让代理流程继续执行
     handler._forward_non_streaming = lambda *a, **kw: mod.ProxyHandler._forward_non_streaming(handler, *a, **kw)
     handler._forward_streaming = lambda *a, **kw: mod.ProxyHandler._forward_streaming(handler, *a, **kw)
+    handler._handle_convert = lambda *a, **kw: mod.ProxyHandler._handle_convert(handler, *a, **kw)
+    handler._handle_passthrough = lambda *a, **kw: mod.ProxyHandler._handle_passthrough(handler, *a, **kw)
+    handler.server = MagicMock(response_store=None)
     sent = {}
     handler._send_json = lambda status, data: sent.update({"status": status, "data": data})
     return handler, sent
@@ -107,8 +114,9 @@ class TestJsonParseFailure(unittest.TestCase):
     def test_json_parse_failure_records_raw_request(self):
         body = b"not valid json"
         handler, sent = _make_handler(self.mod, body)
+        handler.path = "/v1/responses"
 
-        self.mod.ProxyHandler._handle_responses(handler)
+        self.mod.ProxyHandler.do_POST(handler)
 
         self.assertEqual(sent["status"], 400)
         logs = _query_debug_log(self.db_path)
@@ -144,7 +152,8 @@ class TestUpstream500Error(unittest.TestCase):
                 "input": [{"type": "message", "role": "user", "content": "Hi"}],
             }).encode()
             handler, _ = _make_handler(self.mod, body)
-            self.mod.ProxyHandler._handle_responses(handler)
+            handler.path = "/v1/responses"
+            self.mod.ProxyHandler.do_POST(handler)
 
         stages = [r["stage"] for r in _query_debug_log(self.db_path)]
         self.assertIn("raw_request", stages)
@@ -191,7 +200,8 @@ class TestFullRequestFlow(unittest.TestCase):
                 "input": [{"type": "message", "role": "user", "content": "Hi"}],
             }).encode()
             handler, _ = _make_handler(self.mod, body)
-            self.mod.ProxyHandler._handle_responses(handler)
+            handler.path = "/v1/responses"
+            self.mod.ProxyHandler.do_POST(handler)
 
         stages = [r["stage"] for r in _query_debug_log(self.db_path)]
         self.assertIn("raw_request", stages)
@@ -233,13 +243,14 @@ class TestConversionException(unittest.TestCase):
         mock_conn.sock = MagicMock()
 
         with patch("http.client.HTTPConnection", return_value=mock_conn):
-            with patch("transform_responses.chat_to_responses", side_effect=RuntimeError("conversion failed")):
+            with patch("proxy.handler.chat_to_responses", side_effect=RuntimeError("conversion failed")):
                 body = json.dumps({
                     "model": "gpt-4o",
                     "input": [{"type": "message", "role": "user", "content": "Hi"}],
                 }).encode()
                 handler, _ = _make_handler(self.mod, body)
-                self.mod.ProxyHandler._handle_responses(handler)
+                handler.path = "/v1/responses"
+                self.mod.ProxyHandler.do_POST(handler)
 
         stages = [r["stage"] for r in _query_debug_log(self.db_path)]
         self.assertIn("raw_request", stages)
@@ -292,7 +303,8 @@ class TestMessagesIntegration(unittest.TestCase):
                 "max_tokens": 100,
             }).encode()
             handler, sent = _make_handler(self.mod, body)
-            self.mod.ProxyHandler._handle_messages(handler)
+            handler.path = "/v1/messages"
+            self.mod.ProxyHandler.do_POST(handler)
 
         stages = [r["stage"] for r in _query_debug_log(self.db_path)]
         self.assertIn("raw_request", stages)
@@ -312,7 +324,7 @@ class TestMessagesIntegration(unittest.TestCase):
         body = b"not valid json"
         handler, sent = _make_handler(self.mod, body)
         handler.path = "/v1/messages"
-        self.mod.ProxyHandler._handle_messages(handler)
+        self.mod.ProxyHandler.do_POST(handler)
         self.assertEqual(sent["status"], 400)
 
 
@@ -350,14 +362,15 @@ class TestStreamingFlow(unittest.TestCase):
             mock_conn.sock = MagicMock()
             mock_conn_cls.return_value = mock_conn
 
-            with patch("transform_responses.create_codex_sse_stream", return_value=sse_events):
+            with patch("proxy.handler.create_codex_sse_stream", return_value=sse_events):
                 body = json.dumps({
                     "model": "gpt-4o",
                     "input": [{"type": "message", "role": "user", "content": "Hi"}],
                     "stream": True,
                 }).encode()
                 handler, _ = _make_handler(self.mod, body)
-                self.mod.ProxyHandler._handle_responses(handler)
+                handler.path = "/v1/responses"
+                self.mod.ProxyHandler.do_POST(handler)
 
         stages = [r["stage"] for r in _query_debug_log(self.db_path)]
         self.assertIn("raw_request", stages)
@@ -394,14 +407,15 @@ class TestStreamingFlow(unittest.TestCase):
             mock_conn.sock = MagicMock()
             mock_conn_cls.return_value = mock_conn
 
-            with patch("transform_responses.create_codex_sse_stream", return_value=sse_events):
+            with patch("proxy.handler.create_codex_sse_stream", return_value=sse_events):
                 body = json.dumps({
                     "model": "gpt-4o",
                     "input": [{"type": "message", "role": "user", "content": "Hi"}],
                     "stream": True,
                 }).encode()
                 handler, _ = _make_handler(self.mod, body)
-                self.mod.ProxyHandler._handle_responses(handler)
+                handler.path = "/v1/responses"
+                self.mod.ProxyHandler.do_POST(handler)
 
         stages = [r["stage"] for r in _query_debug_log(self.db_path)]
         self.assertIn("upstream_response", stages)
@@ -446,7 +460,8 @@ class TestLogWriteFailure(unittest.TestCase):
                 "input": [{"type": "message", "role": "user", "content": "Hi"}],
             }).encode()
             handler, _ = _make_handler(self.mod, body)
-            self.mod.ProxyHandler._handle_responses(handler)
+            handler.path = "/v1/responses"
+            self.mod.ProxyHandler.do_POST(handler)
 
 
 if __name__ == "__main__":

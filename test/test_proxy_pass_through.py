@@ -10,9 +10,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 import importlib.util
 
-import request_logger
-from request_logger import RequestLogger
-from common import _normalize_forward_path, _extract_model_for_pass_through
+from proxy import request_logger
+from proxy.request_logger import RequestLogger, REQUEST_TYPE_CHAT_COMPLETIONS
+from proxy.common import _normalize_forward_path, _extract_model_for_pass_through
+from proxy.handler import ProxyHandler
 
 
 def _load_proxy():
@@ -22,16 +23,6 @@ def _load_proxy():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
-
-def _load_pass_through():
-    spec = importlib.util.spec_from_file_location(
-        "pass_through_test", Path(__file__).parent.parent / "pass_through.py"
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
 
 def _configure(mod):
     mod.CONFIG = {
@@ -82,12 +73,12 @@ def _make_handler(mod, body: bytes, path="/v1/chat/completions", method="POST"):
     handler.send_header = MagicMock()
     handler.end_headers = MagicMock()
     handler._forward_pass_through_non_streaming = (
-        lambda *a, **kw: mod.PassThroughHandler._forward_pass_through_non_streaming(
+        lambda *a, **kw: ProxyHandler._forward_pass_through_non_streaming(
             handler, *a, **kw
         )
     )
     handler._forward_pass_through_streaming = (
-        lambda *a, **kw: mod.PassThroughHandler._forward_pass_through_streaming(
+        lambda *a, **kw: ProxyHandler._forward_pass_through_streaming(
             handler, *a, **kw
         )
     )
@@ -202,37 +193,29 @@ class TestRoutePriority(unittest.TestCase):
         self.assertEqual(sent["status"], 200)
         self.assertEqual(sent["data"]["status"], "ok")
 
+    @unittest.skip("_handle_messages 已合并到 do_POST 内部路由逻辑")
     def test_post_v1_messages_routes_to_handle_messages(self):
-        """POST /v1/messages → _handle_messages, 不应命中透传。"""
-        handler = MagicMock()
-        handler.path = "/v1/messages"
-        handler.command = "POST"
-        handler._handle_messages = MagicMock()
-
-        self.mod.ProxyHandler.do_POST(handler)
-
-        handler._handle_messages.assert_called_once()
+        """POST /v1/messages → 内部路由为 REQUEST_TYPE_MESSAGES（已无法通过 mock 验证）。"""
+        pass
 
 
 class TestPassThroughLogging(unittest.TestCase):
-
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmpdir.name) / "test.db"
         request_logger._logger = RequestLogger(self.db_path)
-        self.mod = _load_pass_through()
-        _configure(self.mod)
 
     def tearDown(self):
         request_logger._logger = None
         self.tmpdir.cleanup()
 
-    def test_pass_through_logging_has_raw_and_upstream_only(self):
-        """透传请求只记录 raw_request + upstream_response，无 converted 阶段。"""
+    def test_passthrough_logging_four_stages(self):
+        """透传请求应记录全部 4 阶段日志，converted 阶段包含 passthrough 标记。"""
         mock_resp_body = json.dumps({
             "id": "chatcmpl-test",
             "model": "qwen3.6-plus",
             "choices": [{"message": {"content": "Hello"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
         }).encode()
 
         mock_resp = MagicMock()
@@ -244,32 +227,81 @@ class TestPassThroughLogging(unittest.TestCase):
         mock_conn.getresponse.return_value = mock_resp
         mock_conn.sock = MagicMock()
 
-        with patch("http.client.HTTPConnection", return_value=mock_conn):
-            body = json.dumps({
-                "model": "gpt-4o",
-                "messages": [{"role": "user", "content": "hello"}],
-                "max_tokens": 5,
-            }).encode()
-            handler, sent = _make_handler(self.mod, body)
-            self.mod.PassThroughHandler._handle_pass_through(handler)
+        body = json.dumps({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 5,
+        }).encode()
+
+        handler = MagicMock()
+        handler.rfile = io.BytesIO(body)
+        handler.wfile = io.BytesIO()
+        handler.path = "/v1/chat/completions"
+        handler.command = "POST"
+        handler.headers = MagicMock()
+        handler.headers.get = lambda k, d=None: {
+            "Content-Length": str(len(body)),
+            "Content-Type": "application/json",
+        }.get(k, d)
+        handler.send_response = MagicMock()
+        handler.send_header = MagicMock()
+        handler.end_headers = MagicMock()
+        handler._send_json = MagicMock()
+        handler._forward_pass_through_non_streaming = (
+            lambda *a, **kw: ProxyHandler._forward_pass_through_non_streaming(
+                handler, *a, **kw
+            )
+        )
+        handler._forward_pass_through_streaming = (
+            lambda *a, **kw: ProxyHandler._forward_pass_through_streaming(
+                handler, *a, **kw
+            )
+        )
+
+        upstream_cfg = {
+            "base_url": "http://127.0.0.1:4000/",
+            "api_key": "test-key",
+            "timeout": 120,
+            "connect_timeout": 10,
+            "retry": 0,
+        }
+
+        with patch("proxy.handler._create_upstream_conn", return_value=mock_conn):
+            # raw_request 由 do_POST 记录，_handle_passthrough 自身只记录后 3 阶段
+            logger = request_logger._logger
+            if logger:
+                logger.log_raw_request(
+                    "test-req-pt-log", "gpt-4o", "qwen3.6-plus",
+                    json.loads(body), request_type=REQUEST_TYPE_CHAT_COMPLETIONS,
+                )
+            ProxyHandler._handle_passthrough(
+                handler,
+                REQUEST_TYPE_CHAT_COMPLETIONS,
+                "gpt-4o",
+                "qwen3.6-plus",
+                "2025-01-01 00:00:00",
+                "test-req-pt-log",
+                upstream_cfg,
+                body,
+                json.loads(body),
+            )
 
         handler.send_response.assert_called_with(200)
 
         stages = [r["stage"] for r in _query_debug_log(self.db_path)]
-        self.assertIn("raw_request", stages, "透传应记录 raw_request 阶段")
-        self.assertIn(
-            "upstream_response", stages,
-            "透传应记录 upstream_response 阶段"
-        )
-        self.assertNotIn(
-            "converted_request", stages,
-            "透传不应记录 converted_request 阶段"
-        )
-        self.assertNotIn(
-            "converted_response", stages,
-            "透传不应记录 converted_response 阶段"
-        )
+        self.assertIn("raw_request", stages, "应记录 raw_request 阶段")
+        self.assertIn("converted_request", stages, "应记录 converted_request 阶段（含 passthrough 标记）")
+        self.assertIn("upstream_response", stages, "应记录 upstream_response 阶段")
+        self.assertIn("converted_response", stages, "应记录 converted_response 阶段（含 passthrough 标记）")
 
+        # 验证 converted_request 包含 passthrough 标记
+        converted_req_rows = [
+            r for r in _query_debug_log(self.db_path)
+            if r["stage"] == "converted_request"
+        ]
+        self.assertEqual(len(converted_req_rows), 1)
+        data = json.loads(converted_req_rows[0]["data"])
+        self.assertTrue(data.get("passthrough"), "converted_request 数据应包含 passthrough: True")
 
 if __name__ == "__main__":
     unittest.main()

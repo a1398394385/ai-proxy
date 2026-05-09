@@ -21,21 +21,43 @@ async function loadUpstreamTable() {
   const data = await api('/api/upstreams');
   document.getElementById('upstream-count').textContent = data.upstreams.length + ' 个上游';
   const tbody = document.querySelector('#upstream-table tbody');
+
+  const formatLabels = { responses: 'Responses', messages: 'Messages', chat_completions: 'Chat Comp.' };
+
+  const formatColors = { responses: 'badge-blue', messages: 'badge-purple', chat_completions: 'badge-green' };
+
   tbody.innerHTML = data.upstreams.map(u =>
+
     `<tr style="${u.is_active ? '' : 'opacity:0.5'}">
-      <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${u.is_active ? 'hsl(var(--green))' : 'hsl(var(--red))'};"></span> ${u.is_active ? '活跃' : '已禁用'}</td>
+
+      <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${u.is_active ? 'hsl(var(--green))' : 'hsl(var(--red))'}};"></span> ${u.is_active ? '活跃' : '已禁用'}</td>
+
       <td><span class="badge badge-blue">${escHtml(u.id)}</span></td>
+
       <td style="font-family:monospace;font-size:12px">${escHtml(u.base_url)}</td>
+
+      <td><span class="badge ${formatColors[u.format] || ''}">${formatLabels[u.format] || u.format || '-'}</span></td>
+
       <td>${u.timeout}s</td>
+
       <td>${u.is_default ? '✅' : ''}</td>
+
       <td>
+
         <button class="btn btn-secondary btn-sm" onclick="showUpstreamModal('${escHtml(u.id)}')">编辑</button>
+
         <button class="btn btn-secondary btn-sm" onclick="testUpstream('${escHtml(u.id)}')">测试</button>
+
         ${u.is_active ? '<button class="btn btn-danger btn-sm" onclick="confirmDisableUpstream(\'' + escHtml(u.id) + '\')">禁用</button>' : ''}
+
       </td>
+
     </tr>`
+
   ).join('');
+
 }
+
 
 async function loadModelTable(upstreamId) {
   let url = '/api/models'; if (upstreamId) url += '?upstream_id=' + encodeURIComponent(upstreamId);
@@ -90,7 +112,7 @@ async function loadModelConfig() {
 
 // ─── 上游模态框 ───
 async function showUpstreamModal(editId) {
-  let data = { id: '', base_url: '', api_key: '', timeout: 600, connect_timeout: 30, ssl_verify: 1, retry: 1, is_default: 0 };
+  let data = { id: '', base_url: '', api_key: '', timeout: 600, connect_timeout: 30, ssl_verify: 1, retry: 1, is_default: 0, format: 'chat_completions' };
   let title = '新增上游';
   if (editId) {
     title = '编辑上游: ' + editId;
@@ -102,6 +124,7 @@ async function showUpstreamModal(editId) {
     `<div class="form-group"><label class="form-label">名称 (ID)</label><input type="text" class="form-input" id="up-id" value="${escHtml(data.id)}" ${editId ? 'readonly' : ''}></div>
      <div class="form-group"><label class="form-label">Base URL</label><input type="text" class="form-input" id="up-url" value="${escHtml(data.base_url)}"></div>
      <div class="form-group"><label class="form-label">API Key</label><input type="text" class="form-input" id="up-key" value="${escHtml(data.api_key)}"></div>
+     <div class="form-group"><label class="form-label">请求格式</label><select class="form-input" id="up-format"><option value="chat_completions" ${data.format === 'chat_completions' ? 'selected' : ''}>Chat Completions</option><option value="responses" ${data.format === 'responses' ? 'selected' : ''}>Responses</option><option value="messages" ${data.format === 'messages' ? 'selected' : ''}>Messages</option></select></div>
      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
        <div class="form-group"><label class="form-label">响应超时 (s)</label><input type="number" class="form-input" id="up-timeout" value="${data.timeout}" min="1"></div>
        <div class="form-group"><label class="form-label">连接超时 (s)</label><input type="number" class="form-input" id="up-conn-timeout" value="${data.connect_timeout}" min="1"></div>
@@ -122,7 +145,8 @@ async function saveUpstream(editId) {
     connect_timeout: parseInt(document.getElementById('up-conn-timeout').value) || 30,
     ssl_verify: parseInt(document.getElementById('up-ssl').value),
     retry: parseInt(document.getElementById('up-retry').value) || 1,
-    is_default: parseInt(document.getElementById('up-default').value),
+    format: document.getElementById('up-format').value,
+  ];
   };
   if (!editId) data.id = document.getElementById('up-id').value.trim();
   if (!data.base_url) { alert('Base URL 不能为空'); return; }

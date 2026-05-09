@@ -2,18 +2,18 @@
 """Token 统计模块 — 统一处理 Anthropic / OpenAI Chat / OpenAI Responses 格式的 usage。
 
 用法：
-    from token_stats import record_token_stats
+    from proxy.token_stats import record_token_stats
 
     record_token_stats(usage, {
         "request_id": "abc123",
-        "agent": "codex",
+        "request_type": "codex",
         "model": "gpt-5.1-codex-max",
         "target_model": "qwen3.6-plus",
         "request_ts": "2026-04-27 10:00:00",
         "duration_ms": 1234,
     })
 
-DB_PATH 假设：token_stats.py 位于项目根目录，与 data/access_log.db 同级。
+DB_PATH 假设：token_stats.py 位于 proxy/ 子目录下，因此 parent.parent 指向项目根目录。
 与 request_logger.py 使用同一路径约定。
 """
 
@@ -24,8 +24,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# 依赖：token_stats.py 必须在项目根目录，与 data/ 同级
-DB_PATH = Path(__file__).parent / "data" / "access_log.db"
+# 依赖：token_stats.py 在 proxy/ 子目录，parent.parent 指向项目根目录
+DB_PATH = Path(__file__).parent.parent / "data" / "access_log.db"
 
 
 def _find_first(usage: dict, keys: list, default=0) -> int:
@@ -90,7 +90,7 @@ def record_token_stats(usage: dict, context: dict) -> None:
     usage:  上游返回的原始 usage dict。None / 空 dict 直接 return。
     context: {
         "request_id": str,     # 缺失 → warning + return
-        "agent": str,          # 默认 "unknown"
+        "request_type": str,          # 默认 "unknown"
         "model": str,          # 默认 "unknown"
         "target_model": str,   # 默认 "unknown"
         "request_ts": str,     # 默认 ""
@@ -116,7 +116,7 @@ def record_token_stats(usage: dict, context: dict) -> None:
                 CREATE TABLE IF NOT EXISTS token_stats (
                     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
                     request_id          TEXT NOT NULL,
-                    agent               TEXT NOT NULL,
+                    request_type        TEXT NOT NULL,
                     model               TEXT NOT NULL,
                     target_model        TEXT NOT NULL,
                     request_ts          TEXT NOT NULL,
@@ -132,13 +132,13 @@ def record_token_stats(usage: dict, context: dict) -> None:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             conn.execute(
                 "INSERT INTO token_stats "
-                "(request_id, agent, model, target_model, request_ts, duration_ms, "
+                "(request_id, request_type, model, target_model, request_ts, duration_ms, "
                 "input_tokens, output_tokens, cached_read_tokens, cached_write_tokens, "
                 "status, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)",
                 (
                     request_id,
-                    context.get("agent", "unknown"),
+                    context.get("request_type", "unknown"),
                     context.get("model", "unknown"),
                     context.get("target_model", "unknown"),
                     context.get("request_ts", ""),

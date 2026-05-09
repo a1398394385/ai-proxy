@@ -1,6 +1,6 @@
 import json
 import unittest
-from transform import generate_response_id
+from proxy.transform import generate_response_id
 
 
 class TestGenerateResponseId(unittest.TestCase):
@@ -19,7 +19,7 @@ class TestGenerateResponseId(unittest.TestCase):
 
 class TestResponsesToChatBasic(unittest.TestCase):
     def test_basic_field_mapping(self):
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "codex-mini-latest",
             "instructions": "You are a helpful assistant.",
@@ -43,7 +43,7 @@ class TestResponsesToChatBasic(unittest.TestCase):
         self.assertEqual(result["messages"][1]["content"], "Hello")
 
     def test_empty_instructions_skipped(self):
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "instructions": "",
@@ -58,7 +58,7 @@ class TestResponsesToChatBasic(unittest.TestCase):
 
 class TestChatToResponses(unittest.TestCase):
     def test_basic_response(self):
-        from transform import chat_to_responses
+        from proxy.transform import chat_to_responses
         chat_resp = {
             "id": "chatcmpl-abc123",
             "model": "claude-sonnet-4-6",
@@ -91,7 +91,7 @@ class TestChatToResponses(unittest.TestCase):
         self.assertEqual(result["usage"]["total_tokens"], 150)
 
     def test_id_prefix_replacement(self):
-        from transform import chat_to_responses
+        from proxy.transform import chat_to_responses
         chat_resp = {
             "id": "chatcmpl-xyz",
             "model": "test",
@@ -103,7 +103,7 @@ class TestChatToResponses(unittest.TestCase):
         self.assertNotIn("chatcmpl", result["id"])
 
     def test_non_chatcmpl_id(self):
-        from transform import chat_to_responses
+        from proxy.transform import chat_to_responses
         chat_resp = {
             "id": "some-other-id",
             "model": "test",
@@ -114,7 +114,7 @@ class TestChatToResponses(unittest.TestCase):
         self.assertTrue(result["id"].startswith("resp-"))
 
     def test_incomplete_length(self):
-        from transform import chat_to_responses
+        from proxy.transform import chat_to_responses
         chat_resp = {
             "id": "chatcmpl-trunc",
             "model": "test",
@@ -126,7 +126,7 @@ class TestChatToResponses(unittest.TestCase):
         self.assertEqual(result["incomplete_details"]["reason"], "max_tokens")
 
     def test_content_filter(self):
-        from transform import chat_to_responses
+        from proxy.transform import chat_to_responses
         chat_resp = {
             "id": "chatcmpl-filter",
             "model": "test",
@@ -138,7 +138,7 @@ class TestChatToResponses(unittest.TestCase):
         self.assertEqual(result["incomplete_details"]["reason"], "content_filter")
 
     def test_tool_calls_in_response(self):
-        from transform import chat_to_responses
+        from proxy.transform import chat_to_responses
         chat_resp = {
             "id": "chatcmpl-tools",
             "model": "test",
@@ -164,7 +164,7 @@ class TestChatToResponses(unittest.TestCase):
         self.assertEqual(fc[0]["arguments"], '{"cmd":"ls"}')
 
     def test_refusal(self):
-        from transform import chat_to_responses
+        from proxy.transform import chat_to_responses
         chat_resp = {
             "id": "chatcmpl-refuse",
             "model": "test",
@@ -180,7 +180,7 @@ class TestChatToResponses(unittest.TestCase):
         self.assertEqual(refusal_items[0]["content"][0]["refusal"], "I cannot help with that.")
 
     def test_usage_details_defaults(self):
-        from transform import chat_to_responses
+        from proxy.transform import chat_to_responses
         chat_resp = {
             "id": "chatcmpl-abc",
             "model": "test",
@@ -195,34 +195,34 @@ class TestChatToResponses(unittest.TestCase):
 
 class TestSSEParser(unittest.TestCase):
     def test_parse_simple_event(self):
-        from transform import _parse_sse_event
+        from proxy.transform import _parse_sse_event
         result = _parse_sse_event("event: response.created\ndata: {\"id\":\"resp-1\"}")
         self.assertEqual(result["event"], "response.created")
         self.assertEqual(result["data"]["id"], "resp-1")
 
     def test_parse_default_event(self):
-        from transform import _parse_sse_event
+        from proxy.transform import _parse_sse_event
         result = _parse_sse_event("data: {\"key\":\"value\"}")
         self.assertEqual(result["event"], "message")
         self.assertEqual(result["data"]["key"], "value")
 
     def test_parse_done(self):
-        from transform import _parse_sse_event
+        from proxy.transform import _parse_sse_event
         result = _parse_sse_event("data: [DONE]")
         self.assertEqual(result["event"], "[DONE]")
         self.assertIsNone(result["data"])
 
     def test_parse_empty_returns_none(self):
-        from transform import _parse_sse_event
+        from proxy.transform import _parse_sse_event
         self.assertIsNone(_parse_sse_event(""))
         self.assertIsNone(_parse_sse_event(": keepalive"))
 
     def test_parse_invalid_json_returns_none(self):
-        from transform import _parse_sse_event
+        from proxy.transform import _parse_sse_event
         self.assertIsNone(_parse_sse_event("data: not-json"))
 
     def test_parse_multiple_data_lines(self):
-        from transform import _parse_sse_event
+        from proxy.transform import _parse_sse_event
         result = _parse_sse_event("data: {\"a\":1,\n data: \"b\":2}")
         self.assertEqual(result["data"]["a"], 1)
         self.assertEqual(result["data"]["b"], 2)
@@ -230,7 +230,7 @@ class TestSSEParser(unittest.TestCase):
 
 class TestIterSSEEvents(unittest.TestCase):
     def test_iter_multiple_events(self):
-        from transform import iter_sse_events
+        from proxy.transform import iter_sse_events
 
         class MockStream:
             def __init__(self, data):
@@ -250,7 +250,7 @@ class TestIterSSEEvents(unittest.TestCase):
         self.assertEqual(events[1]["event"], "response.completed")
 
     def test_iter_with_done(self):
-        from transform import iter_sse_events
+        from proxy.transform import iter_sse_events
 
         class MockStream:
             def __init__(self, data):
@@ -270,7 +270,7 @@ class TestIterSSEEvents(unittest.TestCase):
 
 class TestStreamState(unittest.TestCase):
     def test_next_output_index_increments_on_text(self):
-        from transform import CodexStreamConverter
+        from proxy.transform import CodexStreamConverter
         c = CodexStreamConverter()
         c.response_id = "resp-test"
         c.model = "test"
@@ -280,7 +280,7 @@ class TestStreamState(unittest.TestCase):
         self.assertEqual(c.text_output_index, 0)
 
     def test_next_output_index_increments_on_reasoning_then_text(self):
-        from transform import CodexStreamConverter
+        from proxy.transform import CodexStreamConverter
         c = CodexStreamConverter()
         c.response_id = "resp-test"
         c.model = "test"
@@ -290,7 +290,7 @@ class TestStreamState(unittest.TestCase):
         self.assertEqual(c.text_output_index, 1)
 
     def test_stream_state_is_codex_stream_converter(self):
-        from transform import StreamState, CodexStreamConverter
+        from proxy.transform import StreamState, CodexStreamConverter
         self.assertIs(StreamState, CodexStreamConverter)
 
 
@@ -299,7 +299,7 @@ class TestSSEStreamIntegration(unittest.TestCase):
 
     def test_text_only_stream(self):
         """纯文本流：created + metadata + output_item.added(message) + text deltas + text done + item done + completed。"""
-        from transform import create_codex_sse_stream
+        from proxy.transform import create_codex_sse_stream
 
         class MockStream:
             def __init__(self):
@@ -339,7 +339,7 @@ class TestSSEStreamIntegration(unittest.TestCase):
 
     def test_reasoning_plus_text_stream(self):
         """推理+文本流：验证 reasoning output_index=0, message output_index=1。"""
-        from transform import create_codex_sse_stream
+        from proxy.transform import create_codex_sse_stream
 
         class MockStream:
             def __init__(self):
@@ -381,7 +381,7 @@ class TestSSEStreamIntegration(unittest.TestCase):
 
     def test_tool_calls_accumulation(self):
         """工具调用积累：验证 tool_calls 积累后一次性发送。"""
-        from transform import create_codex_sse_stream
+        from proxy.transform import create_codex_sse_stream
 
         class MockStream:
             def __init__(self):
@@ -418,7 +418,7 @@ class TestSSEStreamIntegration(unittest.TestCase):
 
     def test_multiple_tool_calls_out_of_order(self):
         """Risk #10：多 tool_calls 乱序到达，按 index 排序后发送（done 事件中 index=0 先于 index=1）。"""
-        from transform import create_codex_sse_stream
+        from proxy.transform import create_codex_sse_stream
 
         class MockStream:
             def __init__(self):
@@ -454,7 +454,7 @@ class TestSSEStreamIntegration(unittest.TestCase):
 
 class TestResponsesToChatAllInputTypes(unittest.TestCase):
     def test_image_multimodal_true(self):
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [{
@@ -475,7 +475,7 @@ class TestResponsesToChatAllInputTypes(unittest.TestCase):
         self.assertEqual(content[0]["image_url"]["detail"], "high")
 
     def test_image_multimodal_false(self):
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [{
@@ -490,7 +490,7 @@ class TestResponsesToChatAllInputTypes(unittest.TestCase):
         self.assertEqual(content[0]["text"], "[image: unsupported]")
 
     def test_file_placeholder(self):
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [{
@@ -506,7 +506,7 @@ class TestResponsesToChatAllInputTypes(unittest.TestCase):
 
     def test_output_text_content(self):
         """验证 assistant 消息的 output_text content 类型被正确映射为文本。"""
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [{
@@ -523,7 +523,7 @@ class TestResponsesToChatAllInputTypes(unittest.TestCase):
 
     def test_mixed_input_and_output_text(self):
         """验证 user 的 input_text 和 assistant 的 output_text 混用场景。"""
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [
@@ -540,7 +540,7 @@ class TestResponsesToChatAllInputTypes(unittest.TestCase):
         self.assertEqual(result["messages"][2]["content"][0]["text"], "How are you?")
 
     def test_reasoning_dropped(self):
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [{"type": "reasoning", "id": "rs_123"}],
@@ -550,7 +550,7 @@ class TestResponsesToChatAllInputTypes(unittest.TestCase):
         self.assertEqual(len(result["messages"]), 0)
 
     def test_web_search_call_dropped(self):
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [{"type": "web_search_call"}],
@@ -560,7 +560,7 @@ class TestResponsesToChatAllInputTypes(unittest.TestCase):
         self.assertEqual(len(result["messages"]), 0)
 
     def test_code_interpreter_call_dropped(self):
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [{"type": "code_interpreter_call"}],
@@ -570,7 +570,7 @@ class TestResponsesToChatAllInputTypes(unittest.TestCase):
         self.assertEqual(len(result["messages"]), 0)
 
     def test_mcp_call_dropped(self):
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [{"type": "mcp_call"}],
@@ -581,7 +581,7 @@ class TestResponsesToChatAllInputTypes(unittest.TestCase):
 
     def test_computer_call_mapped(self):
         """验证 computer_call 与 function_call 一样被转换为 tool_calls 格式。"""
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [{
@@ -599,7 +599,7 @@ class TestResponsesToChatAllInputTypes(unittest.TestCase):
 
 class TestAdvancedFeatures(unittest.TestCase):
     def test_json_schema_format(self):
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [{"type": "message", "role": "user", "content": "extract"}],
@@ -620,7 +620,7 @@ class TestAdvancedFeatures(unittest.TestCase):
         self.assertTrue(fmt["json_schema"]["strict"])
 
     def test_tools_passthrough(self):
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [{"type": "message", "role": "user", "content": "search"}],
@@ -636,7 +636,7 @@ class TestAdvancedFeatures(unittest.TestCase):
 
     def test_tools_responses_api_to_chat_format(self):
         """验证 Responses API 工具格式转换为 Chat Completions 格式（"function" 包裹）。"""
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         # Codex 实际发送的 Responses API 工具格式（无 "function" 包裹）
         body = {
             "model": "gpt-5.1-codex-max",
@@ -672,7 +672,7 @@ class TestAdvancedFeatures(unittest.TestCase):
 
     def test_map_tools_idempotent_on_chat_format(self):
         """验证 _map_tools 对已有 'function' 包裹的工具不会双重包裹。"""
-        from transform import _map_tools
+        from proxy.transform import _map_tools
         chat_tools = [{
             "type": "function",
             "function": {"name": "bash", "parameters": {}},
@@ -683,7 +683,7 @@ class TestAdvancedFeatures(unittest.TestCase):
 
     def test_map_tools_drops_custom_type(self):
         """验证 _map_tools 丢弃非 function 类型的工具（如 Codex 的 custom apply_patch）。"""
-        from transform import _map_tools
+        from proxy.transform import _map_tools
         tools = [
             {
                 "type": "custom",
@@ -701,7 +701,7 @@ class TestAdvancedFeatures(unittest.TestCase):
         self.assertEqual(result[0]["function"]["name"], "bash")
 
     def test_reasoning_effort_passthrough(self):
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [{"type": "message", "role": "user", "content": "think"}],
@@ -713,7 +713,7 @@ class TestAdvancedFeatures(unittest.TestCase):
 
     def test_discarded_fields(self):
         """验证 previous_response_id, include, store, client_metadata, service_tier 全部丢弃。"""
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [{"type": "message", "role": "user", "content": "hi"}],
@@ -733,7 +733,7 @@ class TestAdvancedFeatures(unittest.TestCase):
         self.assertNotIn("service_tier", result)
 
     def test_function_call_output_to_tool_role(self):
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [{
@@ -750,7 +750,7 @@ class TestAdvancedFeatures(unittest.TestCase):
         self.assertEqual(result["messages"][0]["content"], "result data")
 
     def test_computer_call_output_to_tool_role(self):
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [{
@@ -767,7 +767,7 @@ class TestAdvancedFeatures(unittest.TestCase):
 
     def test_function_call_uses_call_id(self):
         """验证 function_call 使用 call_id 字段（Codex 实际发送格式）。"""
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [{
@@ -786,7 +786,7 @@ class TestAdvancedFeatures(unittest.TestCase):
 
     def test_function_call_output_uses_call_id(self):
         """验证 function_call_output 使用 call_id 字段（Codex 实际发送格式）。"""
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [{
@@ -804,7 +804,7 @@ class TestAdvancedFeatures(unittest.TestCase):
 
     def test_computer_call_output_uses_call_id(self):
         """验证 computer_call_output 也支持 call_id 字段。"""
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [{
@@ -821,7 +821,7 @@ class TestAdvancedFeatures(unittest.TestCase):
 
     def test_tool_name_namespace_preserved(self):
         """验证 tool name 中的 . 命名空间保留。"""
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [{
@@ -838,7 +838,7 @@ class TestAdvancedFeatures(unittest.TestCase):
 
 class TestPreviousResponseIdDiscarded(unittest.TestCase):
     def test_previous_response_id_not_in_output(self):
-        from transform import responses_to_chat
+        from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
             "input": [
@@ -859,7 +859,7 @@ class TestPreviousResponseIdDiscarded(unittest.TestCase):
 
 class TestChatToResponsesDirect(unittest.TestCase):
     def test_gpt4_style_response(self):
-        from transform import chat_to_responses
+        from proxy.transform import chat_to_responses
         resp = {
             "id": "chatcmpl-9XyZ",
             "object": "chat.completion",
@@ -895,7 +895,7 @@ class TestChatToResponsesDirect(unittest.TestCase):
         self.assertEqual(result["usage"]["output_tokens_details"]["reasoning_tokens"], 5)
 
     def test_claude_style_tool_calls_response(self):
-        from transform import chat_to_responses
+        from proxy.transform import chat_to_responses
         resp = {
             "id": "chatcmpl-tool123",
             "model": "claude-sonnet-4-6",
@@ -920,7 +920,7 @@ class TestChatToResponsesDirect(unittest.TestCase):
         self.assertEqual(fc_items[1]["name"], "read_file")
 
     def test_empty_content_with_usage(self):
-        from transform import chat_to_responses
+        from proxy.transform import chat_to_responses
         resp = {
             "id": "chatcmpl-empty",
             "model": "test",
@@ -941,7 +941,7 @@ class TestFormatSSEEvent(unittest.TestCase):
 
     def test_injects_type_field(self):
         """验证 data JSON 中包含 event_type 作为 "type" 字段。"""
-        from transform import _format_sse_event
+        from proxy.transform import _format_sse_event
         result = _format_sse_event("response.output_text.delta", {
             "output_index": 0, "content_index": 0, "delta": "hello",
         })
@@ -955,7 +955,7 @@ class TestFormatSSEEvent(unittest.TestCase):
 
     def test_type_overrides_existing(self):
         """验证 event_type 覆盖 data 中已有的 "type" 键。"""
-        from transform import _format_sse_event
+        from proxy.transform import _format_sse_event
         result = _format_sse_event("response.completed", {
             "type": "wrong_type",
             "response": {"id": "resp-1"},
@@ -967,7 +967,7 @@ class TestFormatSSEEvent(unittest.TestCase):
 
     def test_compact_separators(self):
         """验证紧凑格式 — data JSON 的冒号和逗号后没有空格。"""
-        from transform import _format_sse_event
+        from proxy.transform import _format_sse_event
         result = _format_sse_event("response.created", {
             "response": {"id": "resp-1", "status": "in_progress"},
         })
@@ -979,14 +979,14 @@ class TestFormatSSEEvent(unittest.TestCase):
 
     def test_event_line_format(self):
         """验证事件行格式为 'event: <type>'。"""
-        from transform import _format_sse_event
+        from proxy.transform import _format_sse_event
         result = _format_sse_event("response.metadata", {"model": "test"})
         first_line = result.split("\n")[0]
         self.assertEqual(first_line, "event: response.metadata")
 
     def test_data_json_parseable(self):
         """验证 data 行后是合法 JSON。"""
-        from transform import _format_sse_event
+        from proxy.transform import _format_sse_event
         result = _format_sse_event("response.output_item.added", {
             "output_index": 1,
             "item": {"type": "message", "role": "assistant", "content": [], "status": "in_progress"},
@@ -998,7 +998,7 @@ class TestFormatSSEEvent(unittest.TestCase):
 
     def test_ends_with_double_newline(self):
         """验证 SSE 事件以 \\n\\n 结尾。"""
-        from transform import _format_sse_event
+        from proxy.transform import _format_sse_event
         result = _format_sse_event("response.output_text.done", {
             "output_index": 0, "content_index": 0, "text": "done",
         })
@@ -1006,7 +1006,7 @@ class TestFormatSSEEvent(unittest.TestCase):
 
     def test_response_incomplete_event(self):
         """验证 response.incomplete 的正确格式（含 response 包裹）。"""
-        from transform import _format_sse_event
+        from proxy.transform import _format_sse_event
         result = _format_sse_event("response.incomplete", {
             "response": {"incomplete_details": {"reason": "max_tokens"}},
         })
@@ -1054,7 +1054,7 @@ class TestSSEEventFormatIntegration(unittest.TestCase):
 
     def _stream_to_events(self, chunks):
         """辅助：chunks → create_codex_sse_stream → _parse_events。"""
-        from transform import create_codex_sse_stream
+        from proxy.transform import create_codex_sse_stream
 
         stream = self._make_mock_stream(chunks)
         text = ""
@@ -1170,7 +1170,7 @@ class _SSETestBase(unittest.TestCase):
 
 class TestHandleReasoningDelta(_SSETestBase):
     def _make_converter(self):
-        from transform import CodexStreamConverter
+        from proxy.transform import CodexStreamConverter
         c = CodexStreamConverter()
         c.response_id = "resp-test"
         c.model = "test"
@@ -1238,7 +1238,7 @@ class TestHandleReasoningDelta(_SSETestBase):
 
 class TestProcessChunkAndFinish(_SSETestBase):
     def _make_converter(self, response_id="resp-test"):
-        from transform import CodexStreamConverter
+        from proxy.transform import CodexStreamConverter
         c = CodexStreamConverter()
         c.response_id = response_id
         return c
@@ -1332,7 +1332,7 @@ class TestProcessChunkAndFinish(_SSETestBase):
 
 class TestHandleToolCallDelta(_SSETestBase):
     def _make_converter(self):
-        from transform import CodexStreamConverter
+        from proxy.transform import CodexStreamConverter
         c = CodexStreamConverter()
         c.response_id = "resp-test"
         c.model = "test"
@@ -1461,7 +1461,7 @@ class TestNewSSEFeatures(_SSETestBase):
     # 继承 _SSETestBase._parse_events，不重复实现
 
     def _stream_to_text(self, chunks):
-        from transform import create_codex_sse_stream
+        from proxy.transform import create_codex_sse_stream
         stream = self._make_mock_stream(chunks)
         return "".join(create_codex_sse_stream(stream))
 
@@ -1594,7 +1594,7 @@ class TestOutputItemsToMessages(unittest.TestCase):
     """output_items_to_messages 独立单元测试（设计文稿 §4.3）。"""
 
     def test_text_message(self):
-        from transform import output_items_to_messages
+        from proxy.transform import output_items_to_messages
         items = [{"type": "message", "content": [{"type": "output_text", "text": "Hello"}]}]
         result = output_items_to_messages(items)
         self.assertEqual(len(result), 1)
@@ -1603,7 +1603,7 @@ class TestOutputItemsToMessages(unittest.TestCase):
 
     def test_pure_refusal_message_fallback_empty_string(self):
         """纯拒绝消息：content 没有 output_text，fallback 为空字符串，不能是 None 或 KeyError。"""
-        from transform import output_items_to_messages
+        from proxy.transform import output_items_to_messages
         items = [{"type": "message", "content": [{"type": "refusal", "refusal": "No"}]}]
         result = output_items_to_messages(items)
         self.assertEqual(len(result), 1)
@@ -1611,7 +1611,7 @@ class TestOutputItemsToMessages(unittest.TestCase):
 
     def test_multiple_function_calls_merged(self):
         """多个 function_call 合并为单条 assistant 消息。"""
-        from transform import output_items_to_messages
+        from proxy.transform import output_items_to_messages
         items = [
             {"type": "function_call", "id": "fc1", "call_id": "call_1", "name": "bash", "arguments": '{}'},
             {"type": "function_call", "id": "fc2", "call_id": "call_2", "name": "read_file", "arguments": '{}'},
@@ -1622,7 +1622,7 @@ class TestOutputItemsToMessages(unittest.TestCase):
         self.assertEqual(len(result[0]["tool_calls"]), 2)
 
     def test_reasoning_skipped(self):
-        from transform import output_items_to_messages
+        from proxy.transform import output_items_to_messages
         items = [
             {"type": "reasoning", "id": "rs1", "summary": [{"type": "summary_text", "text": "think"}]},
             {"type": "message", "content": [{"type": "output_text", "text": "Answer"}]},
@@ -1638,7 +1638,7 @@ class TestProxyErrorPathsDone(unittest.TestCase):
     @staticmethod
     def _read_forward_streaming_source():
         import pathlib
-        return (pathlib.Path(__file__).parent.parent / "proxy.py").read_text()
+        return (pathlib.Path(__file__).parent.parent / "proxy" / "handler.py").read_text()
 
     def test_non_200_error_path_has_done(self):
         """上游非 200 错误路径在 completed 后补发 [DONE]。"""
@@ -1666,7 +1666,7 @@ class TestProxyErrorPathsDone(unittest.TestCase):
     def test_iter_sse_buffer_size(self):
         """iter_sse_events 读缓冲区应为 4096 字节。"""
         import pathlib
-        src = (pathlib.Path(__file__).parent.parent / "transform_responses.py").read_text()
+        src = (pathlib.Path(__file__).parent.parent / "proxy" / "transform_responses.py").read_text()
         self.assertIn("read(4096)", src, "iter_sse_events 缓冲区应从 256 增大到 4096")
         self.assertNotIn("read(256)", src, "旧 256 字节缓冲区应已删除")
 
@@ -1674,7 +1674,7 @@ class TestProxyErrorPathsDone(unittest.TestCase):
 class TestChatToResponsesRefusalMerge(unittest.TestCase):
     def test_text_and_refusal_merged_into_single_message_item(self):
         """text + refusal 应合并进同一个 message output item 的 content 数组。"""
-        from transform import chat_to_responses
+        from proxy.transform import chat_to_responses
         chat_resp = {
             "id": "chatcmpl-merge",
             "model": "test",
@@ -1696,7 +1696,7 @@ class TestChatToResponsesRefusalMerge(unittest.TestCase):
         self.assertIn("refusal", types)
 
     def test_refusal_only_creates_single_message_item(self):
-        from transform import chat_to_responses
+        from proxy.transform import chat_to_responses
         chat_resp = {
             "id": "chatcmpl-refonly",
             "model": "test",
@@ -1712,7 +1712,7 @@ class TestChatToResponsesRefusalMerge(unittest.TestCase):
         self.assertEqual(msg_items[0]["content"][0]["type"], "refusal")
 
     def test_text_only_still_works(self):
-        from transform import chat_to_responses
+        from proxy.transform import chat_to_responses
         chat_resp = {
             "id": "chatcmpl-txtonly",
             "model": "test",
@@ -1727,7 +1727,7 @@ class TestChatToResponsesRefusalMerge(unittest.TestCase):
 
 class TestHandleRefusalDelta(_SSETestBase):
     def _make_converter(self):
-        from transform import CodexStreamConverter
+        from proxy.transform import CodexStreamConverter
         c = CodexStreamConverter()
         c.response_id = "resp-test"
         c.model = "test"
@@ -1820,7 +1820,7 @@ class TestHandleRefusalDelta(_SSETestBase):
 
 class TestHandleTextDelta(_SSETestBase):
     def _make_converter(self):
-        from transform import CodexStreamConverter
+        from proxy.transform import CodexStreamConverter
         c = CodexStreamConverter()
         c.response_id = "resp-test"
         c.model = "test"
@@ -1908,7 +1908,7 @@ class TestHandleTextDelta(_SSETestBase):
 
 class TestCodexStreamConverterCreated(unittest.TestCase):
     def _make_converter(self):
-        from transform import CodexStreamConverter
+        from proxy.transform import CodexStreamConverter
         c = CodexStreamConverter()
         c.response_id = "resp-test-00000001"
         c.model = "test-model"
@@ -1978,7 +1978,7 @@ class TestCodexStreamConverterCreated(unittest.TestCase):
 
 class TestCodexStreamConverterFields(unittest.TestCase):
     def test_default_fields(self):
-        from transform import CodexStreamConverter
+        from proxy.transform import CodexStreamConverter
         c = CodexStreamConverter()
         self.assertEqual(c.response_id, "")
         self.assertEqual(c.model, "")
@@ -1998,13 +1998,13 @@ class TestCodexStreamConverterFields(unittest.TestCase):
 
     def test_codex_stream_converter_importable(self):
         """CodexStreamConverter 可从 transform 导入（别名在删除旧 StreamState 后生效）。"""
-        from transform import CodexStreamConverter
+        from proxy.transform import CodexStreamConverter
         self.assertTrue(hasattr(CodexStreamConverter, "response_id"))
 
 
 class TestToolBlockState(unittest.TestCase):
     def test_default_fields(self):
-        from transform import ToolBlockState
+        from proxy.transform import ToolBlockState
         b = ToolBlockState()
         self.assertEqual(b.output_index, -1)
         self.assertEqual(b.call_id, "")
@@ -2014,7 +2014,7 @@ class TestToolBlockState(unittest.TestCase):
         self.assertEqual(b.item_id, "")
 
     def test_mutation(self):
-        from transform import ToolBlockState
+        from proxy.transform import ToolBlockState
         b = ToolBlockState()
         b.call_id = "call_abc"
         b.name = "bash"
