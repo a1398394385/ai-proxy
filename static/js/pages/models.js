@@ -40,8 +40,6 @@ async function loadUpstreamTable() {
 
       <td>${u.timeout}s</td>
 
-      <td>${u.is_default ? '✅' : ''}</td>
-
       <td>
 
         <button class="btn btn-secondary btn-sm" onclick="showUpstreamModal('${escHtml(u.id)}')">编辑</button>
@@ -112,7 +110,7 @@ async function loadModelConfig() {
 
 // ─── 上游模态框 ───
 async function showUpstreamModal(editId) {
-  let data = { id: '', base_url: '', api_key: '', timeout: 600, connect_timeout: 30, ssl_verify: 1, retry: 1, is_default: 0, format: 'chat_completions' };
+  let data = { id: '', base_url: '', api_key: '', timeout: 600, connect_timeout: 30, ssl_verify: 1, retry: 1, format: 'chat_completions' };
   let title = '新增上游';
   if (editId) {
     title = '编辑上游: ' + editId;
@@ -129,10 +127,9 @@ async function showUpstreamModal(editId) {
        <div class="form-group"><label class="form-label">响应超时 (s)</label><input type="number" class="form-input" id="up-timeout" value="${data.timeout}" min="1"></div>
        <div class="form-group"><label class="form-label">连接超时 (s)</label><input type="number" class="form-input" id="up-conn-timeout" value="${data.connect_timeout}" min="1"></div>
      </div>
-     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
        <div class="form-group"><label class="form-label">SSL</label><select class="form-input" id="up-ssl"><option value="1" ${data.ssl_verify ? 'selected' : ''}>开启</option><option value="0" ${!data.ssl_verify ? 'selected' : ''}>关闭</option></select></div>
        <div class="form-group"><label class="form-label">重试</label><input type="number" class="form-input" id="up-retry" value="${data.retry}" min="0"></div>
-       <div class="form-group"><label class="form-label">默认</label><select class="form-input" id="up-default"><option value="1" ${data.is_default ? 'selected' : ''}>是</option><option value="0" ${!data.is_default ? 'selected' : ''}>否</option></select></div>
      </div>`,
     `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveUpstream('${editId || ''}')">保存</button>`);
 }

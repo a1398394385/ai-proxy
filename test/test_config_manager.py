@@ -123,23 +123,6 @@ class TestUpstreamCRUD(unittest.TestCase):
         self.assertEqual(len(active), 1)
         self.assertEqual(active[0]["id"], "up-a")
 
-    def test_is_default_clears_others_on_add(self):
-        self.db.add_upstream({"id": "up-a", "base_url": "http://a", "is_default": 1})
-        self.db.add_upstream({"id": "up-b", "base_url": "http://b", "is_default": 1})
-        a = self.db.get_upstream("up-a")
-        b = self.db.get_upstream("up-b")
-        self.assertEqual(a["is_default"], 0)
-        self.assertEqual(b["is_default"], 1)
-
-    def test_is_default_clears_others_on_update(self):
-        self.db.add_upstream({"id": "up-a", "base_url": "http://a", "is_default": 1})
-        self.db.add_upstream({"id": "up-b", "base_url": "http://b"})
-        self.db.update_upstream("up-b", {"is_default": 1})
-        a = self.db.get_upstream("up-a")
-        b = self.db.get_upstream("up-b")
-        self.assertEqual(a["is_default"], 0)
-        self.assertEqual(b["is_default"], 1)
-
 
 class TestModelCRUD(unittest.TestCase):
     def setUp(self):

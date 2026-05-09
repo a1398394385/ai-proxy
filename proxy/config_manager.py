@@ -43,12 +43,11 @@ class ConfigDB:
                     id              TEXT PRIMARY KEY,
                     base_url        TEXT NOT NULL,
                     api_key         TEXT NOT NULL DEFAULT '',
-                    timeout         INTEGER NOT NULL DEFAULT 120  CHECK(timeout > 0),
+                    timeout         INTEGER NOT NULL DEFAULT 600  CHECK(timeout > 0),
                     connect_timeout INTEGER NOT NULL DEFAULT 10   CHECK(connect_timeout > 0),
                     ssl_verify      INTEGER NOT NULL DEFAULT 1    CHECK(ssl_verify IN (0, 1)),
                     retry           INTEGER NOT NULL DEFAULT 1    CHECK(retry >= 0),
                     is_active       INTEGER NOT NULL DEFAULT 1    CHECK(is_active IN (0, 1)),
-                    is_default      INTEGER NOT NULL DEFAULT 0    CHECK(is_default IN (0, 1)),
                     format          TEXT NOT NULL DEFAULT 'openai_chat'
                                     CHECK(format IN ('responses', 'messages', 'chat_completions')),
                     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
@@ -121,22 +120,18 @@ class ConfigDB:
     def add_upstream(self, data: dict) -> str:
         conn = self._connect()
         try:
-            if data.get("is_default"):
-                conn.execute("UPDATE upstreams SET is_default = 0")
-
             conn.execute(
                 """INSERT INTO upstreams (id, base_url, api_key, timeout,
-                   connect_timeout, ssl_verify, retry, is_default, format)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   connect_timeout, ssl_verify, retry, format)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     data["id"],
                     data["base_url"],
                     data.get("api_key", ""),
-                    data.get("timeout", 120),
+                    data.get("timeout", 600),
                     data.get("connect_timeout", 10),
                     data.get("ssl_verify", 1),
                     data.get("retry", 1),
-                    data.get("is_default", 0),
                     data.get("format", "chat_completions"),
                 ),
             )
@@ -148,13 +143,10 @@ class ConfigDB:
     def update_upstream(self, upstream_id: str, data: dict):
         conn = self._connect()
         try:
-            if data.get("is_default"):
-                conn.execute("UPDATE upstreams SET is_default = 0")
-
             fields = []
             values = []
             for key in ("base_url", "api_key", "timeout", "connect_timeout",
-                        "ssl_verify", "retry", "is_default", "format"):
+                        "ssl_verify", "retry", "format"):
                 if key in data:
                     fields.append(f"{key} = ?")
                     values.append(data[key])
@@ -575,7 +567,7 @@ class Migrations:
         return conn
 
     def status(self) -> dict:
-        """返回当前迁移状态。version 0 = 未迁移，version >= 3 = 已迁移。"""
+        """返回当前迁移状态。version 0 = 未迁移，version >= 4 = 已迁移。"""
         conn = self._connect()
         try:
             row = conn.execute(
@@ -590,8 +582,8 @@ class Migrations:
                 if has_request_type:
                     return {
                         "migrated": True,
-                        "version": 3,
-                        "details": "已迁移到 v3: 数据库由更新的 _ensure_db() 直接创建",
+                        "version": 4,
+                        "details": "已迁移到 v4: 数据库由更新的 _ensure_db() 直接创建",
                     }
                 return {
                     "migrated": False,
@@ -609,6 +601,12 @@ class Migrations:
                     "migrated": False,
                     "version": 2,
                     "details": "需要执行迁移: proxy_type 列需要重命名为 request_type，数据值需要映射",
+                }
+            if version == 3:
+                return {
+                    "migrated": False,
+                    "version": 3,
+                    "details": "需要执行迁移: upstreams.is_default 列需要移除",
                 }
             return {
                 "migrated": True,
@@ -640,10 +638,12 @@ class Migrations:
             self._migrate_v1_to_v2(backup_path)
         if version <= 2:
             self._migrate_v2_to_v3(backup_path)
+        if version <= 3:
+            self._migrate_v3_to_v4(backup_path)
 
         return {
             "status": "ok",
-            "version": 3,
+            "version": 4,
             "backup_path": str(backup_path),
         }
 
@@ -889,12 +889,11 @@ class Migrations:
                         id              TEXT PRIMARY KEY,
                         base_url        TEXT NOT NULL,
                         api_key         TEXT NOT NULL DEFAULT '',
-                        timeout         INTEGER NOT NULL DEFAULT 120  CHECK(timeout > 0),
+                        timeout         INTEGER NOT NULL DEFAULT 600  CHECK(timeout > 0),
                         connect_timeout INTEGER NOT NULL DEFAULT 10   CHECK(connect_timeout > 0),
                         ssl_verify      INTEGER NOT NULL DEFAULT 1    CHECK(ssl_verify IN (0, 1)),
                         retry           INTEGER NOT NULL DEFAULT 1    CHECK(retry >= 0),
                         is_active       INTEGER NOT NULL DEFAULT 1    CHECK(is_active IN (0, 1)),
-                        is_default      INTEGER NOT NULL DEFAULT 0    CHECK(is_default IN (0, 1)),
                         format          TEXT NOT NULL DEFAULT 'chat_completions'
                                         CHECK(format IN ('responses', 'messages', 'chat_completions')),
                         created_at      TEXT NOT NULL DEFAULT (datetime('now')),
@@ -906,10 +905,10 @@ class Migrations:
                 conn.execute("""
                     INSERT INTO upstreams_new
                         (id, base_url, api_key, timeout, connect_timeout,
-                         ssl_verify, retry, is_active, is_default,
+                         ssl_verify, retry, is_active,
                          format, created_at, updated_at)
                     SELECT id, base_url, api_key, timeout, connect_timeout,
-                           ssl_verify, retry, is_active, is_default,
+                           ssl_verify, retry, is_active,
                            CASE format
                                WHEN 'openai_chat' THEN 'chat_completions'
                                WHEN 'anthropic' THEN 'messages'
@@ -949,6 +948,83 @@ class Migrations:
             except Exception:
                 conn.rollback()
                 logging.error("[Migrations] v2→v3 迁移失败，已回滚", exc_info=True)
+                raise
+            finally:
+                conn.execute("PRAGMA foreign_keys = ON")
+        finally:
+            conn.close()
+
+    def _migrate_v3_to_v4(self, backup_path: Path):
+        """执行 v3 → v4 迁移（移除 upstreams.is_default 列）。"""
+        conn = self._connect()
+        try:
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.execute("BEGIN TRANSACTION")
+            try:
+                has_is_default = conn.execute(
+                    "SELECT 1 FROM pragma_table_info('upstreams') WHERE name = 'is_default'"
+                ).fetchone()
+                if not has_is_default:
+                    conn.execute("DELETE FROM schema_version;")
+                    conn.execute("INSERT INTO schema_version (version) VALUES (4);")
+                    conn.commit()
+                    logging.info("[Migrations] v3→v4: is_default 列已不存在，直接更新版本号")
+                    return
+
+                old_count = conn.execute(
+                    "SELECT COUNT(*) FROM upstreams"
+                ).fetchone()[0]
+                logging.info(f"[Migrations] v3→v4 STEP 1: 原始 upstreams 记录数 = {old_count}")
+
+                conn.execute("""
+                    CREATE TABLE upstreams_new (
+                        id              TEXT PRIMARY KEY,
+                        base_url        TEXT NOT NULL,
+                        api_key         TEXT NOT NULL DEFAULT '',
+                        timeout         INTEGER NOT NULL DEFAULT 600  CHECK(timeout > 0),
+                        connect_timeout INTEGER NOT NULL DEFAULT 10   CHECK(connect_timeout > 0),
+                        ssl_verify      INTEGER NOT NULL DEFAULT 1    CHECK(ssl_verify IN (0, 1)),
+                        retry           INTEGER NOT NULL DEFAULT 1    CHECK(retry >= 0),
+                        is_active       INTEGER NOT NULL DEFAULT 1    CHECK(is_active IN (0, 1)),
+                        format          TEXT NOT NULL DEFAULT 'chat_completions'
+                                        CHECK(format IN ('responses', 'messages', 'chat_completions')),
+                        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+                    );
+                """)
+                logging.info("[Migrations] v3→v4 STEP 2: upstreams_new 表创建完成（无 is_default）")
+
+                conn.execute("""
+                    INSERT INTO upstreams_new
+                        (id, base_url, api_key, timeout, connect_timeout,
+                         ssl_verify, retry, is_active, format, created_at, updated_at)
+                    SELECT id, base_url, api_key, timeout, connect_timeout,
+                           ssl_verify, retry, is_active, format, created_at, updated_at
+                    FROM upstreams;
+                """)
+                logging.info("[Migrations] v3→v4 STEP 3: 数据复制完成")
+
+                new_count = conn.execute(
+                    "SELECT COUNT(*) FROM upstreams_new"
+                ).fetchone()[0]
+                if new_count < old_count:
+                    raise sqlite3.OperationalError(
+                        f"upstreams 迁移验证失败: 原有 {old_count} 条记录, 现有 {new_count} 条记录"
+                    )
+
+                conn.execute("DROP TABLE upstreams;")
+                conn.execute("ALTER TABLE upstreams_new RENAME TO upstreams;")
+                logging.info("[Migrations] v3→v4 STEP 4: upstreams 表替换完成")
+
+                conn.execute("DELETE FROM schema_version;")
+                conn.execute("INSERT INTO schema_version (version) VALUES (4);")
+                logging.info("[Migrations] v3→v4 STEP 5: schema_version 更新为 4")
+
+                conn.commit()
+                logging.info("[Migrations] v3→v4 迁移成功")
+            except Exception:
+                conn.rollback()
+                logging.error("[Migrations] v3→v4 迁移失败，已回滚", exc_info=True)
                 raise
             finally:
                 conn.execute("PRAGMA foreign_keys = ON")
