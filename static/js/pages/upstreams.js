@@ -69,10 +69,7 @@ function toggleModelDrawer(event, upstreamId) {
   const drawerRow = document.createElement('tr');
   drawerRow.className = 'drawer-row';
   drawerRow.id = 'drawer-' + upstreamId;
-  const upstream = upstreamDataMap[upstreamId];
-  const detectBtn = (upstream && upstream.format === 'chat_completions')
-    ? '<button class="btn btn-detect" onclick="event.stopPropagation(); window.detectUpstreamModels(\'' + escHtml(upstreamId) + '\')" id="detect-btn-' + escHtml(upstreamId) + '">🔍 检测模型</button>'
-    : '';
+  const detectBtn = '<button class="btn btn-detect" onclick="event.stopPropagation(); window.detectUpstreamModels(\'' + escHtml(upstreamId) + '\')" id="detect-btn-' + escHtml(upstreamId) + '">🔍 检测模型</button>';
   drawerRow.innerHTML =
     '<td colspan="7">' +
       '<div class="drawer-content">' +

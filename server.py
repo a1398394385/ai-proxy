@@ -896,11 +896,6 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             if not u:
                 return json_response(self, {"error": "Not found"}, 404)
 
-            # 校验格式：仅支持 chat_completions
-            if u.get("format") != "chat_completions":
-                return json_response(self, {
-                    "error": "仅支持 chat_completions 格式的上游自动检测模型"
-                }, 400)
 
             # 校验上游处于启用状态
             if not u.get("is_active"):
