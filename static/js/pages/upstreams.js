@@ -19,6 +19,8 @@ async function refreshConfigStatus() {
 
 async function loadUpstreamTable() {
   const data = await api('/api/upstreams');
+  upstreamDataMap = {};
+  data.upstreams.forEach(u => { upstreamDataMap[u.id] = u; });
   document.getElementById('upstream-count').textContent = data.upstreams.length + ' 个上游';
   const tbody = document.querySelector('#upstream-table tbody');
 
@@ -45,6 +47,7 @@ async function loadUpstreamTable() {
 // ===== Drawer (inline accordion) =====
 
 let openDrawerUpstreamId = null;
+let upstreamDataMap = {};
 
 function toggleModelDrawer(event, upstreamId) {
   event.stopPropagation();
@@ -66,15 +69,19 @@ function toggleModelDrawer(event, upstreamId) {
   const drawerRow = document.createElement('tr');
   drawerRow.className = 'drawer-row';
   drawerRow.id = 'drawer-' + upstreamId;
+  const upstream = upstreamDataMap[upstreamId];
+  const detectBtn = (upstream && upstream.format === 'chat_completions')
+    ? '<button class="btn btn-detect" onclick="event.stopPropagation(); window.detectUpstreamModels(\'' + escHtml(upstreamId) + '\')" id="detect-btn-' + escHtml(upstreamId) + '">🔍 检测模型</button>'
+    : '';
   drawerRow.innerHTML =
     '<td colspan="7">' +
       '<div class="drawer-content">' +
         '<div class="drawer-header">🤖 模型列表 — 上游: ' + escHtml(upstreamId) +
-          '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); showModelModalForUpstream(\'' + escHtml(upstreamId) + '\')" style="margin-left:auto;">＋ 新增模型</button></div>' +
-     '<table class="drawer-model-table">' +
-           '<thead><tr><th>模型名</th><th>所属上游</th><th>Multimodal</th><th>操作</th></tr></thead>' +
-           '<tbody class="drawer-model-tbody"></tbody>' +
-         '</table>' +
+          '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); showModelModalForUpstream(\'' + escHtml(upstreamId) + '\')" style="margin-left:auto;">＋ 新增模型</button>' + detectBtn + '</div>' +
+        '<table class="drawer-model-table">' +
+          '<thead><tr><th>模型名</th><th>所属上游</th><th>Multimodal</th><th>操作</th></tr></thead>' +
+          '<tbody class="drawer-model-tbody"></tbody>' +
+        '</table>' +
       '</div>' +
     '</td>';
 
@@ -283,6 +290,112 @@ async function confirmDeleteModel(id, name) {
   }
 }
 
+// ─── 自动检测模型 ───
+
+async function detectUpstreamModels(upstreamId) {
+  const btn = document.getElementById('detect-btn-' + upstreamId);
+  if (!btn) return;
+  
+  // Loading state
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>检测中...';
+  
+  try {
+    const result = await api('/api/upstreams/' + encodeURIComponent(upstreamId) + '/detect-models', { method: 'POST' });
+    
+    if (!result.reachable) {
+      alert('⚠️ 上游不可达: ' + (result.error || '未知错误'));
+      return;
+    }
+    
+    showDetectModal(upstreamId, result);
+  } catch (e) {
+    alert('❌ 检测失败: ' + e.message);
+  } finally {
+    // Reset button
+    btn.disabled = false;
+    btn.innerHTML = '🔍 检测模型';
+  }
+}
+
+function showDetectModal(upstreamId, result) {
+  const discovered = result.discovered || [];
+  const existingCount = (result.existing || []).length;
+  
+  if (discovered.length === 0) {
+    // All models already exist
+    showModal('🔍 检测模型 — ' + escHtml(upstreamId),
+      '<div class="detect-all-existing">✅ 所有模型已存在' + (existingCount > 0 ? '（' + existingCount + ' 个）' : '') + '</div>',
+      '<button class="btn btn-secondary" onclick="closeModal()">关闭</button>');
+    return;
+  }
+  
+  // Build model list with checkboxes
+  const modelItems = discovered.map((name, i) =>
+    '<div class="detect-model-item">' +
+      '<input type="checkbox" class="detect-model-cb" value="' + escHtml(name) + '" checked id="dm-cb-' + i + '">' +
+      '<span class="model-name" title="' + escHtml(name) + '">' + escHtml(name) + '</span>' +
+      '<label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap;">' +
+        '<input type="checkbox" class="dm-multimodal" checked onchange="this.dataset.val = this.checked ? \'1\' : \'0\'">' +
+        '多模态</label>' +
+    '</div>'
+  ).join('');
+  
+  const selectAllLink = '<a onclick="window.toggleSelectAllModels(true)">全选</a> / <a onclick="window.toggleSelectAllModels(false)">取消全选</a>';
+  
+  const statsText = '发现 ' + discovered.length + ' 个新模型' + (existingCount > 0 ? '，已有 ' + existingCount + ' 个' : '');
+  
+  const content = 
+    '<div class="detect-select-all">' + selectAllLink + '</div>' +
+    '<div class="detect-stats">' + statsText + '</div>' +
+    '<div class="detect-model-list">' + modelItems + '</div>';
+  
+  const footer = 
+    '<button class="btn btn-secondary" onclick="closeModal()">取消</button>' +
+    '<button class="btn btn-primary" onclick="window.bulkAddDetectedModels(\'' + escHtml(upstreamId) + '\')">批量添加选中模型</button>';
+  
+  showModal('🔍 检测模型 — ' + escHtml(upstreamId), content, footer);
+}
+
+function toggleSelectAllModels(checked) {
+  document.querySelectorAll('.detect-model-cb').forEach(cb => { cb.checked = checked; });
+}
+
+async function bulkAddDetectedModels(upstreamId) {
+  const checkboxes = document.querySelectorAll('.detect-model-cb:checked');
+  if (checkboxes.length === 0) {
+    alert('请至少选择一个模型');
+    return;
+  }
+  
+  // Collect selected models with multimodal flag
+  const models = Array.from(checkboxes).map(cb => {
+    const item = cb.closest('.detect-model-item');
+    const multimodalCb = item ? item.querySelector('.dm-multimodal') : null;
+    const multimodal = multimodalCb ? (multimodalCb.checked ? 1 : 0) : 1;
+    return { name: cb.value, multimodal: multimodal };
+  });
+  
+  try {
+    const result = await api('/api/upstreams/' + encodeURIComponent(upstreamId) + '/models/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ models: models })
+    });
+    
+    closeModal();
+    bus.emit('config:model-changed', {});
+    
+    if (openDrawerUpstreamId) {
+      loadModelTable(openDrawerUpstreamId);
+    }
+    
+    alert('✅ 添加完成: 新增 ' + result.added + ' 个，跳过 ' + result.skipped + ' 个');
+  } catch (e) {
+    alert('❌ 添加失败: ' + e.message);
+  }
+}
+
+
 // ─── 页面加载 ───
 
 async function loadUpstreamPage() {
@@ -307,4 +420,7 @@ window.confirmDeleteModel = confirmDeleteModel;
 window.toggleModelDrawer = toggleModelDrawer;
 window.loadUpstreamPage = loadUpstreamPage;
 window.refreshConfigStatus = refreshConfigStatus;
+window.detectUpstreamModels = detectUpstreamModels;
+window.bulkAddDetectedModels = bulkAddDetectedModels;
+window.toggleSelectAllModels = toggleSelectAllModels;
 export { loadUpstreamPage, initUpstreamPage, refreshConfigStatus };

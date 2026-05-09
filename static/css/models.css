@@ -200,3 +200,104 @@
 #page-models .table-scroll::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--muted-foreground));
 }
+
+/* ─── 自动检测模型 ─── */
+
+#page-models .btn-detect {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  border: 1px solid hsl(var(--primary));
+  padding: 4px 12px;
+  font-size: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+#page-models .btn-detect:hover {
+  opacity: 0.85;
+}
+#page-models .btn-detect:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@keyframes detect-spin {
+  to { transform: rotate(360deg); }
+}
+#page-models .btn-detect .spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid hsl(var(--primary-foreground) / 0.3);
+  border-top-color: hsl(var(--primary-foreground));
+  border-radius: 50%;
+  animation: detect-spin 0.6s linear infinite;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+#page-models .detect-model-list {
+  max-height: 350px;
+  overflow-y: auto;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  margin: 8px 0;
+}
+#page-models .detect-model-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid hsl(var(--border) / 0.3);
+  transition: background 0.15s;
+}
+#page-models .detect-model-item:hover {
+  background: hsl(var(--primary) / 0.05);
+}
+#page-models .detect-model-item:last-child {
+  border-bottom: none;
+}
+#page-models .detect-model-item .model-name {
+  flex: 1;
+  font-size: 13px;
+  font-family: monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#page-models .detect-model-item input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: hsl(var(--primary));
+}
+
+#page-models .detect-select-all {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 14px;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  border-bottom: 1px solid hsl(var(--border));
+}
+#page-models .detect-select-all a {
+  cursor: pointer;
+  color: hsl(var(--primary));
+  text-decoration: none;
+}
+#page-models .detect-select-all a:hover {
+  text-decoration: underline;
+}
+#page-models .detect-stats {
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  padding: 8px 14px;
+}
+
+#page-models .detect-all-existing {
+  text-align: center;
+  padding: 24px;
+  color: hsl(var(--muted-foreground));
+  font-size: 14px;
+}
