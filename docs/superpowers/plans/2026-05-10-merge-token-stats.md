@@ -8,20 +8,29 @@
 
 **Tech Stack:** Python 标准库 (sqlite3, datetime), 纯后端改动
 
+**关键约定：**
+- token_stats 表缓存列名为 `cached_read_tokens` / `cached_write_tokens`（带 d），与 sessions 的 `cache_read_tokens`（无 d）不同
+- `request_ts` 由 `time.strftime()` 生成本地时间，与 sessions 的 `localtime` 转换一致，无时区错位
+- 成本计算统一使用 `target_model`（实际调用的上游模型），pricing 表已包含这些模型名
+- 模型展示用 `target_model`，同名模型直接相加，不同名则独立显示
+
 ---
 
 ### Task 1: 新增 `_get_proxy_token_aggregate()` 辅助函数
 
 **Files:**
-- Modify: `server.py` (插入位置：`get_token_stats()` 函数之前，约第 319 行)
+- Modify: `server.py` (插入位置：`get_time_range()` 函数之后，约第 317 行)
 
-- [ ] **Step 1: 在 server.py 中 `_get_proxy_token_aggregate` 函数**
+- [ ] **Step 1: 在 server.py 中添加函数**
 
 在 `get_time_range()` 函数之后、`get_token_stats()` 之前插入：
 
 ```python
 def _get_proxy_token_aggregate(period):
-    """查询 token_stats 表的汇总数据。incomplete 表示流式中断不计入。"""
+    """查询 token_stats 表的汇总数据。
+    incomplete 表示流式中断，token 统计不完整，不计入汇总。
+    始终返回完整 dict，调用方无需做空值检查。
+    """
     from datetime import datetime
     conn = get_access_log_db()
     start_ts, end_ts = get_time_range(period)
@@ -50,7 +59,8 @@ def _get_proxy_token_aggregate(period):
 - [ ] **Step 2: 验证函数可调用**
 
 Run: `python3 -c "from server import _get_proxy_token_aggregate; print(_get_proxy_token_aggregate('week'))"`
-Expected: 输出一个包含 request_count/total_input 等字段的 dict
+Expected: 输出一个 dict，包含 request_count/total_input/total_output/total_cache_read/total_cache_write
+Note: 如 state.db 不存在导致导入报错，可忽略，后续 Task 6 做端对端验证
 
 - [ ] **Step 3: Commit**
 
@@ -61,12 +71,12 @@ git commit -m "feat: 新增 _get_proxy_token_aggregate 辅助函数"
 
 ---
 
-### Task 2: 改造 `get_token_stats()` 合并两份数据
+### Task 2: 改造 `get_token_stats()` 合并两份数据（含成本）
 
 **Files:**
 - Modify: `server.py:320-385`
 
-- [ ] **Step 1: 修改 `get_token_stats()` 函数，在 sessions 汇总之后合并 token_stats 数据**
+- [ ] **Step 1: 修改 `get_token_stats()` 函数，在 sessions 汇总之后合并 token_stats 数据（含成本）**
 
 将函数改为：
 
@@ -126,12 +136,20 @@ def get_token_stats(period="week"):
     
     # 合并 token_stats 代理请求数据
     proxy = _get_proxy_token_aggregate(period)
-    if proxy:
-        total_input += proxy["total_input"]
-        total_output += proxy["total_output"]
-        total_cache_read += proxy["total_cache_read"]
-        total_cache_write += proxy["total_cache_write"]
-        total_requests += proxy["request_count"]
+    total_input += proxy["total_input"]
+    total_output += proxy["total_output"]
+    total_cache_read += proxy["total_cache_read"]
+    total_cache_write += proxy["total_cache_write"]
+    total_requests += proxy["request_count"]
+    # 按 target_model 逐模型计算代理成本（target_model 是实际调用的上游模型，计费更准确）
+    for p in _get_proxy_token_by_model(period):
+        total_cost += calculate_cost(
+            p["model"],
+            p["input_tokens"],
+            p["output_tokens"],
+            p["cache_read_tokens"],
+            p["cache_write_tokens"]
+        )
     
     stats = {
         "period": period,
@@ -148,15 +166,13 @@ def get_token_stats(period="week"):
 
 关键变更：
 - `conn.close()` 从 `return stats` 前移到 sessions 查询完成后
-- 新增 `proxy = _get_proxy_token_aggregate(period)` 及合并逻辑
-- `estimated_cost_usd` 暂时未包含代理请求成本（Task 5 补充）
+- `_get_proxy_token_aggregate()` 始终返回完整 dict，无需 `if proxy:` 检查
+- 同时调用 `_get_proxy_token_by_model()` 计算代理成本，避免单独 Task 重复查询
+- 成本用 `target_model`（即返回结构中的 `p["model"]`）计算
 
-- [ ] **Step 2: 验证 API 返回**
+注意：此 Task 依赖 Task 3 的 `_get_proxy_token_by_model()` 函数，需先完成 Task 3。
 
-Run: `python3 -c "from server import get_token_stats; print(get_token_stats('week'))"`
-Expected: 输出 dict 中 request_count 应包含两份数据之和
-
-- [ ] **Step 3: Commit**
+- [ ] **Step 2: Commit**
 
 ```bash
 git add server.py
@@ -174,7 +190,10 @@ git commit -m "feat: get_token_stats 合并 token_stats 代理请求数据"
 
 ```python
 def _get_proxy_token_by_model(period):
-    """查询 token_stats 按 target_model 分组。request_count=COUNT(*) 即单次 API 调用次数。"""
+    """查询 token_stats 按 target_model 分组。
+    request_count=COUNT(*) 即单次 API 调用次数（与 sessions 的 SUM(message_count) 语义同为 API 调用次数）。
+    返回中 model key 为 target_model（用于前端展示和与 sessions 同名模型合并）。
+    """
     from datetime import datetime
     conn = get_access_log_db()
     start_ts, end_ts = get_time_range(period)
@@ -232,6 +251,7 @@ def get_token_stats_by_model(period="week"):
     conn.close()
     
     # 以模型名为 key 合并两份数据
+    # 同名模型 token 数直接相加，不同名则独立显示
     model_map = {}
     
     for r in rows:
@@ -256,7 +276,7 @@ def get_token_stats_by_model(period="week"):
         else:
             model_map[name] = p
     
-    # 计算成本
+    # 计算成本（统一用 model 字段，token_stats 中即 target_model）
     models = []
     for m in model_map.values():
         cost = calculate_cost(
@@ -435,31 +455,28 @@ def _get_proxy_token_trend(period):
     return []
 ```
 
-- [ ] **Step 2: 修改 `get_daily_token_trend()`，在 sessions 趋势生成后逐点合并 proxy 趋势**
+- [ ] **Step 2: 修改 `get_daily_token_trend()`，在三个分支中插入合并逻辑**
 
-在 `get_daily_token_trend()` 的三个分支（day/week/month）中，每个分支末尾 `return trends` 之前，插入合并逻辑：
+在 `get_daily_token_trend()` 函数内，`calc_cost_for_model()` 定义之后，新增 `_merge_proxy_trends` 内部辅助函数：
 
 ```python
-        # 合并 token_stats 代理请求趋势
-        pricing = get_model_pricing()
-        proxy_trends = _get_proxy_token_trend(period)
+    def _merge_proxy_trends(trends, proxy_trends):
+        """逐点合并代理请求趋势到 sessions 趋势，使用 calculate_cost 计算代理成本"""
         for i, pt in enumerate(proxy_trends):
             if i < len(trends):
                 trends[i]["input_tokens"] += pt["input_tokens"]
                 trends[i]["output_tokens"] += pt["output_tokens"]
                 trends[i]["cache_read_tokens"] += pt["cache_read_tokens"]
                 trends[i]["cache_write_tokens"] += pt["cache_write_tokens"]
-                # 按 target_model 逐模型计算代理成本
                 proxy_cost = 0
                 for md in pt.get("model_data", []):
-                    if pricing and md["model"] in pricing:
-                        p = pricing[md["model"]]
-                        proxy_cost += (
-                            md["input_tokens"] / 1_000_000 * p["input_cost"] +
-                            md["output_tokens"] / 1_000_000 * p["output_cost"] +
-                            md["cache_read_tokens"] / 1_000_000 * p["cache_read_cost"] +
-                            md["cache_write_tokens"] / 1_000_000 * p["cache_creation_cost"]
-                        )
+                    proxy_cost += calculate_cost(
+                        md["model"],
+                        md["input_tokens"],
+                        md["output_tokens"],
+                        md["cache_read_tokens"],
+                        md["cache_write_tokens"]
+                    )
                 trends[i]["estimated_cost_usd"] = round(trends[i]["estimated_cost_usd"] + proxy_cost, 4)
                 trends[i]["total_tokens"] = (
                     trends[i]["input_tokens"] +
@@ -467,46 +484,28 @@ def _get_proxy_token_trend(period):
                     trends[i]["cache_read_tokens"] +
                     trends[i]["cache_write_tokens"]
                 )
-        
+        return trends
+```
+
+然后在三个分支的 `conn.close(); return trends` 前各插入一行：
+
+**day 分支**（约第 525 行，`conn.close()` 之前）：
+```python
+        trends = _merge_proxy_trends(trends, _get_proxy_token_trend(period))
         conn.close()
         return trends
 ```
 
-需要将这段合并逻辑提取为一个内部辅助函数避免三个分支重复代码。在 `get_daily_token_trend()` 开头定义：
-
+**week 分支**（约第 587 行，`conn.close()` 之前）：
 ```python
-    def _merge_proxy_trends(trends, proxy_trends, pricing):
-        """逐点合并代理请求趋势到 sessions 趋势"""
-        for i, pt in enumerate(proxy_trends):
-            if i < len(trends):
-                trends[i]["input_tokens"] += pt["input_tokens"]
-                trends[i]["output_tokens"] += pt["output_tokens"]
-                trends[i]["cache_read_tokens"] += pt["cache_read_tokens"]
-                trends[i]["cache_write_tokens"] += pt["cache_write_tokens"]
-                proxy_cost = 0
-                for md in pt.get("model_data", []):
-                    if pricing and md["model"] in pricing:
-                        p = pricing[md["model"]]
-                        proxy_cost += (
-                            md["input_tokens"] / 1_000_000 * p["input_cost"] +
-                            md["output_tokens"] / 1_000_000 * p["output_cost"] +
-                            md["cache_read_tokens"] / 1_000_000 * p["cache_read_cost"] +
-                            md["cache_write_tokens"] / 1_000_000 * p["cache_creation_cost"]
-                        )
-                trends[i]["estimated_cost_usd"] = round(trends[i]["estimated_cost_usd"] + proxy_cost, 4)
-                trends[i]["total_tokens"] = (
-                    trends[i]["input_tokens"] +
-                    trends[i]["output_tokens"] +
-                    trends[i]["cache_read_tokens"] +
-                    trends[i]["cache_write_tokens"]
-                )
+        trends = _merge_proxy_trends(trends, _get_proxy_token_trend(period))
+        conn.close()
         return trends
 ```
 
-然后在三个分支的 `conn.close(); return trends` 前各调用：
-
+**month 分支**（约第 649 行，`conn.close()` 之前）：
 ```python
-        trends = _merge_proxy_trends(trends, _get_proxy_token_trend(period), pricing)
+        trends = _merge_proxy_trends(trends, _get_proxy_token_trend(period))
         conn.close()
         return trends
 ```
@@ -525,65 +524,7 @@ git commit -m "feat: get_daily_token_trend 合并 token_stats 代理请求趋势
 
 ---
 
-### Task 5: 补充代理请求成本到 `get_token_stats()` 的 KPI
-
-**Files:**
-- Modify: `server.py`
-
-Task 2 中 `get_token_stats()` 的 `estimated_cost_usd` 未包含代理请求成本，因为汇总查询只有总量没有按模型分组。需要在合并段增加按模型计算成本。
-
-- [ ] **Step 1: 修改 `get_token_stats()` 合并段，使用 `_get_proxy_token_by_model` 计算代理成本**
-
-将 Task 2 中的合并段从：
-
-```python
-    # 合并 token_stats 代理请求数据
-    proxy = _get_proxy_token_aggregate(period)
-    if proxy:
-        total_input += proxy["total_input"]
-        total_output += proxy["total_output"]
-        total_cache_read += proxy["total_cache_read"]
-        total_cache_write += proxy["total_cache_write"]
-        total_requests += proxy["request_count"]
-```
-
-改为：
-
-```python
-    # 合并 token_stats 代理请求数据
-    proxy = _get_proxy_token_aggregate(period)
-    if proxy:
-        total_input += proxy["total_input"]
-        total_output += proxy["total_output"]
-        total_cache_read += proxy["total_cache_read"]
-        total_cache_write += proxy["total_cache_write"]
-        total_requests += proxy["request_count"]
-        # 按 target_model 逐模型计算代理成本
-        for p in _get_proxy_token_by_model(period):
-            total_cost += calculate_cost(
-                p["model"],
-                p["input_tokens"],
-                p["output_tokens"],
-                p["cache_read_tokens"],
-                p["cache_write_tokens"]
-            )
-```
-
-- [ ] **Step 2: 验证 KPI 成本包含代理部分**
-
-Run: `python3 -c "from server import get_token_stats; r = get_token_stats('week'); print('cost:', r['estimated_cost_usd'])"`
-Expected: 成本值应高于之前仅 sessions 的值
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add server.py
-git commit -m "feat: get_token_stats KPI 补充代理请求成本计算"
-```
-
----
-
-### Task 6: 全量测试与端对端验证
+### Task 5: 全量测试与端对端验证
 
 **Files:**
 - No code changes
