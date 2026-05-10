@@ -17,7 +17,7 @@
 |------|---------------------|----------------------------|
 | 粒度 | 会话级 | 单次请求级 |
 | 模型字段 | `model` | `target_model`（实际调用模型） |
-| 时间字段 | `started_at`（UNIX timestamp） | `request_ts`（`YYYY-MM-DD HH:MM:SS`） |
+| 时间字段 | `started_at`（UNIX timestamp） | `request_ts`（`YYYY-MM-DD HH:MM:SS`，本地时间） |
 | 独有字段 | `message_count`, `title` | `request_type`, `duration_ms` |
 | 数据量 | 178 条 | 830 条 |
 
@@ -39,11 +39,16 @@
 
 #### `_get_proxy_token_aggregate(period)`
 
-查询 token_stats 汇总数据。时间过滤将 `get_time_range()` 返回的 timestamp 转为字符串格式匹配 `request_ts`。返回 `request_count`、`total_input`、`total_output`、`total_cache_read`、`total_cache_write`，仅统计 `status='completed'` 的记录。
+查询 token_stats 汇总数据。时间过滤将 `get_time_range()` 返回的 timestamp 转为字符串格式匹配 `request_ts`。返回 `request_count`、`total_input`、`total_output`、`total_cache_read`、`total_cache_write`。
+
+- `status='completed'` 过滤：incomplete 表示流式中断，token 统计不完整，不应计入汇总
+- `request_count` = `COUNT(*)`，语义为代理 API 调用次数（sessions 的 request_count 是 `SUM(message_count)`，语义同为 API 调用次数，直接相加合理）
+
+**SQL 列名注意**：token_stats 表中缓存列名为 `cached_read_tokens` / `cached_write_tokens`（带 d），与 sessions 的 `cache_read_tokens` / `cache_write_tokens`（无 d）不同，SQL 中必须使用正确的列名。
 
 #### `_get_proxy_token_by_model(period)`
 
-查询 token_stats 按 `target_model` 分组。返回每模型的 `request_count`（COUNT(*)）、`input_tokens`、`output_tokens`、`cache_read_tokens`、`cache_write_tokens`。
+查询 token_stats 按 `target_model` 分组。返回每模型的 `request_count`（COUNT(*)）、`input_tokens`、`output_tokens`、`cached_read_tokens`、`cached_write_tokens`。
 
 #### `_get_proxy_token_trend(period)`
 
@@ -51,7 +56,7 @@
 - `day`：按小时 `strftime('%Y-%m-%d %H', request_ts)`
 - `week`/`month`：按天 `strftime('%Y-%m-%d', request_ts)`
 
-返回结构与 sessions 趋势对齐，包含 `time_key`、各 token 字段、按模型的子数据（用于成本计算）。
+**返回与 sessions 趋势完全相同的时间线结构**（含补 0 的完整时间点），这样主函数的合并只需逐点相加，无需再处理时间对齐。内部实现：生成与 sessions 相同的完整时间线骨架，将查询结果填入对应时间点，空点补 0。
 
 ### 主函数改造
 
@@ -72,13 +77,15 @@
 #### `get_daily_token_trend(period)`
 
 1. 原有 sessions 逻辑不变，生成完整时间线
-2. 调用 `_get_proxy_token_trend(period)` 得到代理趋势数据
-3. 同一时间点的 token 数相加，成本累加
+2. 调用 `_get_proxy_token_trend(period)` 得到代理趋势数据（已含完整时间线+补 0）
+3. 逐点相加 token 数和成本
 4. 无数据的时间点仍补 0
 
 ### 时间过滤适配
 
-sessions 使用 `started_at`（REAL, UNIX timestamp），token_stats 使用 `request_ts`（TEXT, `YYYY-MM-DD HH:MM:SS`）。辅助函数内将 `get_time_range()` 的 timestamp 结果转为字符串：
+sessions 使用 `started_at`（REAL, UNIX timestamp），token_stats 使用 `request_ts`（TEXT, `YYYY-MM-DD HH:MM:SS`）。两者均为本地时间（`request_ts` 由 `time.strftime()` 生成，sessions 通过 `localtime` 转换），无时区错位。
+
+辅助函数内将 `get_time_range()` 的 timestamp 结果转为字符串：
 
 ```python
 start_str = datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d %H:%M:%S")
