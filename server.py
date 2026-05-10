@@ -317,6 +317,209 @@ def get_time_range(period):
     return start.timestamp(), now.timestamp()
 
 
+def _get_proxy_token_aggregate(period):
+    """查询 token_stats 表的汇总数据。
+    incomplete 表示流式中断，token 统计不完整，不计入汇总。
+    始终返回完整 dict，调用方无需做空值检查。
+    """
+    from datetime import datetime
+    conn = get_access_log_db()
+    start_ts, end_ts = get_time_range(period)
+    start_str = datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d %H:%M:%S")
+    end_str = datetime.fromtimestamp(end_ts).strftime("%Y-%m-%d %H:%M:%S")
+    row = conn.execute(
+        """SELECT COUNT(*) as request_count,
+                  COALESCE(SUM(input_tokens), 0) as total_input,
+                  COALESCE(SUM(output_tokens), 0) as total_output,
+                  COALESCE(SUM(cached_read_tokens), 0) as total_cache_read,
+                  COALESCE(SUM(cached_write_tokens), 0) as total_cache_write
+           FROM token_stats
+           WHERE request_ts >= ? AND request_ts <= ? AND status = 'completed'""",
+        (start_str, end_str)
+    ).fetchone()
+    conn.close()
+    return {
+        "request_count": row["request_count"] or 0,
+        "total_input": row["total_input"] or 0,
+        "total_output": row["total_output"] or 0,
+        "total_cache_read": row["total_cache_read"] or 0,
+        "total_cache_write": row["total_cache_write"] or 0,
+    }
+
+
+def _get_proxy_token_by_model(period):
+    """查询 token_stats 按 target_model 分组。
+    request_count=COUNT(*) 即单次 API 调用次数（与 sessions 的 SUM(message_count) 语义同为 API 调用次数）。
+    返回中 model key 为 target_model（用于前端展示和与 sessions 同名模型合并）。
+    """
+    from datetime import datetime
+    conn = get_access_log_db()
+    start_ts, end_ts = get_time_range(period)
+    start_str = datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d %H:%M:%S")
+    end_str = datetime.fromtimestamp(end_ts).strftime("%Y-%m-%d %H:%M:%S")
+    rows = conn.execute(
+        """SELECT target_model as model,
+                  COUNT(*) as request_count,
+                  SUM(input_tokens) as total_input,
+                  SUM(output_tokens) as total_output,
+                  SUM(cached_read_tokens) as total_cache_read,
+                  SUM(cached_write_tokens) as total_cache_write
+           FROM token_stats
+           WHERE request_ts >= ? AND request_ts <= ? AND status = 'completed'
+           GROUP BY target_model""",
+        (start_str, end_str)
+    ).fetchall()
+    conn.close()
+    return [
+        {
+            "model": r["model"],
+            "request_count": r["request_count"] or 0,
+            "input_tokens": r["total_input"] or 0,
+            "output_tokens": r["total_output"] or 0,
+            "cache_read_tokens": r["total_cache_read"] or 0,
+            "cache_write_tokens": r["total_cache_write"] or 0,
+        }
+        for r in rows
+    ]
+
+
+def _get_proxy_token_trend(period):
+    """查询 token_stats 按时间粒度分组，返回完整时间线（与 sessions 趋势结构对齐，含补 0）。
+
+    返回 list of dict，每个 dict 包含：
+    - date: 时间标签
+    - input_tokens / output_tokens / cache_read_tokens / cache_write_tokens
+    - model_data: list of {model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens}
+    """
+    from datetime import datetime, timedelta
+
+    conn = get_access_log_db()
+    now = datetime.now()
+    start_ts, end_ts = get_time_range(period)
+    start_str = datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d %H:%M:%S")
+    end_str = datetime.fromtimestamp(end_ts).strftime("%Y-%m-%d %H:%M:%S")
+
+    if period == "day":
+        rows = conn.execute(
+            """SELECT strftime('%Y-%m-%d %H', request_ts) as time_slot,
+                      target_model as model,
+                      SUM(input_tokens) as total_input,
+                      SUM(output_tokens) as total_output,
+                      SUM(cached_read_tokens) as total_cache_read,
+                      SUM(cached_write_tokens) as total_cache_write
+               FROM token_stats
+               WHERE request_ts >= ? AND request_ts <= ? AND status = 'completed'
+               GROUP BY time_slot, target_model
+               ORDER BY time_slot""",
+            (start_str, end_str)
+        ).fetchall()
+
+        data_by_slot = {}
+        for r in rows:
+            slot = r["time_slot"]
+            if slot not in data_by_slot:
+                data_by_slot[slot] = []
+            data_by_slot[slot].append(r)
+
+        trends = []
+        for i in range(24):
+            point_time = now - timedelta(hours=23 - i)
+            slot = point_time.strftime('%Y-%m-%d %H')
+            model_rows = data_by_slot.get(slot, [])
+
+            input_tokens = output_tokens = cache_read = cache_write = 0
+            model_data = []
+            for r in model_rows:
+                it = r["total_input"] or 0
+                ot = r["total_output"] or 0
+                cr = r["total_cache_read"] or 0
+                cw = r["total_cache_write"] or 0
+                input_tokens += it
+                output_tokens += ot
+                cache_read += cr
+                cache_write += cw
+                model_data.append({
+                    "model": r["model"],
+                    "input_tokens": it,
+                    "output_tokens": ot,
+                    "cache_read_tokens": cr,
+                    "cache_write_tokens": cw,
+                })
+
+            trends.append({
+                "date": point_time.strftime('%Y-%m-%d %H:%M'),
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_read_tokens": cache_read,
+                "cache_write_tokens": cache_write,
+                "model_data": model_data,
+            })
+        conn.close()
+        return trends
+
+    elif period in ("week", "month"):
+        days = 7 if period == "week" else 30
+        dates = [(now - timedelta(days=days - 1 - i)).strftime('%Y-%m-%d') for i in range(days)]
+
+        rows = conn.execute(
+            """SELECT date(request_ts) as time_slot,
+                      target_model as model,
+                      SUM(input_tokens) as total_input,
+                      SUM(output_tokens) as total_output,
+                      SUM(cached_read_tokens) as total_cache_read,
+                      SUM(cached_write_tokens) as total_cache_write
+               FROM token_stats
+               WHERE request_ts >= ? AND request_ts <= ? AND status = 'completed'
+               GROUP BY time_slot, target_model
+               ORDER BY time_slot""",
+            (start_str, end_str)
+        ).fetchall()
+
+        data_by_slot = {}
+        for r in rows:
+            slot = r["time_slot"]
+            if slot not in data_by_slot:
+                data_by_slot[slot] = []
+            data_by_slot[slot].append(r)
+
+        trends = []
+        for date_str in dates:
+            model_rows = data_by_slot.get(date_str, [])
+
+            input_tokens = output_tokens = cache_read = cache_write = 0
+            model_data = []
+            for r in model_rows:
+                it = r["total_input"] or 0
+                ot = r["total_output"] or 0
+                cr = r["total_cache_read"] or 0
+                cw = r["total_cache_write"] or 0
+                input_tokens += it
+                output_tokens += ot
+                cache_read += cr
+                cache_write += cw
+                model_data.append({
+                    "model": r["model"],
+                    "input_tokens": it,
+                    "output_tokens": ot,
+                    "cache_read_tokens": cr,
+                    "cache_write_tokens": cw,
+                })
+
+            trends.append({
+                "date": date_str,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_read_tokens": cache_read,
+                "cache_write_tokens": cache_write,
+                "model_data": model_data,
+            })
+        conn.close()
+        return trends
+
+    conn.close()
+    return []
+
+
 def get_token_stats(period="week"):
     start_ts, end_ts = get_time_range(period)
     conn = get_state_db()
@@ -388,16 +591,16 @@ def get_token_stats(period="week"):
 def get_token_stats_by_model(period="week"):
     start_ts, end_ts = get_time_range(period)
     conn = get_state_db()
-    
+
     rows = conn.execute(
-        """SELECT 
+        """SELECT
             model,
             SUM(message_count) as request_count,
             SUM(input_tokens) as total_input,
             SUM(output_tokens) as total_output,
             SUM(cache_read_tokens) as total_cache_read,
             SUM(cache_write_tokens) as total_cache_write
-        FROM sessions 
+        FROM sessions
         WHERE started_at >= ? AND started_at <= ?
         AND input_tokens IS NOT NULL
         AND model IS NOT NULL
@@ -405,30 +608,49 @@ def get_token_stats_by_model(period="week"):
         ORDER BY total_input + total_output DESC""",
         (start_ts, end_ts)
     ).fetchall()
-    
-    models = []
+    conn.close()
+
+    # 以模型名为 key 合并两份数据
+    # 同名模型 token 数直接相加，不同名则独立显示
+    model_map = {}
+
     for r in rows:
         model = r["model"]
-        input_t = r["total_input"] or 0
-        output_t = r["total_output"] or 0
-        cache_read_t = r["total_cache_read"] or 0
-        cache_write_t = r["total_cache_write"] or 0
-        
-        # 按照计费规则计算成本
-        cost = calculate_cost(model, input_t, output_t, cache_read_t, cache_write_t)
-        
-        models.append({
+        model_map[model] = {
             "model": model,
             "request_count": r["request_count"] or 0,
-            "input_tokens": input_t,
-            "output_tokens": output_t,
-            "cache_read_tokens": cache_read_t,
-            "cache_write_tokens": cache_write_t,
-            "total_tokens": input_t + output_t + cache_read_t + cache_write_t,
-            "estimated_cost_usd": round(cost, 4)
-        })
-    
-    conn.close()
+            "input_tokens": r["total_input"] or 0,
+            "output_tokens": r["total_output"] or 0,
+            "cache_read_tokens": r["total_cache_read"] or 0,
+            "cache_write_tokens": r["total_cache_write"] or 0,
+        }
+
+    for p in _get_proxy_token_by_model(period):
+        name = p["model"]
+        if name in model_map:
+            model_map[name]["request_count"] += p["request_count"]
+            model_map[name]["input_tokens"] += p["input_tokens"]
+            model_map[name]["output_tokens"] += p["output_tokens"]
+            model_map[name]["cache_read_tokens"] += p["cache_read_tokens"]
+            model_map[name]["cache_write_tokens"] += p["cache_write_tokens"]
+        else:
+            model_map[name] = p
+
+    # 计算成本（统一用 model 字段，token_stats 中即 target_model）
+    models = []
+    for m in model_map.values():
+        cost = calculate_cost(
+            m["model"],
+            m["input_tokens"],
+            m["output_tokens"],
+            m["cache_read_tokens"],
+            m["cache_write_tokens"]
+        )
+        m["total_tokens"] = m["input_tokens"] + m["output_tokens"] + m["cache_read_tokens"] + m["cache_write_tokens"]
+        m["estimated_cost_usd"] = round(cost, 4)
+        models.append(m)
+
+    models.sort(key=lambda m: m["total_tokens"], reverse=True)
     return models
 
 
@@ -458,7 +680,33 @@ def get_daily_token_trend(period="week"):
             (cache_read_t or 0) / 1_000_000 * p["cache_read_cost"] +
             (cache_write_t or 0) / 1_000_000 * p["cache_creation_cost"]
         )
-    
+
+    def _merge_proxy_trends(trends, proxy_trends):
+        """逐点合并代理请求趋势到 sessions 趋势，使用 calculate_cost 计算代理成本"""
+        for i, pt in enumerate(proxy_trends):
+            if i < len(trends):
+                trends[i]["input_tokens"] += pt["input_tokens"]
+                trends[i]["output_tokens"] += pt["output_tokens"]
+                trends[i]["cache_read_tokens"] += pt["cache_read_tokens"]
+                trends[i]["cache_write_tokens"] += pt["cache_write_tokens"]
+                proxy_cost = 0
+                for md in pt.get("model_data", []):
+                    proxy_cost += calculate_cost(
+                        md["model"],
+                        md["input_tokens"],
+                        md["output_tokens"],
+                        md["cache_read_tokens"],
+                        md["cache_write_tokens"]
+                    )
+                trends[i]["estimated_cost_usd"] = round(trends[i]["estimated_cost_usd"] + proxy_cost, 4)
+                trends[i]["total_tokens"] = (
+                    trends[i]["input_tokens"] +
+                    trends[i]["output_tokens"] +
+                    trends[i]["cache_read_tokens"] +
+                    trends[i]["cache_write_tokens"]
+                )
+        return trends
+
     if period == "day":
         # 24小时 - 返回24个点，从左到右是 (now-23h) 到 now
         end_ts = now.timestamp()
@@ -521,10 +769,12 @@ def get_daily_token_trend(period="week"):
                 "total_tokens": input_tokens + output_tokens + cache_read + cache_write,
                 "estimated_cost_usd": round(cost, 4)
             })
-        
+
+        trends = _merge_proxy_trends(trends, _get_proxy_token_trend(period))
+
         conn.close()
         return trends
-    
+
     elif period == "week":
         # 7天 - 返回完整 7 个日期点
         dates = [(now - timedelta(days=6-i)).strftime('%Y-%m-%d') for i in range(7)]
@@ -584,9 +834,12 @@ def get_daily_token_trend(period="week"):
                 "total_tokens": input_tokens + output_tokens + cache_read + cache_write,
                 "estimated_cost_usd": round(cost, 4)
             })
+
+        trends = _merge_proxy_trends(trends, _get_proxy_token_trend(period))
+
         conn.close()
         return trends
-    
+
     elif period == "month":
         # 30天 - 返回完整 30 个日期点
         dates = [(now - timedelta(days=29-i)).strftime('%Y-%m-%d') for i in range(30)]
@@ -646,9 +899,12 @@ def get_daily_token_trend(period="week"):
                 "total_tokens": input_tokens + output_tokens + cache_read + cache_write,
                 "estimated_cost_usd": round(cost, 4)
             })
+
+        trends = _merge_proxy_trends(trends, _get_proxy_token_trend(period))
+
         conn.close()
         return trends
-    
+
     conn.close()
     return []
 
