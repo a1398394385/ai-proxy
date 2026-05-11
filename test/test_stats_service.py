@@ -585,6 +585,181 @@ class TestStatsService(unittest.TestCase):
 
 
 
+class TestUpstreamResolver(unittest.TestCase):
+    """_UpstreamResolver 测试。"""
+
+    def setUp(self):
+        """创建临时目录和 config.db。"""
+        self.tmpdir = tempfile.mkdtemp()
+        self.config_db = Path(self.tmpdir) / "config.db"
+
+    def tearDown(self):
+        """清理临时文件。"""
+        import shutil
+        if os.path.exists(self.tmpdir):
+            shutil.rmtree(self.tmpdir)
+
+    def _setup_config_db(self):
+        """创建 config.db 并填充 upstream/target_models 数据。"""
+        conn = sqlite3.connect(str(self.config_db))
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS upstreams (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                base_url TEXT NOT NULL,
+                api_key TEXT DEFAULT '',
+                timeout INTEGER DEFAULT 30,
+                connect_timeout INTEGER DEFAULT 10,
+                ssl_verify INTEGER DEFAULT 1,
+                retry INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                is_default INTEGER DEFAULT 0
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS target_models (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                upstream_id INTEGER,
+                multimodal INTEGER DEFAULT 0,
+                format TEXT DEFAULT 'chat'
+            )
+        """)
+        conn.execute(
+            "INSERT INTO upstreams (id, base_url) VALUES (?, ?)",
+            (1, "https://api.openai.com"),
+        )
+        conn.execute(
+            "INSERT INTO upstreams (id, base_url) VALUES (?, ?)",
+            (2, "https://api.anthropic.com"),
+        )
+        conn.execute(
+            "INSERT INTO target_models (id, name, upstream_id) VALUES (?, ?, ?)",
+            (1, "qwen3.6-plus", 1),
+        )
+        conn.execute(
+            "INSERT INTO target_models (id, name, upstream_id) VALUES (?, ?, ?)",
+            (2, "claude-sonnet-4", 2),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_resolve_existing_model(self):
+        """config.db 中存在的 model → 正确返回 upstream。"""
+        from stats_service import _UpstreamResolver
+
+        self._setup_config_db()
+        resolver = _UpstreamResolver(self.config_db)
+
+        result = resolver.resolve("qwen3.6-plus")
+        self.assertEqual(result["upstream_name"], "https://api.openai.com")
+        self.assertEqual(result["upstream_url"], "https://api.openai.com")
+
+        result2 = resolver.resolve("claude-sonnet-4")
+        self.assertEqual(result2["upstream_name"], "https://api.anthropic.com")
+        self.assertEqual(result2["upstream_url"], "https://api.anthropic.com")
+
+    def test_resolve_orphan_model(self):
+        """orphan model → __unknown__。"""
+        from stats_service import _UpstreamResolver
+
+        self._setup_config_db()
+        resolver = _UpstreamResolver(self.config_db)
+
+        result = resolver.resolve("nonexistent-model")
+        self.assertEqual(result["upstream_name"], "__unknown__")
+        self.assertIsNone(result["upstream_url"])
+
+    def test_resolve_config_db_not_exists(self):
+        """config.db 不存在 → 不抛异常，返回 __unknown__。"""
+        from stats_service import _UpstreamResolver
+
+        # 不创建 config.db
+        resolver = _UpstreamResolver(self.config_db)
+
+        # 不应抛异常
+        result = resolver.resolve("any-model")
+        self.assertEqual(result["upstream_name"], "__unknown__")
+        self.assertIsNone(result["upstream_url"])
+
+    def test_get_all_upstreams(self):
+        """get_all_upstreams 返回所有 upstream。"""
+        from stats_service import _UpstreamResolver
+
+        self._setup_config_db()
+        resolver = _UpstreamResolver(self.config_db)
+
+        upstreams = resolver.get_all_upstreams()
+        self.assertEqual(len(upstreams), 2)
+
+        urls = {up["upstream_url"] for up in upstreams}
+        self.assertIn("https://api.openai.com", urls)
+        self.assertIn("https://api.anthropic.com", urls)
+
+    def test_cache_ttl_refresh(self):
+        """缓存过期后自动刷新。"""
+        import time
+        from stats_service import _UpstreamResolver
+
+        self._setup_config_db()
+        resolver = _UpstreamResolver(self.config_db)
+
+        # 首次解析
+        result1 = resolver.resolve("qwen3.6-plus")
+        self.assertEqual(result1["upstream_name"], "https://api.openai.com")
+
+        # 修改缓存时间为负值，强制过期
+        resolver._loaded_at = time.time() - 61
+
+        # 再次解析应触发刷新
+        result2 = resolver.resolve("qwen3.6-plus")
+        self.assertEqual(result2["upstream_name"], "https://api.openai.com")
+
+    def test_stats_service_uses_resolver(self):
+        """StatsService 使用 _UpstreamResolver。"""
+        from stats_service import StatsService
+
+        access_log_db = Path(self.tmpdir) / "access_log.db"
+        state_db = Path(self.tmpdir) / "state.db"
+        cc_switch_db = Path(self.tmpdir) / "cc-switch.db"
+
+        # 创建空 access_log.db
+        conn = sqlite3.connect(str(access_log_db))
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS token_stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL,
+                request_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                target_model TEXT NOT NULL,
+                request_ts TEXT NOT NULL,
+                duration_ms INTEGER,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cached_read_tokens INTEGER DEFAULT 0,
+                cached_write_tokens INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'completed',
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+        self._setup_config_db()
+
+        service = StatsService(
+            access_log_db_path=str(access_log_db),
+            config_db_path=str(self.config_db),
+            state_db_path=str(state_db),
+            cc_switch_db_path=str(cc_switch_db),
+        )
+
+        # 验证 resolver 已初始化
+        self.assertIsNotNone(service._upstream_resolver)
+
+        # 验证 resolve 方法可用
+        result = service._resolve_upstream("qwen3.6-plus")
+        self.assertEqual(result["upstream_name"], "https://api.openai.com")
+
 
 if __name__ == "__main__":
     unittest.main()

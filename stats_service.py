@@ -22,8 +22,8 @@
 """
 
 import sqlite3
+import time
 from pathlib import Path
-
 
 class _TokenStatsDao:
     """Token 统计数据访问对象。
@@ -346,6 +346,105 @@ class _TokenStatsDao:
             conn.close()
 
 
+class _UpstreamResolver:
+    """上游解析器 — 从 config.db 加载 model → upstream 映射，内置 TTL 缓存。
+
+    构造时加载全量映射到内存，每次 resolve() 检查缓存是否过期（60s），
+    过期自动刷新。config.db 不存在时返回空映射，不抛异常。
+
+    Args:
+        config_db_path: config.db 路径
+    """
+
+    def __init__(self, config_db_path: Path) -> None:
+        self.config_db_path = config_db_path
+        self._cache_ttl = 60  # 缓存 60 秒
+        self._loaded_at = 0.0  # 初始化为 0，强制首次加载
+        self._model_map: dict = {}  # {model_name: {upstream_name, upstream_url}}
+        self._upstream_list: list = []  # [{upstream_name, upstream_url}]
+        self._refresh()
+
+    def _refresh(self) -> None:
+        """从 config.db 重新加载映射到内存。"""
+        self._loaded_at = time.time()
+        self._model_map = {}
+        self._upstream_list = []
+
+        if not self.config_db_path.exists():
+            return
+
+        try:
+            conn = sqlite3.connect(str(self.config_db_path))
+            conn.row_factory = sqlite3.Row
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT tm.name, u.base_url as upstream_url, u.id as upstream_id
+                    FROM target_models tm
+                    JOIN upstreams u ON tm.upstream_id = u.id
+                    WHERE tm.name IS NOT NULL AND u.base_url IS NOT NULL
+                    """
+                ).fetchall()
+
+                seen_upstreams = set()
+                for row in rows:
+                    model_name = row["name"]
+                    upstream_url = row["upstream_url"]
+                    self._model_map[model_name] = {
+                        "upstream_name": upstream_url,
+                        "upstream_url": upstream_url,
+                    }
+                    if upstream_url not in seen_upstreams:
+                        seen_upstreams.add(upstream_url)
+                        self._upstream_list.append({
+                            "upstream_name": upstream_url,
+                            "upstream_url": upstream_url,
+                        })
+            finally:
+                conn.close()
+        except Exception:
+            # config.db 损坏或无法读取时，保持空映射
+            pass
+
+    def resolve(self, target_model: str) -> dict:
+        """解析 target_model 对应的 upstream 信息。
+
+        Args:
+            target_model: 目标模型名称
+
+        Returns:
+            {upstream_name: str, upstream_url: str} 或
+            {upstream_name: '__unknown__', upstream_url: None}
+        """
+        # 检查缓存是否过期
+        if time.time() - self._loaded_at > self._cache_ttl:
+            self._refresh()
+
+        entry = self._model_map.get(target_model)
+        if entry:
+            return {
+                "upstream_name": entry["upstream_name"],
+                "upstream_url": entry["upstream_url"],
+            }
+
+        return {
+            "upstream_name": "__unknown__",
+            "upstream_url": None,
+        }
+
+    def get_all_upstreams(self) -> list:
+        """返回所有 upstream 列表。
+
+        Returns:
+            [{upstream_name, upstream_url}]
+        """
+        # 检查缓存是否过期
+        if time.time() - self._loaded_at > self._cache_ttl:
+            self._refresh()
+
+        return list(self._upstream_list)
+
+
 class StatsService:
     """Token 统计数据查询服务。
 
@@ -368,6 +467,8 @@ class StatsService:
         self.state_db_path = Path(state_db_path)
         self.cc_switch_db_path = Path(cc_switch_db_path)
 
+        # 初始化上游解析器
+        self._upstream_resolver = _UpstreamResolver(self.config_db_path)
     # ─── TokenStatsDao 实例 ───
 
     def _get_dao(self) -> _TokenStatsDao:
@@ -487,19 +588,12 @@ class StatsService:
 
     def _load_upstream_map(self) -> dict:
         """从 config.db 读取 target_model -> upstream_name 映射。"""
-        if not self.config_db_path.exists():
-            return {}
-        conn = sqlite3.connect(str(self.config_db_path))
-        conn.row_factory = sqlite3.Row
-        try:
-            rows = conn.execute(
-                """
-                SELECT tm.name as model_name, u.base_url as upstream_url
-                FROM target_models tm
-                JOIN upstreams u ON tm.upstream_id = u.id
-                WHERE tm.name IS NOT NULL AND u.base_url IS NOT NULL
-                """
-            ).fetchall()
-            return {row["model_name"]: row["upstream_url"] for row in rows}
-        finally:
-            conn.close()
+        # 使用 _UpstreamResolver 获取所有 model 的 upstream 信息
+        # 返回 {target_model: upstream_name} 格式供 aggregate_by_upstream 使用
+        model_map = self._upstream_resolver._model_map
+        return {model: info["upstream_name"] for model, info in model_map.items()}
+
+
+    def _resolve_upstream(self, target_model: str) -> dict:
+        """解析 target_model 对应的 upstream 信息。"""""
+        return self._upstream_resolver.resolve(target_model)
