@@ -648,6 +648,63 @@ class _SessionDao:
         finally:
             conn.close()
 
+    def query_sessions_paged(self, period: str, model: str | None = None,
+                             request_type: str | None = None,
+                             limit: int = 50, offset: int = 0) -> tuple:
+        """查询 sessions 记录（支持分页）。
+
+        Args:
+            period: 时间周期
+            model: 可选，按模型过滤（使用 normalized 名）
+            request_type: 可选，按请求类型过滤（sessions 固定为 'session'）
+            limit: 每页数量
+            offset: 偏移量
+
+        Returns:
+            (rows, total_count) 元组，rows 为统一格式的记录列表
+        """
+        conn = self._get_conn()
+        if conn is None:
+            return ([], 0)
+        try:
+            time_condition = self._period_to_condition(period)
+            conditions = [time_condition, "input_tokens IS NOT NULL"]
+            params_count: list = []
+            params_data: list = []
+
+            if model:
+                conditions.append("(model = ? OR model LIKE ?)")
+                params_count.extend([model, f"{model}[%"])
+                params_data.extend([model, f"{model}[%"])
+
+            if request_type:
+                if request_type == "session":
+                    pass
+                else:
+                    return ([], 0)
+
+            where_clause = " AND ".join(conditions)
+
+            total_row = conn.execute(
+                f"SELECT COUNT(*) as cnt FROM sessions WHERE {where_clause}",
+                params_count,
+            ).fetchone()
+            total_count = total_row["cnt"]
+
+            rows = conn.execute(
+                f"SELECT id, model, started_at, input_tokens, output_tokens, "
+                f"cache_read_tokens, cache_write_tokens "
+                f"FROM sessions WHERE {where_clause} "
+                f"ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                params_data + [limit, offset],
+            ).fetchall()
+
+            return ([self._row_to_record(r) for r in rows], total_count)
+        except Exception:
+            return ([], 0)
+        finally:
+            conn.close()
+
     def aggregate_by_model(self, period: str) -> list:
         """按模型分组聚合 sessions 数据。
 
@@ -744,6 +801,10 @@ class StatsService:
         """获取 TokenStatsDao 实例。"""
         return _TokenStatsDao(self.access_log_db_path)
 
+    def _get_session_dao(self) -> _SessionDao:
+        """获取 SessionDao 实例。"""
+        return _SessionDao(self.state_db_path)
+
     # ─── Provider 接口 ───
 
     def fetch_by_model(self, period: str) -> list:
@@ -765,8 +826,8 @@ class StatsService:
         request_type: str | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> list:
-        """获取请求详情列表（分页）。
+    ) -> dict:
+        """获取请求详情列表（分页），合并 token_stats 和 sessions 两个数据源。
 
         Args:
             period: 时间周期
@@ -776,17 +837,64 @@ class StatsService:
             offset: 偏移量
 
         Returns:
-            请求详情列表
+            {requests: [...], total: int, limit: int, offset: int}
         """
-        dao = self._get_dao()
-        rows, _total = dao.query_token_stats(
+        fetch_limit = limit + offset
+
+        token_dao = self._get_dao()
+        token_rows, token_total = token_dao.query_token_stats(
             period=period,
             model=model,
             request_type=request_type,
-            limit=limit,
-            offset=offset,
+            limit=fetch_limit,
+            offset=0,
         )
-        return rows
+
+        session_dao = self._get_session_dao()
+        session_rows, session_total = session_dao.query_sessions_paged(
+            period=period,
+            model=model,
+            request_type=request_type,
+            limit=fetch_limit,
+            offset=0,
+        )
+
+        calculator = self._get_calculator()
+        unified_requests = []
+
+        for row in token_rows:
+            row_dict = dict(row) if hasattr(row, 'keys') else dict(row)
+            row_dict["_source"] = "proxy"
+            row_dict["estimated_cost_usd"] = calculator.calculate(
+                model=row_dict.get("target_model", row_dict.get("model", "")),
+                input_tokens=row_dict.get("input_tokens", 0),
+                output_tokens=row_dict.get("output_tokens", 0),
+                cache_read_tokens=row_dict.get("cached_read_tokens", 0),
+                cache_write_tokens=row_dict.get("cached_write_tokens", 0),
+            )
+            unified_requests.append(row_dict)
+
+        for rec in session_rows:
+            rec["estimated_cost_usd"] = calculator.calculate(
+                model=rec.get("target_model", rec.get("model", "")),
+                input_tokens=rec.get("input_tokens", 0),
+                output_tokens=rec.get("output_tokens", 0),
+                cache_read_tokens=rec.get("cached_read_tokens", 0),
+                cache_write_tokens=rec.get("cached_write_tokens", 0),
+            )
+            unified_requests.append(rec)
+
+        unified_requests.sort(key=lambda x: x.get("request_ts", ""), reverse=True)
+
+        total = token_total + session_total
+        paginated = unified_requests[offset:offset + limit]
+
+        return {
+            "requests": paginated,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
 
     def fetch_by_upstream(self, period: str) -> list:
         """按上游维度获取统计数据。
