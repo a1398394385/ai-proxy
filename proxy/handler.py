@@ -283,6 +283,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
             conn = None
             try:
                 conn = _create_upstream_conn(upstream_cfg, parsed, port)
+                # 用 connect_timeout 建立连接后，切换到完整 timeout
+                conn.connect()
+                conn.sock.settimeout(timeout)
+
                 headers = {"Content-Type": content_type}
                 if api_key:
                     headers["Authorization"] = f"Bearer {api_key}"
@@ -290,8 +294,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
                 start = time.time()
                 resp = conn.getresponse()
-                if conn.sock:
-                    conn.sock.settimeout(timeout)
                 resp_body = resp.read()
                 duration_ms = int((time.time() - start) * 1000)
                 conn.close()
@@ -372,11 +374,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         start = 0
         upstream_status = None
+        headers_sent = False
 
         for attempt in range(retries):
             conn = None
             try:
                 conn = _create_upstream_conn(upstream_cfg, parsed, port)
+                # 用 connect_timeout 建立连接后，切换到完整 timeout
+                conn.connect()
+                conn.sock.settimeout(timeout)
+
                 headers = {
                     "Content-Type": content_type,
                     "Accept": "text/event-stream",
@@ -386,27 +393,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     headers["Authorization"] = f"Bearer {api_key}"
                 conn.request(self.command, path, body=body_raw, headers=headers)
 
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Cache-Control", "no-cache")
-                self.send_header("X-Accel-Buffering", "no")
-                self.send_header("Transfer-Encoding", "chunked")
-                self.end_headers()
-
-                start = time.time()
-                sse_buffer = []
-                final_usage = None
-                upstream_status = None
-
+                # 先读取上游响应状态，确认成功后再发送头部给客户端
                 resp = conn.getresponse()
-                if conn.sock:
-                    conn.sock.settimeout(timeout)
                 upstream_status = resp.status
+                start = time.time()
 
-                if resp.status != 200:
+                if upstream_status != 200:
+                    # 上游返回错误 → 直接转发错误响应（非流式）
                     error_body = resp.read()
+                    self.send_response(upstream_status)
+                    self.send_header("Content-Type", resp.getheader("Content-Type", "application/json"))
+                    self.send_header("Content-Length", str(len(error_body)))
+                    self.end_headers()
                     self.wfile.write(error_body)
-                    self.wfile.flush()
                     logger = get_logger()
                     if logger:
                         logger.log_upstream_response(
@@ -415,6 +414,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             0, request_type=request_type,
                         )
                     return
+
+                # 上游返回 200 → 确认发送流式头部给客户端
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-Accel-Buffering", "no")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                headers_sent = True
+                sse_buffer = []
+                final_usage = None
 
                 buf = b""
                 final_usage = None
@@ -509,11 +519,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         int((time.time() - start) * 1000),
                         request_type=request_type,
                     )
-                try:
-                    self.wfile.write(f"data: {{\"error\":\"{str(e)}\"}}\n\n".encode("utf-8"))
-                    self.wfile.flush()
-                except (BrokenPipeError, OSError):
-                    pass
+                if not headers_sent:
+                    self._send_json(502, {"error": {"type": "server_error", "message": str(e)}})
+                else:
+                    try:
+                        error_event = f"data: {{\"type\":\"error\",\"error\":{{\"type\":\"server_error\",\"message\":\"{str(e)}\"}}}}\n\n".encode("utf-8")
+                        self._write_chunk(error_event)
+                        self.wfile.write(b"0\r\n\r\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, OSError):
+                        pass
                 return
             except Exception as e:
                 logging.exception(f"透传流式失败: {e}")
@@ -525,11 +540,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         int((time.time() - start) * 1000),
                         request_type=request_type,
                     )
-                try:
-                    self.wfile.write(f"data: {{\"error\":\"{str(e)}\"}}\n\n".encode("utf-8"))
-                    self.wfile.flush()
-                except (BrokenPipeError, OSError):
-                    pass
+                if not headers_sent:
+                    self._send_json(500, {"error": {"type": "server_error", "message": str(e)}})
+                else:
+                    try:
+                        error_event = f"data: {{\"type\":\"error\",\"error\":{{\"type\":\"server_error\",\"message\":\"{str(e)}\"}}}}\n\n".encode("utf-8")
+                        self._write_chunk(error_event)
+                        self.wfile.write(b"0\r\n\r\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, OSError):
+                        pass
                 return
             finally:
                 if conn:
@@ -660,16 +680,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
             conn = None
             try:
                 conn = _create_upstream_conn(upstream_cfg, parsed, port)
+                # 用 connect_timeout 建立连接后，切换到完整 timeout
+                conn.connect()
+                conn.sock.settimeout(timeout)
+
                 conn.request("POST", path, body=json.dumps(chat_body), headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 })
 
-                # 连接成功后设 read timeout
                 start = time.time()
                 resp = conn.getresponse()
-                if conn.sock:
-                    conn.sock.settimeout(timeout)
                 resp_body = resp.read()
                 duration_ms = int((time.time() - start) * 1000)
                 conn.close()
@@ -781,6 +802,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
         ssl_ctx = ssl.create_default_context() if ssl_verify else ssl._create_unverified_context()
 
         conn = _create_upstream_conn(upstream_cfg, parsed, port)
+        # 用 connect_timeout 建立连接后，切换到完整 timeout
+        conn.connect()
+        conn.sock.settimeout(timeout)
+
         conn.request("POST", path, body=json.dumps(chat_body), headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -803,8 +828,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
         try:
             try:
                 resp = conn.getresponse()
-                if conn.sock:
-                    conn.sock.settimeout(timeout)
                 upstream_status = resp.status
 
                 ct = resp.getheader("Content-Type", "")
