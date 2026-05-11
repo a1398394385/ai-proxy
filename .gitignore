@@ -21,7 +21,13 @@ __pycache__/
 .playwright-mcp/
 
 # Claude Code local state (not CLAUDE.md which is tracked)
-.claude/
+# .claude/skills/ 共享到仓库，其余本地状态忽略
+.claude/settings.json
+.claude/settings.local.json
+.claude/conversations/
+.claude/todos/
+.claude/statsig/
+.claude/projects/
 
 # Working docs
 docs/

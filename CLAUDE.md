@@ -152,6 +152,7 @@ model_routes   (id, source, target_model_id)   -- source 支持精确名称或 "
 - `setUp`/`tearDown` 模式管理临时数据库（非 pytest fixtures）
 - 无 conftest.py，无 pytest markers，无外部测试依赖
 - **前端 UI 测试使用 Playwright MCP**（`mcp__playwright__*` 工具），不使用 web-access skill 的 CDP Proxy 连接本地 Chrome
+- **使用 Playwright 前必须先读取 skill**：`Read .claude/skills/playwright-agent-tools/SKILL.md`，该 skill 包含 ref 机制、工具参数格式、常见失败修复等关键操作知识
 
 ### 代码风格
 - 纯 Python 标准库 — 无 Flask/Django/第三方依赖
