@@ -129,7 +129,13 @@ def record_token_stats(usage: dict, context: dict) -> None:
                     created_at          TEXT NOT NULL
                 )
             """)
+
+            # ─── 性能索引 ───
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_token_stats_request_ts ON token_stats(request_ts)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_token_stats_target_model ON token_stats(target_model)")
+
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
             conn.execute(
                 "INSERT INTO token_stats "
                 "(request_id, request_type, model, target_model, request_ts, duration_ms, "
