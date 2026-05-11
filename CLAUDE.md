@@ -151,6 +151,7 @@ model_routes   (id, source, target_model_id)   -- source 支持精确名称或 "
 - 继承 `unittest.TestCase`，用 pytest 运行
 - `setUp`/`tearDown` 模式管理临时数据库（非 pytest fixtures）
 - 无 conftest.py，无 pytest markers，无外部测试依赖
+- **前端 UI 测试使用 Playwright MCP**（`mcp__playwright__*` 工具），不使用 web-access skill 的 CDP Proxy 连接本地 Chrome
 
 ### 代码风格
 - 纯 Python 标准库 — 无 Flask/Django/第三方依赖
