@@ -674,8 +674,8 @@ class _SessionDao:
 
             if model:
                 conditions.append("(model = ? OR model LIKE ?)")
-                params_count.extend([model, f"{model}[%"])
-                params_data.extend([model, f"{model}[%"])
+                params_count.extend([model, f"{model} [%"])
+                params_data.extend([model, f"{model} [%"])
 
             if request_type:
                 if request_type == "session":
@@ -940,8 +940,8 @@ class StatsService:
         period: str,
         limit: int = 50,
         offset: int = 0,
-    ) -> list:
-        """获取指定模型的请求详情列表（分页）。
+    ) -> dict:
+        """获取指定模型的请求详情列表(分页),合并 token_stats 和 sessions 数据源。
 
         Args:
             model: 模型名称
@@ -950,17 +950,69 @@ class StatsService:
             offset: 偏移量
 
         Returns:
-            请求详情列表
+            {model: str, requests: [...], total: int, limit: int, offset: int}
         """
-        dao = self._get_dao()
-        rows, _total = dao.query_token_stats(
+        fetch_limit = limit + offset
+
+        # 1. 从 token_stats 取 limit+offset 条
+        token_dao = self._get_dao()
+        token_rows, token_total = token_dao.query_token_stats(
             period=period,
             model=model,
-            limit=limit,
-            offset=offset,
+            limit=fetch_limit,
+            offset=0,
         )
-        return rows
 
+        # 2. 从 sessions 取 limit+offset 条(按 model 过滤,会用 _normalize_model_name 匹配)
+        session_dao = self._get_session_dao()
+        session_rows, session_total = session_dao.query_sessions_paged(
+            period=period,
+            model=model,
+            limit=fetch_limit,
+            offset=0,
+        )
+
+        # 3. 合并两个列表,统一添加 estimated_cost_usd 字段
+        calculator = self._get_calculator()
+        unified_requests = []
+
+        for row in token_rows:
+            row_dict = dict(row) if hasattr(row, 'keys') else dict(row)
+            row_dict["_source"] = "proxy"
+            row_dict["estimated_cost_usd"] = calculator.calculate(
+                model=row_dict.get("target_model", row_dict.get("model", "")),
+                input_tokens=row_dict.get("input_tokens", 0),
+                output_tokens=row_dict.get("output_tokens", 0),
+                cache_read_tokens=row_dict.get("cached_read_tokens", 0),
+                cache_write_tokens=row_dict.get("cached_write_tokens", 0),
+            )
+            unified_requests.append(row_dict)
+
+        for rec in session_rows:
+            rec["estimated_cost_usd"] = calculator.calculate(
+                model=rec.get("target_model", rec.get("model", "")),
+                input_tokens=rec.get("input_tokens", 0),
+                output_tokens=rec.get("output_tokens", 0),
+                cache_read_tokens=rec.get("cached_read_tokens", 0),
+                cache_write_tokens=rec.get("cached_write_tokens", 0),
+            )
+            unified_requests.append(rec)
+
+        # 4. 按 request_ts DESC 排序
+        unified_requests.sort(key=lambda x: x.get("request_ts", ""), reverse=True)
+
+        # 5. 切片返回
+        total = token_total + session_total
+        paginated = unified_requests[offset:offset + limit]
+
+        # 6. 返回格式
+        return {
+            "model": model,
+            "requests": paginated,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
     # ─── 辅助方法 ───
 
     def _load_upstream_map(self) -> dict:

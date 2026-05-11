@@ -451,33 +451,34 @@ class TestStatsService(unittest.TestCase):
     def test_fetch_by_model_requests_basic(self):
         """按模型获取请求列表正确。"""
         now = datetime.now()
-        ts = now.strftime("%Y-%m-%d %H:%M:%S")
-        records = [
+        jm = now.strftime("%Y-%m-%d %H:%M:%S")
+        rm = [
             {
                 "request_id": "req-1",
                 "target_model": "qwen3.6-plus",
-                "request_ts": ts,
+                "request_ts": jm,
             },
             {
                 "request_id": "req-2",
                 "target_model": "claude-sonnet-4",
-                "request_ts": ts,
+                "request_ts": jm,
             },
             {
                 "request_id": "req-3",
                 "target_model": "qwen3.6-plus",
-                "request_ts": ts,
+                "request_ts": jm,
             },
         ]
-        self._insert_test_data(records)
+        self._insert_test_data(rm)
 
         service = self._create_service()
         result = service.fetch_by_model_requests("qwen3.6-plus", "day")
 
-        self.assertEqual(len(result), 2)
-        for r in result:
+        # 返回 dict 结构
+        self.assertEqual(result["model"], "qwen3.6-plus")
+        self.assertEqual(len(result["requests"]), 2)
+        for r in result["requests"]:
             self.assertEqual(r["target_model"], "qwen3.6-plus")
-
     # ─── fetch_trend 测试 ───
 
     def test_fetch_trend_basic(self):
@@ -1691,3 +1692,265 @@ class TestFetchRequestsMerged(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class TestFetchByModelRequestsMerged(unittest.TestCase):
+    """fetch_by_model_requests 合并 token_stats + sessions 测试。"""
+
+    def setUp(self):
+        """创建临时目录和两个数据库。"""
+        self.tmpdir = tempfile.mkdtemp()
+        self.access_log_db = Path(self.tmpdir) / "access_log.db"
+        self.config_db = Path(self.tmpdir) / "config.db"
+        self.state_db = Path(self.tmpdir) / "state.db"
+        self.cc_switch_db = Path(self.tmpdir) / "cc-switch.db"
+
+        # 创建 token_stats 表
+        conn = sqlite3.connect(str(self.access_log_db))
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS token_stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL,
+                request_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                target_model TEXT NOT NULL,
+                request_ts TEXT NOT NULL,
+                duration_ms INTEGER,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cached_read_tokens INTEGER DEFAULT 0,
+                cached_write_tokens INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'completed',
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+        # 创建 sessions 表
+        conn = sqlite3.connect(str(self.state_db))
+        conn.execute("""
+            CREATE TABLE sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model TEXT,
+                started_at TEXT NOT NULL,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                message_count INTEGER DEFAULT 0
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        """清理临时文件。"""
+        import shutil
+        if os.path.exists(self.tmpdir):
+            shutil.rmtree(self.tmpdir)
+
+    def _create_service(self):
+        """创建 StatsService 实例。"""
+        from stats_service import StatsService
+        return StatsService(
+            access_log_db_path=str(self.access_log_db),
+            config_db_path=str(self.config_db),
+            state_db_path=str(self.state_db),
+            cc_switch_db_path=str(self.cc_switch_db),
+        )
+
+    def _insert_token_stat(self, **kwargs):
+        """插入 token_stats 测试数据。"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        defaults = {
+            "request_id": "req-1",
+            "request_type": "chat",
+            "model": "gpt-4",
+            "target_model": "qwen3.6-plus",
+            "request_ts": now,
+            "duration_ms": 100,
+            "input_tokens": 100,
+            "output_tokens": 200,
+            "cached_read_tokens": 0,
+            "cached_write_tokens": 0,
+            "status": "completed",
+            "created_at": now,
+        }
+        defaults.update(kwargs)
+        d = defaults
+        conn = sqlite3.connect(str(self.access_log_db))
+        conn.execute(
+            "INSERT INTO token_stats (request_id, request_type, model, target_model, "
+            "request_ts, duration_ms, input_tokens, output_tokens, cached_read_tokens, "
+            "cached_write_tokens, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (d["request_id"], d["request_type"], d["model"], d["target_model"],
+             d["request_ts"], d["duration_ms"], d["input_tokens"], d["output_tokens"],
+             d["cached_read_tokens"], d["cached_write_tokens"], d["status"], d["created_at"]),
+        )
+        conn.commit()
+        conn.close()
+
+    def _insert_session(self, **kwargs):
+        """插入 session 测试数据。"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        defaults = {
+            "model": "qwen3.6-plus",
+            "started_at": now,
+            "input_tokens": 100,
+            "output_tokens": 200,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+        }
+        defaults.update(kwargs)
+        d = defaults
+        conn = sqlite3.connect(str(self.state_db))
+        conn.execute(
+            "INSERT INTO sessions (model, started_at, input_tokens, output_tokens, "
+            "cache_read_tokens, cache_write_tokens) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (d["model"], d["started_at"], d["input_tokens"], d["output_tokens"],
+             d["cache_read_tokens"], d["cache_write_tokens"]),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_returns_dict_structure(self):
+        """返回正确的 dict 结构。"""
+        service = self._create_service()
+        result = service.fetch_by_model_requests("qwen3.6-plus", "day")
+        self.assertIn("model", result)
+        self.assertIn("requests", result)
+        self.assertIn("total", result)
+        self.assertIn("limit", result)
+        self.assertIn("offset", result)
+        self.assertEqual(result["model"], "qwen3.6-plus")
+
+    def test_empty_db_returns_empty(self):
+        """空数据库返回空列表和 zero total。"""
+        service = self._create_service()
+        result = service.fetch_by_model_requests("qwen3.6-plus", "day")
+        self.assertEqual(result["requests"], [])
+        self.assertEqual(result["total"], 0)
+        self.assertEqual(result["limit"], 50)
+        self.assertEqual(result["offset"], 0)
+
+    def test_both_sources_merged(self):
+        """token_stats 和 sessions 都有数据时正确合并。"""
+        now = datetime.now()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        self._insert_token_stat(request_id="proxy-1", target_model="qwen3.6-plus", request_ts=ts)
+        self._insert_session(model="qwen3.6-plus", started_at=ts)
+
+        service = self._create_service()
+        result = service.fetch_by_model_requests("qwen3.6-plus", "day")
+
+        self.assertEqual(len(result["requests"]), 2)
+        self.assertEqual(result["total"], 2)
+        sources = {r["_source"] for r in result["requests"]}
+        self.assertIn("proxy", sources)
+        self.assertIn("session", sources)
+
+    def test_proxy_has_source_field(self):
+        """proxy 记录 _source = 'proxy'。"""
+        self._insert_token_stat(request_id="proxy-1", target_model="qwen3.6-plus")
+        service = self._create_service()
+        result = service.fetch_by_model_requests("qwen3.6-plus", "day")
+        self.assertEqual(len(result["requests"]), 1)
+        self.assertEqual(result["requests"][0]["_source"], "proxy")
+
+    def test_session_has_source_field(self):
+        """session 记录 _source = 'session'。"""
+        self._insert_session(model="qwen3.6-plus")
+        service = self._create_service()
+        result = service.fetch_by_model_requests("qwen3.6-plus", "day")
+        self.assertEqual(len(result["requests"]), 1)
+        self.assertEqual(result["requests"][0]["_source"], "session")
+
+    def test_sorted_by_request_ts_desc(self):
+        """混合记录按 request_ts DESC 排序。"""
+        now = datetime.now()
+        old_ts = (now - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+        recent_ts = (now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+
+        # proxy: old, session: recent
+        self._insert_token_stat(request_id="proxy-old", target_model="qwen3.6-plus", request_ts=old_ts)
+        self._insert_session(model="qwen3.6-plus", started_at=recent_ts)
+
+        service = self._create_service()
+        result = service.fetch_by_model_requests("qwen3.6-plus", "day")
+
+        self.assertEqual(len(result["requests"]), 2)
+        # 最近的应该排第一
+        self.assertEqual(result["requests"][0]["_source"], "session")
+        self.assertEqual(result["requests"][1]["_source"], "proxy")
+
+    def test_pagination_limit(self):
+        """分页 limit 正确限制返回数量。"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for i in range(15):
+            self._insert_token_stat(request_id=f"req-{i}", target_model="qwen3.6-plus", request_ts=now)
+
+        service = self._create_service()
+        result = service.fetch_by_model_requests("qwen3.6-plus", "day", limit=10, offset=0)
+        self.assertEqual(len(result["requests"]), 10)
+        self.assertEqual(result["total"], 15)
+        self.assertEqual(result["limit"], 10)
+
+    def test_pagination_offset(self):
+        """分页 offset 正确跳过前面的记录。"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for i in range(10):
+            self._insert_token_stat(request_id=f"req-{i}", target_model="qwen3.6-plus", request_ts=now)
+
+        service = self._create_service()
+        result = service.fetch_by_model_requests("qwen3.6-plus", "day", limit=5, offset=5)
+        self.assertEqual(len(result["requests"]), 5)
+        self.assertEqual(result["offset"], 5)
+
+    def test_model_filter_exact_match(self):
+        """按 model 精确筛选。"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._insert_token_stat(request_id="proxy-qwen", target_model="qwen3.6-plus", request_ts=now)
+        self._insert_token_stat(request_id="proxy-claude", target_model="claude-sonnet-4", request_ts=now)
+        self._insert_session(model="qwen3.6-plus", started_at=now)
+        self._insert_session(model="claude-sonnet-4", started_at=now)
+
+        service = self._create_service()
+        result = service.fetch_by_model_requests("qwen3.6-plus", "day")
+
+        self.assertEqual(result["total"], 2)
+        for r in result["requests"]:
+            self.assertEqual(r["target_model"], "qwen3.6-plus")
+
+    def test_model_filter_with_context_suffix(self):
+        """model 过滤支持 [ctx] 后缀匹配。"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._insert_session(model="qwen3.6-plus [hermes]", started_at=now)
+        self._insert_session(model="qwen3.6-plus [coder]", started_at=now)
+        self._insert_session(model="claude-sonnet-4", started_at=now)
+
+        service = self._create_service()
+        result = service.fetch_by_model_requests("qwen3.6-plus", "day")
+
+        # 应匹配到两个 qwen3.6-plus 带后缀的 session
+        self.assertEqual(result["total"], 2)
+
+    def test_cost_calculation(self):
+        """每条记录都有 estimated_cost_usd。"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._insert_token_stat(request_id="proxy-1", target_model="qwen3.6-plus",
+                                input_tokens=100, output_tokens=200)
+        self._insert_session(model="qwen3.6-plus", input_tokens=100, output_tokens=200)
+
+        service = self._create_service()
+        result = service.fetch_by_model_requests("qwen3.6-plus", "day")
+
+        for r in result["requests"]:
+            self.assertIn("estimated_cost_usd", r)
+            self.assertIsInstance(r["estimated_cost_usd"], (int, float))
+
+
+
