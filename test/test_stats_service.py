@@ -1188,5 +1188,223 @@ class TestUpstreamResolver(unittest.TestCase):
         self.assertEqual(result["upstream_name"], "https://api.openai.com")
 
 
+
+class TestSessionDao(unittest.TestCase):
+    """_SessionDao 测试。"""
+
+    def setUp(self):
+        """创建临时目录和 sessions 表。"""
+        self.tmpdir = tempfile.mkdtemp()
+        self.state_db = Path(self.tmpdir) / "state.db"
+
+        # 创建 sessions 表
+        conn = sqlite3.connect(str(self.state_db))
+        conn.execute("""
+            CREATE TABLE sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model TEXT,
+                started_at TEXT NOT NULL,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                message_count INTEGER DEFAULT 0
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        """清理临时文件。"""
+        import shutil
+        if os.path.exists(self.tmpdir):
+            shutil.rmtree(self.tmpdir)
+
+    def _create_dao(self):
+        """创建 _SessionDao 实例。"""
+        from stats_service import _SessionDao
+        return _SessionDao(self.state_db)
+
+    def _insert_session(self, **kwargs):
+        """插入一条 session 测试数据。"""
+        defaults = {
+            "model": "qwen3.6-plus",
+            "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "input_tokens": 100,
+            "output_tokens": 200,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "message_count": 1,
+        }
+        defaults.update(kwargs)
+        d = defaults
+        conn = sqlite3.connect(str(self.state_db))
+        conn.execute(
+            "INSERT INTO sessions "
+            "(model, started_at, input_tokens, output_tokens, "
+            "cache_read_tokens, cache_write_tokens, message_count) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (d["model"], d["started_at"], d["input_tokens"], d["output_tokens"],
+             d["cache_read_tokens"], d["cache_write_tokens"], d["message_count"]),
+        )
+        conn.commit()
+        conn.close()
+
+    # ─── query_sessions 测试 ───
+
+    def test_query_sessions_basic(self):
+        """有数据时返回正确记录。"""
+        self._insert_session(model="qwen3.6-plus", input_tokens=100, output_tokens=200)
+        dao = self._create_dao()
+        result = dao.query_sessions("day")
+
+        self.assertEqual(len(result), 1)
+        rec = result[0]
+        self.assertTrue(rec["request_id"].startswith("sess-"))
+        self.assertEqual(rec["request_type"], "session")
+        self.assertEqual(rec["target_model"], "qwen3.6-plus")
+        self.assertEqual(rec["input_tokens"], 100)
+        self.assertEqual(rec["output_tokens"], 200)
+        self.assertEqual(rec["status"], "completed")
+        self.assertEqual(rec["_source"], "session")
+        self.assertIsNone(rec["duration_ms"])
+
+    def test_query_sessions_db_not_exists(self):
+        """state.db 不存在时返回空列表，不抛异常。"""
+        from stats_service import _SessionDao
+        dao = _SessionDao(Path("/nonexistent/path/state.db"))
+        result = dao.query_sessions("day")
+        self.assertEqual(result, [])
+
+    def test_query_sessions_model_filter(self):
+        """按模型过滤正确（支持 [ctx] 后缀匹配）。"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._insert_session(model="qwen3.6-plus", started_at=now)
+        self._insert_session(model="claude-sonnet-4", started_at=now)
+        dao = self._create_dao()
+        result = dao.query_sessions("day", model="qwen3.6-plus")
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["model"], "qwen3.6-plus")
+
+    def test_query_sessions_period_filter(self):
+        """Period 过滤只返回时间范围内数据。"""
+        now = datetime.now()
+        old_ts = (now - timedelta(days=10)).strftime("%Y-%m-%d %H:%M:%S")
+        self._insert_session(model="qwen3.6-plus", started_at=now.strftime("%Y-%m-%d %H:%M:%S"))
+        self._insert_session(model="claude-sonnet-4", started_at=old_ts, input_tokens=999)
+        dao = self._create_dao()
+        result = dao.query_sessions("day")
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["input_tokens"], 100)
+
+    def test_query_sessions_null_input_tokens_excluded(self):
+        """input_tokens IS NULL 的 session 被排除。"""
+        self._insert_session(model="qwen3.6-plus", input_tokens=None, output_tokens=0)
+        dao = self._create_dao()
+        result = dao.query_sessions("day")
+        self.assertEqual(len(result), 0)
+
+    # ─── normalize_model_name 测试 ───
+
+    def test_normalize_model_name_with_bracket(self):
+        """去除 [xxx] 上下文后缀。"""
+        from stats_service import _SessionDao
+        self.assertEqual(
+            _SessionDao._normalize_model_name("qwen3.6-plus [hermes]"),
+            "qwen3.6-plus"
+        )
+
+    def test_normalize_model_name_no_bracket(self):
+        """无括号的模型名保持不变。"""
+        from stats_service import _SessionDao
+        self.assertEqual(
+            _SessionDao._normalize_model_name("qwen3.6-plus"),
+            "qwen3.6-plus"
+        )
+
+    def test_normalize_model_name_none(self):
+        """None 输入返回 None。"""
+        from stats_service import _SessionDao
+        self.assertIsNone(_SessionDao._normalize_model_name(None))
+
+    def test_session_record_has_normalized_target_model(self):
+        """session 记录的 target_model 已去除 [xxx] 后缀。"""
+        self._insert_session(model="qwen3.6-plus [hermes]", input_tokens=50, output_tokens=100)
+        dao = self._create_dao()
+        result = dao.query_sessions("day")
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["model"], "qwen3.6-plus [hermes]")
+        self.assertEqual(result[0]["target_model"], "qwen3.6-plus")
+
+    # ─── aggregate_by_model 测试 ───
+
+    def test_aggregate_by_model_basic(self):
+        """按模型聚合正确。"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._insert_session(model="qwen3.6-plus", input_tokens=100, output_tokens=200,
+                             started_at=now)
+        self._insert_session(model="qwen3.6-plus", input_tokens=50, output_tokens=100,
+                             started_at=now)
+        self._insert_session(model="claude-sonnet-4", input_tokens=300, output_tokens=500,
+                             started_at=now)
+        dao = self._create_dao()
+        result = dao.aggregate_by_model("day")
+
+        self.assertEqual(len(result), 2)
+
+        # qwen3.6-plus: 100+50=150 input, 200+100=300 output, 2 sessions
+        qwen = next(m for m in result if m["model"] == "qwen3.6-plus")
+        self.assertEqual(qwen["input_tokens"], 150)
+        self.assertEqual(qwen["output_tokens"], 300)
+        self.assertEqual(qwen["request_count"], 2)
+
+        claude = next(m for m in result if m["model"] == "claude-sonnet-4")
+        self.assertEqual(claude["input_tokens"], 300)
+        self.assertEqual(claude["output_tokens"], 500)
+        self.assertEqual(claude["request_count"], 1)
+
+    def test_aggregate_by_model_db_not_exists(self):
+        """state.db 不存在时返回空列表。"""
+        from stats_service import _SessionDao
+        dao = _SessionDao(Path("/nonexistent/state.db"))
+        result = dao.aggregate_by_model("day")
+        self.assertEqual(result, [])
+
+    def test_aggregate_by_model_merges_context_suffix(self):
+        """同名带 [ctx] 后缀的模型聚合到同一 base model。"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._insert_session(model="qwen3.6-plus", input_tokens=100, output_tokens=200,
+                             started_at=now)
+        self._insert_session(model="qwen3.6-plus [coder]", input_tokens=50, output_tokens=100,
+                             started_at=now)
+        dao = self._create_dao()
+        result = dao.aggregate_by_model("day")
+
+        # 应合并为一条 qwen3.6-plus
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["model"], "qwen3.6-plus")
+        self.assertEqual(result[0]["input_tokens"], 150)
+        self.assertEqual(result[0]["output_tokens"], 300)
+        self.assertEqual(result[0]["request_count"], 2)
+
+    def test_aggregate_by_model_sorted_by_total_tokens(self):
+        """聚合结果按 total_tokens 降序排列。"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._insert_session(model="small-model", input_tokens=10, output_tokens=20,
+                             started_at=now)
+        self._insert_session(model="big-model", input_tokens=1000, output_tokens=2000,
+                             started_at=now)
+        dao = self._create_dao()
+        result = dao.aggregate_by_model("day")
+
+        self.assertEqual(result[0]["model"], "big-model")
+        self.assertEqual(result[1]["model"], "small-model")
+
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -536,6 +536,183 @@ class _CostCalculator:
         return input_cost + output_cost + cache_read_cost + cache_write_cost
 
 
+
+class _SessionDao:
+    """Sessions 表数据访问对象 — 从 state.db 读取 AI Coding Session 数据。
+
+    将 sessions 包装为与 token_stats 统一的记录格式，支持按模型聚合。
+    state.db 不存在时返回空列表，不抛异常。
+
+    Args:
+        db_path: state.db 路径
+    """
+
+    def __init__(self, db_path: Path) -> None:
+        self.db_path = db_path
+
+    # ─── 工具方法 ───
+
+    @staticmethod
+    def _period_to_condition(period: str) -> str:
+        """将 period 转换为 SQLite 时间条件。"""
+        mapping = {
+            "day": "datetime('now', '-1 day')",
+            "24h": "datetime('now', '-1 day')",
+            "week": "datetime('now', '-7 days')",
+            "7d": "datetime('now', '-7 days')",
+            "month": "datetime('now', '-30 days')",
+            "30d": "datetime('now', '-30 days')",
+        }
+        threshold = mapping.get(period, "datetime('now', '-7 days')")
+        return f"started_at >= {threshold}"
+
+    @staticmethod
+    def _normalize_model_name(name: str) -> str:
+        """去掉模型名中的 [xxx] 上下文后缀。"""
+        if not name:
+            return name
+        bracket_pos = name.find("[")
+        if bracket_pos >= 0:
+            return name[:bracket_pos].rstrip()
+        return name
+
+    def _get_conn(self) -> sqlite3.Connection | None:
+        """创建数据库连接，state.db 不存在时返回 None。"""
+        if not self.db_path.exists():
+            return None
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    @staticmethod
+    def _row_to_record(row: sqlite3.Row) -> dict:
+        """将 sessions 行包装为统一格式记录。"""
+        model = row["model"] or ""
+        normalized = _SessionDao._normalize_model_name(model)
+        return {
+            "request_id": f"sess-{row['id']}",
+            "request_type": "session",
+            "model": model,
+            "target_model": normalized,
+            "request_ts": row["started_at"],
+            "duration_ms": None,
+            "input_tokens": row["input_tokens"],
+            "output_tokens": row["output_tokens"],
+            "cached_read_tokens": row["cache_read_tokens"],
+            "cached_write_tokens": row["cache_write_tokens"],
+            "status": "completed",
+            "_source": "session",
+        }
+
+    # ─── 查询方法 ───
+
+    def query_sessions(self, period: str, model: str | None = None) -> list:
+        """查询 sessions 记录。
+
+        Args:
+            period: 时间周期
+            model: 可选，按模型过滤（使用 normalized 名）
+
+        Returns:
+            统一格式的记录列表
+        """
+        conn = self._get_conn()
+        if conn is None:
+            return []
+        try:
+            time_condition = self._period_to_condition(period)
+            conditions = [time_condition, "input_tokens IS NOT NULL"]
+            params: list = []
+
+            if model:
+                # 精确匹配或 [ctx] 后缀前缀匹配
+                conditions.append("(model = ? OR model LIKE ?)")
+                params.extend([model, f"{model}[%"])
+
+            where_clause = " AND ".join(conditions)
+
+            rows = conn.execute(
+                f"""
+                SELECT id, model, started_at, input_tokens, output_tokens,
+                       cache_read_tokens, cache_write_tokens
+                FROM sessions
+                WHERE {where_clause}
+                ORDER BY started_at DESC
+                """,
+                params,
+            ).fetchall()
+
+            return [self._row_to_record(r) for r in rows]
+        except Exception:
+            return []
+        finally:
+            conn.close()
+
+    def aggregate_by_model(self, period: str) -> list:
+        """按模型分组聚合 sessions 数据。
+
+        Args:
+            period: 时间周期
+
+        Returns:
+            按模型聚合的统计列表
+        """
+        conn = self._get_conn()
+        if conn is None:
+            return []
+        try:
+            time_condition = self._period_to_condition(period)
+
+            rows = conn.execute(
+                f"""
+                SELECT model,
+                       COUNT(*) as session_count,
+                       SUM(input_tokens) as total_input,
+                       SUM(output_tokens) as total_output,
+                       SUM(cache_read_tokens) as total_cache_read,
+                       SUM(cache_write_tokens) as total_cache_write
+                FROM sessions
+                WHERE {time_condition} AND input_tokens IS NOT NULL AND model IS NOT NULL
+                GROUP BY model
+                """,
+            ).fetchall()
+
+            # 按 normalized model 名合并
+            model_map: dict = {}
+            for row in rows:
+                base = self._normalize_model_name(row["model"])
+                if base not in model_map:
+                    model_map[base] = {
+                        "model": base,
+                        "request_count": 0,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cached_read_tokens": 0,
+                        "cached_write_tokens": 0,
+                    }
+                m = model_map[base]
+                m["request_count"] += row["session_count"] or 0
+                m["input_tokens"] += row["total_input"] or 0
+                m["output_tokens"] += row["total_output"] or 0
+                m["cached_read_tokens"] += row["total_cache_read"] or 0
+                m["cached_write_tokens"] += row["total_cache_write"] or 0
+
+            result = []
+            for m in model_map.values():
+                m["total_tokens"] = (
+                    m["input_tokens"] + m["output_tokens"]
+                    + m["cached_read_tokens"] + m["cached_write_tokens"]
+                )
+                result.append(m)
+
+            result.sort(key=lambda x: x["total_tokens"], reverse=True)
+            return result
+        except Exception:
+            return []
+        finally:
+            conn.close()
+
+
 class StatsService:
     """Token 统计数据查询服务。
 
