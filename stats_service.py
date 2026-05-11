@@ -445,6 +445,97 @@ class _UpstreamResolver:
         return list(self._upstream_list)
 
 
+class _CostCalculator:
+    """成本计算器 — 从 cc-switch.db 加载 model_pricing 表，内置 TTL 缓存。
+
+    构造时不立即加载，首次 get_pricing() 时懒加载。每次 get_pricing() 检查缓存
+    是否过期（300s），过期自动刷新。cc-switch.db 不存在时返回空定价，不抛异常。
+
+    Args:
+        cc_switch_db_path: cc-switch.db 路径
+    """
+
+    def __init__(self, cc_switch_db_path: str | Path) -> None:
+        self.cc_switch_db_path = Path(cc_switch_db_path)
+        self._cache_ttl = 300  # 缓存 5 分钟
+        self._pricing_cache: dict = {}
+        self._pricing_cache_time: float = 0.0
+
+    # ─── 定价加载 ───
+
+    def get_pricing(self) -> dict:
+        """从 cc-switch.db 加载 model_pricing 表（带缓存）。
+
+        Returns:
+            {model_id: {input_cost, output_cost, cache_read_cost, cache_creation_cost}}
+            cc-switch.db 不存在或表不存在时返回空 dict。
+        """
+        # 缓存检查
+        if time.time() - self._pricing_cache_time < self._cache_ttl and self._pricing_cache:
+            return self._pricing_cache
+
+        if not self.cc_switch_db_path.exists():
+            return {}
+
+        try:
+            conn = sqlite3.connect(str(self.cc_switch_db_path))
+            conn.row_factory = sqlite3.Row
+            try:
+                rows = conn.execute("SELECT * FROM model_pricing").fetchall()
+                pricing = {}
+                for r in rows:
+                    pricing[r["model_id"]] = {
+                        "input_cost": float(r["input_cost_per_million"]),
+                        "output_cost": float(r["output_cost_per_million"]),
+                        "cache_read_cost": float(r["cache_read_cost_per_million"]),
+                        "cache_creation_cost": float(r["cache_creation_cost_per_million"]),
+                    }
+                self._pricing_cache = pricing
+                self._pricing_cache_time = time.time()
+                return pricing
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"Error reading model pricing: {e}")
+            return {}
+
+    # ─── 成本计算 ───
+
+    def calculate(
+        self,
+        model: str,
+        input_tokens: int | float | None,
+        output_tokens: int | float | None,
+        cache_read_tokens: int | float | None,
+        cache_write_tokens: int | float | None,
+    ) -> float:
+        """根据模型计费规则计算成本。
+
+        Args:
+            model: 模型名称
+            input_tokens: 输入 token 数
+            output_tokens: 输出 token 数
+            cache_read_tokens: 缓存读取 token 数
+            cache_write_tokens: 缓存写入 token 数
+
+        Returns:
+            总成本（float）。模型无定价时返回 0。
+        """
+        pricing = self.get_pricing()
+
+        if not pricing or model not in pricing:
+            return 0
+
+        p = pricing[model]
+
+        input_cost = (input_tokens or 0) / 1_000_000 * p["input_cost"]
+        output_cost = (output_tokens or 0) / 1_000_000 * p["output_cost"]
+        cache_read_cost = (cache_read_tokens or 0) / 1_000_000 * p["cache_read_cost"]
+        cache_write_cost = (cache_write_tokens or 0) / 1_000_000 * p["cache_creation_cost"]
+
+        return input_cost + output_cost + cache_read_cost + cache_write_cost
+
+
 class StatsService:
     """Token 统计数据查询服务。
 
@@ -469,6 +560,7 @@ class StatsService:
 
         # 初始化上游解析器
         self._upstream_resolver = _UpstreamResolver(self.config_db_path)
+
     # ─── TokenStatsDao 实例 ───
 
     def _get_dao(self) -> _TokenStatsDao:
@@ -588,12 +680,48 @@ class StatsService:
 
     def _load_upstream_map(self) -> dict:
         """从 config.db 读取 target_model -> upstream_name 映射。"""
-        # 使用 _UpstreamResolver 获取所有 model 的 upstream 信息
-        # 返回 {target_model: upstream_name} 格式供 aggregate_by_upstream 使用
         model_map = self._upstream_resolver._model_map
         return {model: info["upstream_name"] for model, info in model_map.items()}
-
 
     def _resolve_upstream(self, target_model: str) -> dict:
         """解析 target_model 对应的 upstream 信息。"""""
         return self._upstream_resolver.resolve(target_model)
+
+    def _get_calculator(self) -> _CostCalculator:
+        """懒加载获取 _CostCalculator 单例。"""
+        if not hasattr(self, "_cost_calculator"):
+            self._cost_calculator = _CostCalculator(self.cc_switch_db_path)
+        return self._cost_calculator
+
+    def get_pricing(self) -> dict:
+        """获取模型计费规则（委托 _CostCalculator）。
+
+        Returns:
+            {model_id: {input_cost, output_cost, cache_read_cost, cache_creation_cost}}
+            cc-switch.db 不存在时返回空 dict。
+        """
+        return self._get_calculator().get_pricing()
+
+    def calculate_cost(
+        self,
+        model: str,
+        input_tokens: int | float | None,
+        output_tokens: int | float | None,
+        cache_read_tokens: int | float | None,
+        cache_write_tokens: int | float | None,
+    ) -> float:
+        """根据模型计费规则计算成本（委托 _CostCalculator）。
+
+        Args:
+            model: 模型名称
+            input_tokens: 输入 token 数
+            output_tokens: 输出 token 数
+            cache_read_tokens: 缓存读取 token 数
+            cache_write_tokens: 缓存写入 token 数
+
+        Returns:
+            总成本（float）。模型无定价时返回 0。
+        """
+        return self._get_calculator().calculate(
+            model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+        )

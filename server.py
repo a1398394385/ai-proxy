@@ -169,65 +169,68 @@ PORT = get_port("data_browser", 18742)
 # 缓存计费规则
 _pricing_cache = {}
 _pricing_cache_time = 0
+_stats_service_calculator = None
+
+
+def _get_stats_calculator():
+
+    """懒加载获取 StatsService._CostCalculator 单例。"""
+
+    global _stats_service_calculator
+
+    if _stats_service_calculator is None:
+
+        from stats_service import _CostCalculator
+
+        _stats_service_calculator = _CostCalculator(CC_SWITCH_DB_PATH)
+
+    return _stats_service_calculator
+
+
+
+
 
 def get_cc_switch_db():
+
     """连接到 cc-switch 数据库读取计费规则"""
+
     if not os.path.exists(CC_SWITCH_DB_PATH):
+
         return None
+
     conn = sqlite3.connect(CC_SWITCH_DB_PATH)
+
     conn.row_factory = sqlite3.Row
+
     return conn
 
 
+
+
+
 def get_model_pricing():
-    """获取模型计费规则（带缓存）"""
-    global _pricing_cache, _pricing_cache_time
-    
-    # 缓存 5 分钟
-    if time.time() - _pricing_cache_time < 300 and _pricing_cache:
-        return _pricing_cache
-    
-    conn = get_cc_switch_db()
-    if not conn:
-        return {}
-    
-    try:
-        rows = conn.execute("SELECT * FROM model_pricing").fetchall()
-        pricing = {}
-        for r in rows:
-            pricing[r["model_id"]] = {
-                "input_cost": float(r["input_cost_per_million"]),
-                "output_cost": float(r["output_cost_per_million"]),
-                "cache_read_cost": float(r["cache_read_cost_per_million"]),
-                "cache_creation_cost": float(r["cache_creation_cost_per_million"]),
-            }
-        _pricing_cache = pricing
-        _pricing_cache_time = time.time()
-        return pricing
-    except Exception as e:
-        print(f"Error reading model pricing: {e}")
-        return {}
-    finally:
-        conn.close()
+
+    """获取模型计费规则（委托 StatsService._CostCalculator）。"""
+
+    return _get_stats_calculator().get_pricing()
+
+
+
 
 
 def calculate_cost(model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens):
-    """根据模型计费规则计算成本"""
-    pricing = get_model_pricing()
-    
-    # 如果没有计费规则，返回 0
-    if not pricing or model not in pricing:
-        return 0
-    
-    p = pricing[model]
-    
-    # 计算成本（每百万 token 的价格）
-    input_cost = (input_tokens or 0) / 1_000_000 * p["input_cost"]
-    output_cost = (output_tokens or 0) / 1_000_000 * p["output_cost"]
-    cache_read_cost = (cache_read_tokens or 0) / 1_000_000 * p["cache_read_cost"]
-    cache_write_cost = (cache_write_tokens or 0) / 1_000_000 * p["cache_creation_cost"]
-    
-    return input_cost + output_cost + cache_read_cost + cache_write_cost
+
+    """根据模型计费规则计算成本（委托 StatsService._CostCalculator）。"""
+
+    return _get_stats_calculator().calculate(
+
+        model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+
+    )
+
+
+
+
 
 
 def get_db():

@@ -583,6 +583,433 @@ class TestStatsService(unittest.TestCase):
         for key in data_keys:
             self.assertEqual(result_month[key], result_30d[key], f"Mismatch on {key}")
 
+class TestCostCalculator(unittest.TestCase):
+
+    """_CostCalculator 测试。"""
+
+
+
+    def setUp(self):
+
+        """创建临时目录。"""
+
+        self.tmpdir = tempfile.mkdtemp()
+
+        self.cc_switch_db_path = Path(self.tmpdir) / "cc-switch.db"
+
+
+
+    def tearDown(self):
+
+        """清理临时文件。"""
+
+        import shutil
+
+
+
+        if os.path.exists(self.tmpdir):
+
+            shutil.rmtree(self.tmpdir)
+
+
+
+    def _setup_pricing_db(self):
+
+        """创建 cc-switch.db 并填充 model_pricing 数据。"""
+
+        conn = sqlite3.connect(str(self.cc_switch_db_path))
+
+        conn.execute(
+
+            """
+
+            CREATE TABLE IF NOT EXISTS model_pricing (
+
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                model_id TEXT NOT NULL,
+
+                input_cost_per_million REAL NOT NULL DEFAULT 0,
+
+                output_cost_per_million REAL NOT NULL DEFAULT 0,
+
+                cache_read_cost_per_million REAL NOT NULL DEFAULT 0,
+
+                cache_creation_cost_per_million REAL NOT NULL DEFAULT 0
+
+            )
+
+            """
+
+        )
+
+        conn.execute(
+
+            "INSERT INTO model_pricing (model_id, input_cost_per_million, "
+
+            "output_cost_per_million, cache_read_cost_per_million, cache_creation_cost_per_million) "
+
+            "VALUES (?, ?, ?, ?, ?)",
+
+            ("qwen3.6-plus", 2.5, 10.0, 0.5, 2.0),
+
+        )
+
+        conn.execute(
+
+            "INSERT INTO model_pricing (model_id, input_cost_per_million, "
+
+            "output_cost_per_million, cache_read_cost_per_million, cache_creation_cost_per_million) "
+
+            "VALUES (?, ?, ?, ?, ?)",
+
+            ("claude-sonnet-4", 3.0, 15.0, 0.75, 3.5),
+
+        )
+
+        conn.commit()
+
+        conn.close()
+
+
+
+    def _create_calculator(self):
+
+        """创建 _CostCalculator 实例。"""
+
+        from stats_service import _CostCalculator
+
+
+
+        return _CostCalculator(self.cc_switch_db_path)
+
+
+
+    def test_calculate_known_model(self):
+
+        """已知模型返回正确成本。"""
+
+        self._setup_pricing_db()
+
+        calc = self._create_calculator()
+
+
+
+        cost = calc.calculate("qwen3.6-plus", 1000, 2000, 500, 300)
+
+
+
+        expected = (
+
+            1000 / 1_000_000 * 2.5
+
+            + 2000 / 1_000_000 * 10.0
+
+            + 500 / 1_000_000 * 0.5
+
+            + 300 / 1_000_000 * 2.0
+
+        )
+
+        self.assertAlmostEqual(cost, expected, places=10)
+
+
+
+    def test_calculate_unknown_model(self):
+
+        """未知模型返回 0。"""
+
+        self._setup_pricing_db()
+
+        calc = self._create_calculator()
+
+
+
+        cost = calc.calculate("unknown-model", 1000, 2000, 0, 0)
+
+        self.assertEqual(cost, 0)
+
+
+
+    def test_calculate_db_not_exists(self):
+
+        """cc-switch.db 不存在返回 0。"""
+
+        calc = self._create_calculator()
+
+
+
+        cost = calc.calculate("qwen3.6-plus", 1000, 2000, 0, 0)
+
+        self.assertEqual(cost, 0)
+
+
+
+    def test_get_pricing(self):
+
+        """get_pricing 返回正确的定价字典。"""
+
+        self._setup_pricing_db()
+
+        calc = self._create_calculator()
+
+
+
+        pricing = calc.get_pricing()
+
+
+
+        self.assertIn("qwen3.6-plus", pricing)
+
+        self.assertEqual(pricing["qwen3.6-plus"]["input_cost"], 2.5)
+
+        self.assertEqual(pricing["qwen3.6-plus"]["output_cost"], 10.0)
+
+        self.assertEqual(pricing["qwen3.6-plus"]["cache_read_cost"], 0.5)
+
+        self.assertEqual(pricing["qwen3.6-plus"]["cache_creation_cost"], 2.0)
+
+
+
+    def test_get_pricing_cache_ttl(self):
+
+        """定价缓存 TTL 生效。"""
+        import time
+
+
+        self._setup_pricing_db()
+
+        calc = self._create_calculator()
+
+
+
+        pricing1 = calc.get_pricing()
+
+
+
+        calc._pricing_cache_time = time.time() - 301
+
+        calc._pricing_cache = {}
+
+
+
+        pricing2 = calc.get_pricing()
+
+        self.assertEqual(pricing1, pricing2)
+
+
+
+    def test_calculate_zero_tokens(self):
+
+        """零 tokens 返回 0。"""
+
+        self._setup_pricing_db()
+
+        calc = self._create_calculator()
+
+
+
+        cost = calc.calculate("qwen3.6-plus", 0, 0, 0, 0)
+
+        self.assertEqual(cost, 0)
+
+
+
+    def test_calculate_none_tokens(self):
+
+        """None tokens 返回 0。"""
+
+        self._setup_pricing_db()
+
+        calc = self._create_calculator()
+
+
+
+        cost = calc.calculate("qwen3.6-plus", None, None, None, None)
+
+        self.assertEqual(cost, 0)
+
+
+
+
+
+class TestStatsServiceCostCalculation(unittest.TestCase):
+
+    """StatsService.calculate_cost 和 get_pricing 委托测试。"""
+
+
+
+    def setUp(self):
+
+        """创建临时目录和空 access_log.db。"""
+
+        self.tmpdir = tempfile.mkdtemp()
+
+        self.access_log_db = Path(self.tmpdir) / "access_log.db"
+
+        self.config_db = Path(self.tmpdir) / "config.db"
+
+        self.state_db = Path(self.tmpdir) / "state.db"
+
+        self.cc_switch_db = Path(self.tmpdir) / "cc-switch.db"
+
+
+
+        conn = sqlite3.connect(str(self.access_log_db))
+
+        conn.execute("CREATE TABLE IF NOT EXISTS token_stats (id INTEGER PRIMARY KEY)")
+
+        conn.commit()
+
+        conn.close()
+
+
+
+    def tearDown(self):
+
+        """清理临时文件。"""
+
+        import shutil
+
+
+
+        if os.path.exists(self.tmpdir):
+
+            shutil.rmtree(self.tmpdir)
+
+
+
+    def _create_service(self):
+
+        """创建 StatsService 实例。"""
+
+        from stats_service import StatsService
+
+
+
+        return StatsService(
+
+            access_log_db_path=str(self.access_log_db),
+
+            config_db_path=str(self.config_db),
+
+            state_db_path=str(self.state_db),
+
+            cc_switch_db_path=str(self.cc_switch_db),
+
+        )
+
+
+
+    def _setup_pricing_db(self):
+
+        """创建 cc-switch.db 并填充定价数据。"""
+
+        conn = sqlite3.connect(str(self.cc_switch_db))
+
+        conn.execute(
+
+            "CREATE TABLE IF NOT EXISTS model_pricing ("
+
+            "id INTEGER PRIMARY KEY, model_id TEXT, "
+
+            "input_cost_per_million REAL, output_cost_per_million REAL, "
+
+            "cache_read_cost_per_million REAL, cache_creation_cost_per_million REAL)"
+
+        )
+
+        conn.execute(
+
+            "INSERT INTO model_pricing (model_id, input_cost_per_million, "
+
+            "output_cost_per_million, cache_read_cost_per_million, cache_creation_cost_per_million) "
+
+            "VALUES (?, ?, ?, ?, ?)",
+
+            ("qwen3.6-plus", 2.5, 10.0, 0.5, 2.0),
+
+        )
+
+        conn.commit()
+
+        conn.close()
+
+
+
+    def test_service_calculate_cost_known_model(self):
+
+        """StatsService.calculate_cost 委托正确。"""
+
+        self._setup_pricing_db()
+
+        service = self._create_service()
+
+
+
+        cost = service.calculate_cost("qwen3.6-plus", 1000, 2000, 500, 300)
+
+        expected = (
+
+            1000 / 1_000_000 * 2.5
+
+            + 2000 / 1_000_000 * 10.0
+
+            + 500 / 1_000_000 * 0.5
+
+            + 300 / 1_000_000 * 2.0
+
+        )
+
+        self.assertAlmostEqual(cost, expected, places=10)
+
+
+
+    def test_service_calculate_cost_unknown_model(self):
+
+        """未知模型返回 0。"""
+
+        self._setup_pricing_db()
+
+        service = self._create_service()
+
+
+
+        cost = service.calculate_cost("unknown-model", 1000, 2000, 0, 0)
+
+        self.assertEqual(cost, 0)
+
+
+
+    def test_service_get_pricing(self):
+
+        """StatsService.get_pricing 委托正确。"""
+
+        self._setup_pricing_db()
+
+        service = self._create_service()
+
+
+
+        pricing = service.get_pricing()
+
+        self.assertIn("qwen3.6-plus", pricing)
+
+        self.assertEqual(pricing["qwen3.6-plus"]["input_cost"], 2.5)
+
+
+
+    def test_service_calculate_cost_no_db(self):
+
+        """cc-switch.db 不存在时返回 0。"""
+
+        service = self._create_service()
+
+
+
+        cost = service.calculate_cost("qwen3.6-plus", 1000, 2000, 0, 0)
+
+        self.assertEqual(cost, 0)
 
 
 class TestUpstreamResolver(unittest.TestCase):
