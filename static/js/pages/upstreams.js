@@ -315,44 +315,88 @@ async function detectUpstreamModels(upstreamId) {
 function showDetectModal(upstreamId, result) {
   const discovered = result.discovered || [];
   const existingCount = (result.existing || []).length;
-  
+
   if (discovered.length === 0) {
-    // All models already exist
-    showModal('🔍 检测模型 — ' + escHtml(upstreamId),
-      '<div class="detect-all-existing">✅ 所有模型已存在' + (existingCount > 0 ? '（' + existingCount + ' 个）' : '') + '</div>',
+    showModal('检测模型 — ' + escHtml(upstreamId),
+      '<div class="detect-all-existing">' +
+        '<div class="detect-all-existing-icon">✅</div>' +
+        '<div>所有模型已存在' + (existingCount > 0 ? '（' + existingCount + ' 个）' : '') + '</div>' +
+      '</div>',
       '<button class="btn btn-secondary" onclick="closeModal()">关闭</button>');
     return;
   }
-  
-  // Build model list with checkboxes
-  const modelItems = discovered.map((name, i) =>
-    '<div class="detect-model-item">' +
-      '<input type="checkbox" class="detect-model-cb" value="' + escHtml(name) + '" checked id="dm-cb-' + i + '">' +
-      '<span class="model-name" title="' + escHtml(name) + '">' + escHtml(name) + '</span>' +
-      '<label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap;">' +
-        '<input type="checkbox" class="dm-multimodal" checked onchange="this.dataset.val = this.checked ? \'1\' : \'0\'">' +
-        '多模态</label>' +
-    '</div>'
+
+  // 统计徽章
+  const summaryHtml =
+    '<div class="detect-modal-summary">' +
+      '<div class="detect-summary-badge detect-badge-new">' +
+        '<span class="detect-badge-num">' + discovered.length + '</span>' +
+        '<span class="detect-badge-label">新发现</span>' +
+      '</div>' +
+      '<div class="detect-summary-badge detect-badge-existing">' +
+        '<span class="detect-badge-num">' + existingCount + '</span>' +
+        '<span class="detect-badge-label">已存在</span>' +
+      '</div>' +
+    '</div>';
+
+  // 选择栏
+  const selectBarHtml =
+    '<div class="detect-select-bar">' +
+      '<span class="detect-select-count">已选 <strong id="detect-selected-count">' + discovered.length + '</strong> / ' + discovered.length + '</span>' +
+      '<div class="detect-select-actions">' +
+        '<a class="detect-select-link" onclick="window.toggleSelectAllModels(true)">全选</a>' +
+        '<a class="detect-select-link" onclick="window.toggleSelectAllModels(false)">取消全选</a>' +
+      '</div>' +
+    '</div>';
+
+  // 表格
+  const tableRows = discovered.map((name, i) =>
+    '<tr class="detect-row" style="animation-delay:' + (i * 30) + 'ms">' +
+      '<td class="detect-cell-check">' +
+        '<input type="checkbox" class="detect-model-cb" value="' + escHtml(name) + '" checked id="dm-cb-' + i + '" onchange="window.updateDetectSelectedCount()">' +
+      '</td>' +
+      '<td class="detect-cell-name">' +
+        '<span class="detect-model-name" title="' + escHtml(name) + '">' + escHtml(name) + '</span>' +
+      '</td>' +
+      '<td class="detect-cell-multi">' +
+        '<label class="detect-toggle-wrap">' +
+          '<input type="checkbox" class="dm-multimodal" checked>' +
+          '<span class="detect-toggle-track"><span class="detect-toggle-thumb"></span></span>' +
+        '</label>' +
+      '</td>' +
+    '</tr>'
   ).join('');
-  
-  const selectAllLink = '<a onclick="window.toggleSelectAllModels(true)">全选</a> / <a onclick="window.toggleSelectAllModels(false)">取消全选</a>';
-  
-  const statsText = '发现 ' + discovered.length + ' 个新模型' + (existingCount > 0 ? '，已有 ' + existingCount + ' 个' : '');
-  
-  const content = 
-    '<div class="detect-select-all">' + selectAllLink + '</div>' +
-    '<div class="detect-stats">' + statsText + '</div>' +
-    '<div class="detect-model-list">' + modelItems + '</div>';
-  
-  const footer = 
+
+  const tableHtml =
+    '<div class="detect-table-wrap">' +
+      '<table class="detect-table">' +
+        '<thead><tr>' +
+          '<th class="detect-col-check"></th>' +
+          '<th class="detect-col-name">模型名</th>' +
+          '<th class="detect-col-multi">多模态</th>' +
+        '</tr></thead>' +
+        '<tbody>' + tableRows + '</tbody>' +
+      '</table>' +
+    '</div>';
+
+  const content = summaryHtml + selectBarHtml + tableHtml;
+
+  const footer =
     '<button class="btn btn-secondary" onclick="closeModal()">取消</button>' +
     '<button class="btn btn-primary" onclick="window.bulkAddDetectedModels(\'' + escHtml(upstreamId) + '\')">批量添加选中模型</button>';
-  
-  showModal('🔍 检测模型 — ' + escHtml(upstreamId), content, footer);
+
+  showModal('检测模型 — ' + escHtml(upstreamId), content, footer);
+}
+
+function updateDetectSelectedCount() {
+  const checked = document.querySelectorAll('.detect-model-cb:checked').length;
+  const el = document.getElementById('detect-selected-count');
+  if (el) el.textContent = checked;
 }
 
 function toggleSelectAllModels(checked) {
   document.querySelectorAll('.detect-model-cb').forEach(cb => { cb.checked = checked; });
+  window.updateDetectSelectedCount();
 }
 
 async function bulkAddDetectedModels(upstreamId) {
@@ -364,7 +408,7 @@ async function bulkAddDetectedModels(upstreamId) {
   
   // Collect selected models with multimodal flag
   const models = Array.from(checkboxes).map(cb => {
-    const item = cb.closest('.detect-model-item');
+    const item = cb.closest('.detect-row');
     const multimodalCb = item ? item.querySelector('.dm-multimodal') : null;
     const multimodal = multimodalCb ? (multimodalCb.checked ? 1 : 0) : 1;
     return { name: cb.value, multimodal: multimodal };
@@ -417,4 +461,5 @@ window.refreshConfigStatus = refreshConfigStatus;
 window.detectUpstreamModels = detectUpstreamModels;
 window.bulkAddDetectedModels = bulkAddDetectedModels;
 window.toggleSelectAllModels = toggleSelectAllModels;
+window.updateDetectSelectedCount = updateDetectSelectedCount;
 export { loadUpstreamPage, initUpstreamPage, refreshConfigStatus };

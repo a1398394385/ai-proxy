@@ -588,6 +588,12 @@ def get_token_stats(period="week"):
     return stats
 
 
+def _normalize_model_name(name):
+    """去除模型名中的 [xxx] 上下文后缀，例如 'deepseek-v4-pro[1m]' -> 'deepseek-v4-pro'。"""
+    bracket = name.find('[')
+    return name[:bracket] if bracket > 0 else name
+
+
 def get_token_stats_by_model(period="week"):
     start_ts, end_ts = get_time_range(period)
     conn = get_state_db()
@@ -614,27 +620,41 @@ def get_token_stats_by_model(period="week"):
     # 同名模型 token 数直接相加，不同名则独立显示
     model_map = {}
 
+    def _add_to_map(name, data):
+        base = _normalize_model_name(name)
+        if base not in model_map:
+            model_map[base] = {
+                "model": base,
+                "request_count": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+            }
+        m = model_map[base]
+        m["request_count"] += data["request_count"]
+        m["input_tokens"] += data["input_tokens"]
+        m["output_tokens"] += data["output_tokens"]
+        m["cache_read_tokens"] += data["cache_read_tokens"]
+        m["cache_write_tokens"] += data["cache_write_tokens"]
+
     for r in rows:
-        model = r["model"]
-        model_map[model] = {
-            "model": model,
+        _add_to_map(r["model"], {
             "request_count": r["request_count"] or 0,
             "input_tokens": r["total_input"] or 0,
             "output_tokens": r["total_output"] or 0,
             "cache_read_tokens": r["total_cache_read"] or 0,
             "cache_write_tokens": r["total_cache_write"] or 0,
-        }
+        })
 
     for p in _get_proxy_token_by_model(period):
-        name = p["model"]
-        if name in model_map:
-            model_map[name]["request_count"] += p["request_count"]
-            model_map[name]["input_tokens"] += p["input_tokens"]
-            model_map[name]["output_tokens"] += p["output_tokens"]
-            model_map[name]["cache_read_tokens"] += p["cache_read_tokens"]
-            model_map[name]["cache_write_tokens"] += p["cache_write_tokens"]
-        else:
-            model_map[name] = p
+        _add_to_map(p["model"], {
+            "request_count": p["request_count"] or 0,
+            "input_tokens": p["input_tokens"] or 0,
+            "output_tokens": p["output_tokens"] or 0,
+            "cache_read_tokens": p["cache_read_tokens"] or 0,
+            "cache_write_tokens": p["cache_write_tokens"] or 0,
+        })
 
     # 计算成本（统一用 model 字段，token_stats 中即 target_model）
     models = []
