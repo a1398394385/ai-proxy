@@ -228,6 +228,23 @@ def calculate_cost(model, input_tokens, output_tokens, cache_read_tokens, cache_
 
     )
 
+_stats_service_instance = None
+
+
+def _get_stats_service():
+    """懒加载获取 StatsService 单例。"""
+    global _stats_service_instance
+    if _stats_service_instance is None:
+        from stats_service import StatsService
+        _stats_service_instance = StatsService(
+            access_log_db_path=str(ACCESS_LOG_DB_PATH),
+            config_db_path=str(CONFIG_DB_PATH),
+            state_db_path=STATE_DB_PATH,
+            cc_switch_db_path=CC_SWITCH_DB_PATH,
+        )
+    return _stats_service_instance
+
+
 
 
 
@@ -1102,6 +1119,56 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 "week": get_token_stats("week"),
                 "month": get_token_stats("month")
             })
+
+        # 新增：请求日志（分页）
+        if path == "/api/token_stats/requests":
+            stats_service = _get_stats_service()
+            period = qs.get("period", ["week"])[0]
+            if period not in ("day", "week", "month"):
+                return json_response(self, {"error": "Invalid period"}, 400)
+            model = qs.get("model", [None])[0]
+            request_type = qs.get("request_type", [None])[0]
+            try:
+                limit = int(qs.get("limit", ["50"])[0])
+                offset = int(qs.get("offset", ["0"])[0])
+            except (ValueError, TypeError):
+                return json_response(self, {"error": "Invalid limit/offset"}, 400)
+            if limit > 200:
+                return json_response(self, {"error": "Limit exceeds maximum (200)"}, 400)
+            result = stats_service.fetch_requests(
+                period=period, model=model, request_type=request_type, limit=limit, offset=offset
+            )
+            return json_response(self, result)
+
+        # 新增：按上游统计
+        if path == "/api/token_stats/by_upstream":
+            stats_service = _get_stats_service()
+            period = qs.get("period", ["week"])[0]
+            if period not in ("day", "week", "month"):
+                return json_response(self, {"error": "Invalid period"}, 400)
+            result = stats_service.fetch_by_upstream(period=period)
+            return json_response(self, result)
+
+        # 新增：按模型请求（路径参数）
+        m = re.match(r"/api/token_stats/by_model/([^/]+)/requests$", path)
+        if m:
+            stats_service = _get_stats_service()
+            model = unquote(m.group(1))
+            period = qs.get("period", ["week"])[0]
+            if period not in ("day", "week", "month"):
+                return json_response(self, {"error": "Invalid period"}, 400)
+            try:
+                limit = int(qs.get("limit", ["50"])[0])
+                offset = int(qs.get("offset", ["0"])[0])
+            except (ValueError, TypeError):
+                return json_response(self, {"error": "Invalid limit/offset"}, 400)
+            if limit > 200:
+                return json_response(self, {"error": "Limit exceeds maximum (200)"}, 400)
+            result = stats_service.fetch_by_model_requests(
+                model=model, period=period, limit=limit, offset=offset
+            )
+            return json_response(self, result)
+
 
         # 静态文件
         static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
