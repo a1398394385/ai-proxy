@@ -1,9 +1,16 @@
-import { api, formatNumber, formatTokens } from '../core.js';
+import { api, formatNumber, formatTokens, escHtml } from '../core.js';
 
 // ===== Module-local state =====
 let allModels = [];
 let chartData = [];
 let hiddenSeries = new Set();
+// Request log state
+let requestFilters = { model: '', requestType: '', period: 'week' };
+let requestPagination = { limit: 50, offset: 0, total: 0 };
+let debounceTimer = null;
+
+// Upstream stats state
+let upstreamStatsData = [];
 
 // ===== Token 统计 =====
 async function loadTokenStats() {
@@ -441,12 +448,12 @@ function renderModelTable(models) {
     const cacheReadPct = (m.cache_read_tokens / totalTokens * 100);
     const cacheWritePct = (m.cache_write_tokens / totalTokens * 100);
 
-    return `<tr>
+    return `<tr data-model="${escHtml(m.model)}" class="model-row">
       <td>
         <div class="model-name-cell">
           <span class="model-rank ${rankClass}">${rank}</span>
           <span class="model-dot" style="background:${dotColor}"></span>
-          <span class="model-name-text">${m.model}</span>
+          <span class="model-name-text">${escHtml(m.model)}</span>
         </div>
       </td>
       <td class="cell-requests">${(m.request_count || 0).toLocaleString()}</td>
@@ -469,7 +476,388 @@ function renderModelTable(models) {
       <td class="cell-cost">$${m.estimated_cost_usd.toFixed(4)}</td>
     </tr>`;
   }).join('');
+
+  // 添加展开/收起事件绑定
+  tbody.querySelectorAll('.model-row').forEach(row => {
+    row.style.cursor = 'pointer';
+    row.addEventListener('click', () => {
+      const model = row.dataset.model;
+      if (row.classList.contains('expanded')) {
+        collapseModelRow(row);
+      } else {
+        tbody.querySelectorAll('.model-row.expanded').forEach(expandedRow => {
+          if (expandedRow !== row) collapseModelRow(expandedRow);
+        });
+        expandModelRow(model, row);
+      }
+    });
+  });
 }
+// ===== 展开/收起模型行 =====
+
+function expandModelRow(model, rowElement) {
+  if (rowElement.nextSibling && rowElement.nextSibling.classList && rowElement.nextSibling.classList.contains('model-detail-row')) {
+    collapseModelRow(rowElement);
+    return;
+  }
+
+  const period = window.currentPeriod || 'week';
+  const encodedModel = encodeURIComponent(model);
+  api(`/api/token_stats/by_model/${encodedModel}/requests?period=${period}&limit=50`)
+    .then(data => {
+      const requests = data.requests || [];
+      const limit = Math.min(requests.length, 50);
+
+      if (!requests.length) {
+        const tr = document.createElement('tr');
+        tr.className = 'model-detail-row';
+        tr.innerHTML = `<td colspan="10" class="empty-state">暂无详细请求记录</td>`;
+        rowElement.after(tr);
+        return;
+      }
+
+      const rows = requests.slice(0, limit).map(r => {
+        const isSession = r.type === 'session' || r.request_type === 'session';
+        const typeBadge = isSession
+          ? '<span class="type-badge session">会话</span>'
+          : '<span class="type-badge proxy">代理</span>';
+        const timeStr = r.created_at || r.request_ts || r.timestamp || '-';
+
+        const tokenCells = isSession
+          ? '<td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-total">-</td><td class="cell-number">-</td><td class="cell-cost">-</td>'
+          : `<td class="cell-number">${formatTokens(r.input_tokens || 0)}</td>
+             <td class="cell-number">${formatTokens(r.output_tokens || 0)}</td>
+             <td class="cell-number">${formatTokens(r.cache_read_tokens || 0)}</td>
+             <td class="cell-number">${formatTokens(r.cache_write_tokens || 0)}</td>
+             <td class="cell-total">${formatTokens((r.input_tokens || 0) + (r.output_tokens || 0) + (r.cache_read_tokens || 0) + (r.cache_write_tokens || 0))}</td>
+             <td class="cell-number">${r.duration_ms ? r.duration_ms + 'ms' : '-'}</td>
+             <td class="cell-cost">$${(r.estimated_cost_usd || 0).toFixed(4)}</td>`;
+
+        return `<tr class="detail-row">
+          <td class="cell-detail-id">${escHtml(r.request_id || r.id || '-')}</td>
+          <td class="cell-number">${escHtml(timeStr)}</td>
+          <td>${typeBadge}</td>
+          ${tokenCells}
+        </tr>`;
+      }).join('');
+
+      const tr = document.createElement('tr');
+      tr.className = 'model-detail-row';
+      tr.innerHTML = `
+        <td colspan="10" class="detail-content">
+          <div class="detail-header">
+            <span class="detail-model">${escHtml(model)}</span>
+            <span class="detail-count">最近 ${requests.length} 条记录</span>
+          </div>
+          <table class="detail-table">
+            <thead>
+              <tr>
+                <th>请求ID</th><th>时间</th><th>类型</th><th>Input</th><th>Output</th>
+                <th>Cache Read</th><th>Cache Create</th><th>总Token</th><th>耗时</th><th>成本</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </td>`;
+      rowElement.after(tr);
+      rowElement.classList.add('expanded');
+    })
+    .catch(err => {
+      const tr = document.createElement('tr');
+      tr.className = 'model-detail-row';
+      tr.innerHTML = `<td colspan="10" class="empty-state">加载失败: ${escHtml(err.message)}</td>`;
+      rowElement.after(tr);
+    });
+}
+
+function collapseModelRow(rowElement) {
+  rowElement.classList.remove('expanded');
+  const next = rowElement.nextSibling;
+  if (next && next.classList && next.classList.contains('model-detail-row')) {
+    next.remove();
+  }
+}
+// ===== Sub-tab 切换 =====
+
+function getActiveSubtab() {
+  const activeBtn = document.querySelector('.sub-tab-btn.active');
+  return activeBtn ? activeBtn.dataset.subtab : 'models';
+}
+
+function initSubTabs() {
+  document.querySelectorAll('.sub-tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.sub-tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+
+      const subtabName = btn.dataset.subtab;
+      ['models', 'requests', 'upstream'].forEach(name => {
+        const el = document.getElementById(`subtab-${name}`);
+        if (el) el.style.display = name === subtabName ? '' : 'none';
+      });
+
+      if (subtabName === 'requests') {
+        requestFilters.period = window.currentPeriod || 'week';
+        requestPagination.offset = 0;
+        loadRequestLog();
+      } else if (subtabName === 'upstream') {
+        loadUpstreamStats();
+      }
+    });
+  });
+}
+
+// ===== 请求日志 tab =====
+
+async function loadRequestLog() {
+  const period = requestFilters.period || 'week';
+  const model = requestFilters.model || '';
+  const requestType = requestFilters.requestType || '';
+  const { limit, offset } = requestPagination;
+
+  let url = `/api/token_stats/requests?period=${period}&limit=${limit}&offset=${offset}`;
+  if (model) url += `&model=${encodeURIComponent(model)}`;
+  if (requestType) url += `&request_type=${encodeURIComponent(requestType)}`;
+
+  try {
+    const data = await api(url);
+    requestPagination.total = data.total || 0;
+    renderRequestTable(data.requests || []);
+    renderPagination(requestPagination.total, limit, offset);
+  } catch (err) {
+    const container = document.getElementById('request-log-container');
+    if (container) {
+      container.innerHTML = `<div class="empty-state">加载失败: ${escHtml(err.message)}</div>`;
+    }
+  }
+}
+
+function renderRequestTable(requests) {
+  const subtabEl = document.getElementById('subtab-requests');
+  if (!subtabEl) return;
+
+  if (!document.getElementById('request-log-container')) {
+    subtabEl.innerHTML = `
+      <div class="filter-bar">
+        <div class="filter-group">
+          <label>模型</label>
+          <input type="text" id="req-filter-model" placeholder="过滤模型..." value="${escHtml(requestFilters.model || '')}" />
+        </div>
+        <div class="filter-group">
+          <label>类型</label>
+          <select id="req-filter-type">
+            <option value="">全部</option>
+            <option value="proxy" ${requestFilters.requestType === 'proxy' ? 'selected' : ''}>代理</option>
+            <option value="session" ${requestFilters.requestType === 'session' ? 'selected' : ''}>会话</option>
+          </select>
+        </div>
+        <button class="btn btn-secondary btn-sm" id="req-filter-clear">清除筛选</button>
+      </div>
+      <div id="request-log-container">
+        <div class="table-card">
+          <div class="table-header">
+            <span class="table-title">📋 请求日志</span>
+            <span id="request-count" style="font-size:12px;color:hsl(var(--muted-foreground))"></span>
+          </div>
+          <div class="table-scroll">
+            <table id="request-log-table">
+              <thead>
+                <tr>
+                  <th>模型</th><th>请求ID</th><th>时间</th><th>类型</th><th>Input</th><th>Output</th>
+                  <th>Cache Read</th><th>Cache Create</th><th>总Token</th><th>耗时</th><th>成本</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="pagination-bar" id="request-pagination"></div>
+      </div>`;
+    setupRequestFilters();
+  }
+
+  const tbody = document.querySelector('#request-log-table tbody');
+  const countEl = document.getElementById('request-count');
+  if (!tbody) return;
+
+  if (countEl) countEl.textContent = `${requestPagination.total} 条记录`;
+
+  if (!requests.length) {
+    tbody.innerHTML = '<tr><td colspan="11" class="empty-state">没有找到请求记录</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = requests.map(r => {
+    const isSession = r.type === 'session' || r.request_type === 'session';
+    const typeBadge = isSession
+      ? '<span class="type-badge session">会话</span>'
+      : '<span class="type-badge proxy">代理</span>';
+    const timeStr = r.created_at || r.request_ts || r.timestamp || '-';
+
+    const tokenCells = isSession
+      ? '<td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-total">-</td><td class="cell-number">-</td><td class="cell-cost">-</td>'
+      : `<td class="cell-number">${formatTokens(r.input_tokens || 0)}</td>
+         <td class="cell-number">${formatTokens(r.output_tokens || 0)}</td>
+         <td class="cell-number">${formatTokens(r.cache_read_tokens || 0)}</td>
+         <td class="cell-number">${formatTokens(r.cache_write_tokens || 0)}</td>
+         <td class="cell-total">${formatTokens((r.input_tokens || 0) + (r.output_tokens || 0) + (r.cache_read_tokens || 0) + (r.cache_write_tokens || 0))}</td>
+         <td class="cell-number">${r.duration_ms ? r.duration_ms + 'ms' : '-'}</td>
+         <td class="cell-cost">$${(r.estimated_cost_usd || 0).toFixed(4)}</td>`;
+
+    return `<tr>
+      <td class="model-name-text">${escHtml(r.model || '-')}</td>
+      <td class="cell-detail-id">${escHtml(r.request_id || r.id || '-')}</td>
+      <td class="cell-number">${escHtml(timeStr)}</td>
+      <td>${typeBadge}</td>
+      ${tokenCells}
+    </tr>`;
+  }).join('');
+}
+
+function setupRequestFilters() {
+  const modelInput = document.getElementById('req-filter-model');
+  const typeSelect = document.getElementById('req-filter-type');
+  const clearBtn = document.getElementById('req-filter-clear');
+
+  if (modelInput) {
+    modelInput.addEventListener('input', () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        requestFilters.model = modelInput.value.trim();
+        requestPagination.offset = 0;
+        loadRequestLog();
+      }, 300);
+    });
+  }
+
+  if (typeSelect) {
+    typeSelect.addEventListener('change', () => {
+      requestFilters.requestType = typeSelect.value;
+      requestPagination.offset = 0;
+      loadRequestLog();
+    });
+  }
+
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      requestFilters.model = '';
+      requestFilters.requestType = '';
+      requestPagination.offset = 0;
+      const mi = document.getElementById('req-filter-model');
+      if (mi) mi.value = '';
+      const ts = document.getElementById('req-filter-type');
+      if (ts) ts.value = '';
+      loadRequestLog();
+    });
+  }
+}
+
+function renderPagination(total, limit, offset) {
+  const container = document.getElementById('request-pagination');
+  if (!container) return;
+
+  const currentPage = Math.floor(offset / limit) + 1;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const hasNext = currentPage < totalPages;
+  const hasPrev = currentPage > 1;
+
+  container.innerHTML = `
+    <div class="pagination-content">
+      <span class="pagination-info">第 ${currentPage} / ${totalPages} 页，共 ${total} 条</span>
+      <div class="pagination-buttons">
+        <button class="btn btn-secondary btn-sm" id="pagination-prev" ${hasPrev ? '' : 'disabled'} ${hasPrev ? '' : 'style="opacity:0.4;cursor:not-allowed"'} >上一页</button>
+        <button class="btn btn-secondary btn-sm" id="pagination-next" ${hasNext ? '' : 'disabled'} ${hasNext ? '' : 'style="opacity:0.4;cursor:not-allowed"'}>下一页</button>
+      </div>
+    </div>`;
+
+  const prevBtn = document.getElementById('pagination-prev');
+  const nextBtn = document.getElementById('pagination-next');
+
+  if (prevBtn && hasPrev) {
+    prevBtn.addEventListener('click', () => {
+      requestPagination.offset = Math.max(0, offset - limit);
+      loadRequestLog();
+    });
+  }
+
+  if (nextBtn && hasNext) {
+    nextBtn.addEventListener('click', () => {
+      requestPagination.offset = offset + limit;
+      loadRequestLog();
+    });
+  }
+}
+
+// ===== 上游统计 tab =====
+
+async function loadUpstreamStats() {
+  const period = window.currentPeriod || 'week';
+  try {
+    const data = await api(`/api/token_stats/by_upstream?period=${period}`);
+    upstreamStatsData = data.upstreams || [];
+    renderUpstreamTable(upstreamStatsData);
+  } catch (err) {
+    const subtabEl = document.getElementById('subtab-upstream');
+    if (subtabEl) {
+      subtabEl.innerHTML = `<div class="table-card"><div class="empty-state">加载失败: ${escHtml(err.message)}</div></div>`;
+    }
+  }
+}
+
+function renderUpstreamTable(data) {
+  const subtabEl = document.getElementById('subtab-upstream');
+  if (!subtabEl) return;
+
+  const sorted = [...data].sort((a, b) => (b.estimated_cost_usd || 0) - (a.estimated_cost_usd || 0));
+
+  const headerBar = `<div class="table-card">
+    <div class="table-header">
+      <span class="table-title">🏢 按上游统计</span>
+      <span style="font-size:12px;color:hsl(var(--muted-foreground))">${sorted.length} 个上游</span>
+    </div>
+    <div class="table-scroll">
+      <table id="upstream-stats-table">
+        <thead>
+          <tr>
+            <th>上游 ID</th><th>基本 URL</th><th>请求数</th><th>Input</th><th>Output</th>
+            <th>Cache Read</th><th>Cache Create</th><th>总Token</th><th>成本</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>`;
+
+  if (!document.getElementById('upstream-stats-table')) {
+    subtabEl.innerHTML = headerBar;
+  }
+
+  const tbody = document.querySelector('#upstream-stats-table tbody');
+  if (!tbody) return;
+
+  if (!sorted.length) {
+    tbody.innerHTML = '<tr><td colspan="9" class="empty-state">暂无上游统计数据</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = sorted.map(u => {
+    const isUnknown = u.upstream_id === '__unknown__';
+    const rowClass = isUnknown ? ' class="unknown-upstream"' : '';
+    const baseUrl = isUnknown ? '未知' : escHtml(u.base_url || '-');
+    return `<tr${rowClass}>
+      <td class="model-name-text">${escHtml(u.upstream_id || '-')}</td>
+      <td title="${escHtml(u.base_url || '')}">${baseUrl}</td>
+      <td class="cell-requests">${(u.request_count || 0).toLocaleString()}</td>
+      <td class="cell-number">${formatTokens(u.input_tokens || 0)}</td>
+      <td class="cell-number">${formatTokens(u.output_tokens || 0)}</td>
+      <td class="cell-number">${formatTokens(u.cache_read_tokens || 0)}</td>
+      <td class="cell-number">${formatTokens(u.cache_write_tokens || 0)}</td>
+      <td class="cell-total">${formatTokens(u.total_tokens || 0)}</td>
+      <td class="cell-cost">$${(u.estimated_cost_usd || 0).toFixed(4)}</td>
+    </tr>`;
+  }).join('');
+}
+
 
 // ===== Init Token Page Events =====
 export function initTokenPage() {
@@ -478,9 +866,15 @@ export function initTokenPage() {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      window.currentPeriod = btn.dataset.period;
       loadTokenStats();
-    });
+      const activeSubtab = getActiveSubtab();
+      if (activeSubtab === 'requests') {
+        requestFilters.period = window.currentPeriod || 'week';
+        requestPagination.offset = 0;
+        loadRequestLog();
+      } else if (activeSubtab === 'upstream') {
+        loadUpstreamStats();
+      }
   });
   
   // Refresh button
@@ -511,15 +905,19 @@ export function initTokenPage() {
   
   // Window resize for chart
   window.addEventListener('resize', () => {
-    if (document.getElementById('page-tokens') && !document.getElementById('page-tokens').classList.contains('hidden')) {
+if (document.getElementById('page-tokens') && !document.getElementById('page-tokens').classList.contains('hidden')) {
       renderTrendChart(chartData);
     }
-  });
+});
+
+  // Sub-tab 切换
+  initSubTabs();
 }
 
 // ===== Exports =====
-export { loadTokenStats, renderKPI, renderTrendChart, renderModelTable, allModels, chartData, hiddenSeries };
+export { loadTokenStats, renderKPI, renderTrendChart, renderModelTable };
 
 // ===== Global Scope Mounting =====
 window.loadTokenStats = loadTokenStats;
 window.renderModelTable = renderModelTable;
+window.initTokenPage = initTokenPage;
