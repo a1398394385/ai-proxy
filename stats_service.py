@@ -896,19 +896,136 @@ class StatsService:
             "offset": offset,
         }
 
-    def fetch_by_upstream(self, period: str) -> list:
-        """按上游维度获取统计数据。
+    def fetch_by_upstream(self, period: str) -> dict:
+        """按上游维度获取统计数据，合并 token_stats + sessions 数据源。
 
         Args:
             period: 时间周期
 
         Returns:
-            上游统计列表
+            {upstreams: [{upstream_id, base_url, request_count, input_tokens,
+             output_tokens, cached_read_tokens, cached_write_tokens,
+             total_tokens, estimated_cost_usd}]}
         """
-        dao = self._get_dao()
-        # 从 config.db 读取 upstream 映射
+        token_dao = self._get_dao()
         upstream_map = self._load_upstream_map()
-        return dao.aggregate_by_upstream(period, upstream_map)
+
+        # 1. token_stats 按 upstream 聚合
+        token_stats_data = token_dao.aggregate_by_upstream(period, upstream_map)
+
+        # 2. sessions 按 model 聚合，再映射到 upstream
+        session_dao = self._get_session_dao()
+        session_model_data = session_dao.aggregate_by_model(period)
+
+        # 3. 将 sessions 按 upstream_name 聚合
+        session_upstream_data: dict = {}
+        for row in session_model_data:
+            model = row["model"]
+            upstream_info = self._resolve_upstream(model)
+            upstream_name = upstream_info["upstream_name"]
+
+            if upstream_name not in session_upstream_data:
+                session_upstream_data[upstream_name] = {
+                    "upstream": upstream_name,
+                    "request_count": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cached_read_tokens": 0,
+                    "cached_write_tokens": 0,
+                }
+
+            agg = session_upstream_data[upstream_name]
+            agg["request_count"] += row["request_count"] or 0
+            agg["input_tokens"] += row["input_tokens"] or 0
+            agg["output_tokens"] += row["output_tokens"] or 0
+            agg["cached_read_tokens"] += row["cached_read_tokens"] or 0
+            agg["cached_write_tokens"] += row["cached_write_tokens"] or 0
+
+        # 4. 合并两个数据源（同名 upstream 累加）
+        merged: dict = {}
+
+        for row in token_stats_data:
+            name = row["upstream"]
+            # 将 aggregate_by_upstream 的 'Other' 统一为 '__unknown__'
+            if name == "Other":
+                name = "__unknown__"
+            if name not in merged:
+                merged[name] = {
+                    "upstream": name,
+                    "request_count": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cached_read_tokens": 0,
+                    "cached_write_tokens": 0,
+                }
+            m = merged[name]
+            m["request_count"] += row["request_count"] or 0
+            m["input_tokens"] += row["input_tokens"] or 0
+            m["output_tokens"] += row["output_tokens"] or 0
+            m["cached_read_tokens"] += row["cached_read_tokens"] or 0
+            m["cached_write_tokens"] += row["cached_write_tokens"] or 0
+
+        for name, sdata in session_upstream_data.items():
+            if name not in merged:
+                merged[name] = dict(sdata)
+            else:
+                m = merged[name]
+                m["request_count"] += sdata["request_count"]
+                m["input_tokens"] += sdata["input_tokens"]
+                m["output_tokens"] += sdata["output_tokens"]
+                m["cached_read_tokens"] += sdata["cached_read_tokens"]
+                m["cached_write_tokens"] += sdata["cached_write_tokens"]
+
+        # 5. 计算 total_tokens 和 estimated_cost_usd
+        calculator = self._get_calculator()
+        result = []
+        for name, agg in merged.items():
+            agg["total_tokens"] = (
+                agg["input_tokens"]
+                + agg["output_tokens"]
+                + agg["cached_read_tokens"]
+                + agg["cached_write_tokens"]
+            )
+
+            # 获取 base_url：从 upstream_map 反查任意一个 model 的 upstream
+            base_url = None
+            sample_model = None
+            for model, up_name in upstream_map.items():
+                if up_name == name:
+                    sample_model = model
+                    break
+
+            if sample_model:
+                info = self._resolve_upstream(sample_model)
+                base_url = info.get("upstream_url")
+            elif name == "__unknown__":
+                base_url = None
+
+            # 成本计算：用 sample_model 或 name 作为模型名
+            cost_model = sample_model if sample_model else name
+            cost = calculator.calculate(
+                model=cost_model,
+                input_tokens=agg["input_tokens"],
+                output_tokens=agg["output_tokens"],
+                cache_read_tokens=agg["cached_read_tokens"],
+                cache_write_tokens=agg["cached_write_tokens"],
+            )
+
+            result.append({
+                "upstream_id": name,
+                "base_url": base_url,
+                "request_count": agg["request_count"],
+                "input_tokens": agg["input_tokens"],
+                "output_tokens": agg["output_tokens"],
+                "cached_read_tokens": agg["cached_read_tokens"],
+                "cached_write_tokens": agg["cached_write_tokens"],
+                "total_tokens": agg["total_tokens"],
+                "estimated_cost_usd": round(cost, 6),
+            })
+
+        # 6. 按 estimated_cost_usd DESC 排序
+        result.sort(key=lambda x: x["estimated_cost_usd"], reverse=True)
+        return {"upstreams": result}
 
     def fetch_trend(self, period: str) -> list:
         """获取时间趋势数据。

@@ -229,7 +229,7 @@ class TestStatsService(unittest.TestCase):
         """无 upstream_map 时返回空列表。"""
         service = self._create_service()
         result = service.fetch_by_upstream("day")
-        self.assertEqual(result, [])
+        self.assertEqual(result, {"upstreams": []})
 
     # ─── fetch_summary 测试 ───
 
@@ -535,12 +535,24 @@ class TestStatsService(unittest.TestCase):
         service = self._create_service()
         result = service.fetch_by_upstream("day")
 
-        self.assertEqual(len(result), 2)
-        # 按 output_tokens 降序
-        self.assertEqual(result[0]["upstream"], "https://api.anthropic.com")
-        self.assertEqual(result[0]["output_tokens"], 500)
-        self.assertEqual(result[1]["upstream"], "https://api.openai.com")
-        self.assertEqual(result[1]["output_tokens"], 200)
+        self.assertEqual(len(result["upstreams"]), 2)
+        upstreams = result["upstreams"]
+        # 按 estimated_cost_usd 降序
+        self.assertEqual(upstreams[0]["upstream_id"], "https://api.anthropic.com")
+        self.assertEqual(upstreams[0]["output_tokens"], 500)
+        self.assertEqual(upstreams[1]["upstream_id"], "https://api.openai.com")
+        self.assertEqual(upstreams[1]["output_tokens"], 200)
+        # 验证返回格式包含所有必需字段
+        for up in upstreams:
+            self.assertIn("upstream_id", up)
+            self.assertIn("base_url", up)
+            self.assertIn("request_count", up)
+            self.assertIn("input_tokens", up)
+            self.assertIn("output_tokens", up)
+            self.assertIn("cached_read_tokens", up)
+            self.assertIn("cached_write_tokens", up)
+            self.assertIn("total_tokens", up)
+            self.assertIn("estimated_cost_usd", up)
 
     def test_fetch_by_upstream_no_config_db(self):
         """没有 config.db 时返回空列表。"""
@@ -556,7 +568,7 @@ class TestStatsService(unittest.TestCase):
 
         service = self._create_service()
         result = service.fetch_by_upstream("day")
-        self.assertEqual(result, [])
+        self.assertEqual(result, {"upstreams": []})
 
     # ─── Period 格式兼容测试 ───
 
@@ -1953,4 +1965,478 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
             self.assertIsInstance(r["estimated_cost_usd"], (int, float))
 
 
+
+
+
+class TestFetchByUpstreamMerged(unittest.TestCase):
+    """fetch_by_upstream 合并 token_stats + sessions 测试。"""
+
+    def setUp(self):
+        """创建临时目录和两个数据库。"""
+        self.tmpdir = tempfile.mkdtemp()
+        self.access_log_db = Path(self.tmpdir) / "access_log.db"
+        self.config_db = Path(self.tmpdir) / "config.db"
+        self.state_db = Path(self.tmpdir) / "state.db"
+        self.cc_switch_db = Path(self.tmpdir) / "cc-switch.db"
+
+        # 创建 token_stats 表
+        conn = sqlite3.connect(str(self.access_log_db))
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS token_stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL,
+                request_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                target_model TEXT NOT NULL,
+                request_ts TEXT NOT NULL,
+                duration_ms INTEGER,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cached_read_tokens INTEGER DEFAULT 0,
+                cached_write_tokens INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'completed',
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+        # 创建 sessions 表
+        conn = sqlite3.connect(str(self.state_db))
+        conn.execute("""
+            CREATE TABLE sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model TEXT,
+                started_at TEXT NOT NULL,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                message_count INTEGER DEFAULT 0
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        """清理临时文件。"""
+        import shutil
+        if os.path.exists(self.tmpdir):
+            shutil.rmtree(self.tmpdir)
+
+    def _create_service(self):
+        """创建 StatsService 实例。"""
+        from stats_service import StatsService
+        return StatsService(
+            access_log_db_path=str(self.access_log_db),
+            config_db_path=str(self.config_db),
+            state_db_path=str(self.state_db),
+            cc_switch_db_path=str(self.cc_switch_db),
+        )
+
+    def _setup_config_db(self):
+        """创建 config.db 并填充 upstream/target_models 数据。"""
+        conn = sqlite3.connect(str(self.config_db))
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS upstreams (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                base_url TEXT NOT NULL,
+                api_key TEXT DEFAULT '',
+                timeout INTEGER DEFAULT 30,
+                connect_timeout INTEGER DEFAULT 10,
+                ssl_verify INTEGER DEFAULT 1,
+                retry INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                is_default INTEGER DEFAULT 0
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS target_models (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                upstream_id INTEGER,
+                multimodal INTEGER DEFAULT 0,
+                format TEXT DEFAULT 'chat'
+            )
+        """)
+        conn.execute(
+            "INSERT INTO upstreams (id, base_url) VALUES (?, ?)",
+            (1, "https://api.openai.com"),
+        )
+        conn.execute(
+            "INSERT INTO upstreams (id, base_url) VALUES (?, ?)",
+            (2, "https://api.anthropic.com"),
+        )
+        conn.execute(
+            "INSERT INTO target_models (id, name, upstream_id) VALUES (?, ?, ?)",
+            (1, "qwen3.6-plus", 1),
+        )
+        conn.execute(
+            "INSERT INTO target_models (id, name, upstream_id) VALUES (?, ?, ?)",
+            (2, "claude-sonnet-4", 2),
+        )
+        conn.commit()
+        conn.close()
+
+    def _insert_token_stat(self, **kwargs):
+        """插入 token_stats 测试数据。"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        defaults = {
+            "request_id": "req-1",
+            "request_type": "chat",
+            "model": "gpt-4",
+            "target_model": "qwen3.6-plus",
+            "request_ts": now,
+            "duration_ms": 100,
+            "input_tokens": 100,
+            "output_tokens": 200,
+            "cached_read_tokens": 0,
+            "cached_write_tokens": 0,
+            "status": "completed",
+            "created_at": now,
+        }
+        defaults.update(kwargs)
+        d = defaults
+        conn = sqlite3.connect(str(self.access_log_db))
+        conn.execute(
+            "INSERT INTO token_stats (request_id, request_type, model, target_model, "
+            "request_ts, duration_ms, input_tokens, output_tokens, cached_read_tokens, "
+            "cached_write_tokens, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (d["request_id"], d["request_type"], d["model"], d["target_model"],
+             d["request_ts"], d["duration_ms"], d["input_tokens"], d["output_tokens"],
+             d["cached_read_tokens"], d["cached_write_tokens"], d["status"], d["created_at"]),
+        )
+        conn.commit()
+        conn.close()
+
+    def _insert_session(self, **kwargs):
+        """插入 session 测试数据。"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        defaults = {
+            "model": "qwen3.6-plus",
+            "started_at": now,
+            "input_tokens": 100,
+            "output_tokens": 200,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+        }
+        defaults.update(kwargs)
+        d = defaults
+        conn = sqlite3.connect(str(self.state_db))
+        conn.execute(
+            "INSERT INTO sessions (model, started_at, input_tokens, output_tokens, "
+            "cache_read_tokens, cache_write_tokens) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (d["model"], d["started_at"], d["input_tokens"], d["output_tokens"],
+             d["cache_read_tokens"], d["cache_write_tokens"]),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_returns_dict_structure(self):
+        """返回正确的 dict 结构。"""
+        service = self._create_service()
+        result = service.fetch_by_upstream("day")
+        self.assertIn("upstreams", result)
+        self.assertIsInstance(result["upstreams"], list)
+
+    def test_empty_db_returns_empty_upstreams(self):
+        """空数据库返回空 upstreams 列表。"""
+        service = self._create_service()
+        result = service.fetch_by_upstream("day")
+        self.assertEqual(result, {"upstreams": []})
+
+    def test_token_stats_only(self):
+        """仅有 token_stats 数据时正确聚合。"""
+        now = datetime.now()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        self._insert_token_stat(
+            request_id="req-1", target_model="qwen3.6-plus",
+            request_ts=ts, input_tokens=100, output_tokens=200
+        )
+        self._insert_token_stat(
+            request_id="req-2", target_model="qwen3.6-plus",
+            request_ts=ts, input_tokens=50, output_tokens=100
+        )
+        self._setup_config_db()
+
+        service = self._create_service()
+        result = service.fetch_by_upstream("day")
+
+        self.assertEqual(len(result["upstreams"]), 1)
+        up = result["upstreams"][0]
+        self.assertEqual(up["upstream_id"], "https://api.openai.com")
+        self.assertEqual(up["request_count"], 2)
+        self.assertEqual(up["input_tokens"], 150)
+        self.assertEqual(up["output_tokens"], 300)
+        self.assertEqual(up["total_tokens"], 450)
+
+    def test_sessions_only(self):
+        """仅有 sessions 数据时正确聚合。"""
+        now = datetime.now()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        self._insert_session(model="qwen3.6-plus", started_at=ts, input_tokens=100, output_tokens=200)
+        self._insert_session(model="qwen3.6-plus", started_at=ts, input_tokens=50, output_tokens=100)
+        self._setup_config_db()
+
+        service = self._create_service()
+        result = service.fetch_by_upstream("day")
+
+        self.assertEqual(len(result["upstreams"]), 1)
+        up = result["upstreams"][0]
+        self.assertEqual(up["upstream_id"], "https://api.openai.com")
+        self.assertEqual(up["request_count"], 2)
+        self.assertEqual(up["input_tokens"], 150)
+        self.assertEqual(up["output_tokens"], 300)
+
+    def test_merged_both_sources_same_upstream(self):
+        """token_stats 和 sessions 都指向同 upstream 时累加。"""
+        now = datetime.now()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        # token_stats: 100 input, 200 output
+        self._insert_token_stat(
+            request_id="proxy-1", target_model="qwen3.6-plus",
+            request_ts=ts, input_tokens=100, output_tokens=200
+        )
+        # sessions: 50 input, 100 output
+        self._insert_session(
+            model="qwen3.6-plus", started_at=ts, input_tokens=50, output_tokens=100
+        )
+        self._setup_config_db()
+
+        service = self._create_service()
+        result = service.fetch_by_upstream("day")
+
+        self.assertEqual(len(result["upstreams"]), 1)
+        up = result["upstreams"][0]
+        self.assertEqual(up["upstream_id"], "https://api.openai.com")
+        self.assertEqual(up["request_count"], 2)  # 1 + 1
+        self.assertEqual(up["input_tokens"], 150)  # 100 + 50
+        self.assertEqual(up["output_tokens"], 300)  # 200 + 100
+
+    def test_merged_different_upstreams(self):
+        """不同 upstream 正确分组。"""
+        now = datetime.now()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        # token_stats → openai
+        self._insert_token_stat(
+            request_id="proxy-1", target_model="qwen3.6-plus",
+            request_ts=ts, input_tokens=100, output_tokens=200
+        )
+        # sessions → anthropic
+        self._insert_session(
+            model="claude-sonnet-4", started_at=ts, input_tokens=300, output_tokens=500
+        )
+        self._setup_config_db()
+
+        service = self._create_service()
+        result = service.fetch_by_upstream("day")
+
+        self.assertEqual(len(result["upstreams"]), 2)
+        upstream_ids = {up["upstream_id"] for up in result["upstreams"]}
+        self.assertIn("https://api.openai.com", upstream_ids)
+        self.assertIn("https://api.anthropic.com", upstream_ids)
+
+    def test_orphan_sessions_go_to_unknown(self):
+        """无法解析到 upstream 的 sessions 归入 __unknown__。"""
+        now = datetime.now()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        # orphan session
+        self._insert_session(
+            model="unknown-orphan-model", started_at=ts, input_tokens=100, output_tokens=200
+        )
+        self._setup_config_db()
+
+        service = self._create_service()
+        result = service.fetch_by_upstream("day")
+
+        unknown = [up for up in result["upstreams"] if up["upstream_id"] == "__unknown__"]
+        self.assertEqual(len(unknown), 1)
+        self.assertEqual(unknown[0]["request_count"], 1)
+        self.assertEqual(unknown[0]["input_tokens"], 100)
+        self.assertEqual(unknown[0]["output_tokens"], 200)
+        self.assertIsNone(unknown[0]["base_url"])
+
+    def test_orphan_token_stats_go_to_unknown(self):
+        """无法解析到 upstream 的 token_stats 也归入 __unknown__。"""
+        now = datetime.now()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        self._insert_token_stat(
+            request_id="orphan-1", target_model="orphan-model",
+            request_ts=ts, input_tokens=50, output_tokens=100
+        )
+        self._setup_config_db()
+
+        service = self._create_service()
+        result = service.fetch_by_upstream("day")
+
+        unknown = [up for up in result["upstreams"] if up["upstream_id"] == "__unknown__"]
+        self.assertEqual(len(unknown), 1)
+        self.assertEqual(unknown[0]["request_count"], 1)
+        self.assertIsNone(unknown[0]["base_url"])
+
+    def test_sorted_by_estimated_cost_usd_desc(self):
+        """结果按 estimated_cost_usd 降序排列。"""
+        # 创建定价数据，使不同 upstream 有不同的 cost
+        conn = sqlite3.connect(str(self.cc_switch_db))
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS model_pricing (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_id TEXT NOT NULL,
+                input_cost_per_million REAL NOT NULL DEFAULT 0,
+                output_cost_per_million REAL NOT NULL DEFAULT 0,
+                cache_read_cost_per_million REAL NOT NULL DEFAULT 0,
+                cache_creation_cost_per_million REAL NOT NULL DEFAULT 0
+            )
+        """)
+        conn.execute(
+            "INSERT INTO model_pricing (model_id, input_cost_per_million, "
+            "output_cost_per_million, cache_read_cost_per_million, cache_creation_cost_per_million) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("qwen3.6-plus", 1.0, 2.0, 0.0, 0.0),
+        )
+        conn.execute(
+            "INSERT INTO model_pricing (model_id, input_cost_per_million, "
+            "output_cost_per_million, cache_read_cost_per_million, cache_creation_cost_per_million) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("claude-sonnet-4", 10.0, 20.0, 0.0, 0.0),
+        )
+        conn.commit()
+        conn.close()
+
+        now = datetime.now()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        # openai: small tokens
+        self._insert_token_stat(
+            request_id="proxy-1", target_model="qwen3.6-plus",
+            request_ts=ts, input_tokens=1000, output_tokens=2000
+        )
+        # anthropic: large tokens
+        self._insert_session(
+            model="claude-sonnet-4", started_at=ts, input_tokens=1000, output_tokens=2000
+        )
+        self._setup_config_db()
+
+        service = self._create_service()
+        result = service.fetch_by_upstream("day")
+
+        self.assertEqual(len(result["upstreams"]), 2)
+        # anthropic should be first (higher cost per token)
+        self.assertEqual(result["upstreams"][0]["upstream_id"], "https://api.anthropic.com")
+        self.assertGreater(result["upstreams"][0]["estimated_cost_usd"], result["upstreams"][1]["estimated_cost_usd"])
+        self.assertEqual(result["upstreams"][1]["upstream_id"], "https://api.openai.com")
+
+    def test_base_url_correct(self):
+        """upstream 的 base_url 正确。"""
+        now = datetime.now()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        self._insert_token_stat(
+            request_id="proxy-1", target_model="qwen3.6-plus",
+            request_ts=ts, input_tokens=100, output_tokens=200
+        )
+        self._setup_config_db()
+
+        service = self._create_service()
+        result = service.fetch_by_upstream("day")
+
+        openai = [up for up in result["upstreams"] if up["upstream_id"] == "https://api.openai.com"]
+        self.assertEqual(len(openai), 1)
+        self.assertEqual(openai[0]["base_url"], "https://api.openai.com")
+
+    def test_unknown_base_url_is_none(self):
+        """__unknown__ 的 base_url 为 None。"""
+        now = datetime.now()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        self._insert_session(
+            model="orphan-model", started_at=ts, input_tokens=100, output_tokens=200
+        )
+        self._setup_config_db()
+
+        service = self._create_service()
+        result = service.fetch_by_upstream("day")
+
+        unknown = [up for up in result["upstreams"] if up["upstream_id"] == "__unknown__"]
+        self.assertEqual(len(unknown), 1)
+        self.assertIsNone(unknown[0]["base_url"])
+
+    def test_config_db_not_exists_returns_empty(self):
+        """config.db 不存在时返回空 upstreams。"""
+        now = datetime.now()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        self._insert_token_stat(
+            request_id="req-1", target_model="qwen3.6-plus",
+            request_ts=ts, input_tokens=100, output_tokens=200
+        )
+        # 不创建 config.db
+
+        service = self._create_service()
+        result = service.fetch_by_upstream("day")
+
+        self.assertEqual(result, {"upstreams": []})
+
+    def test_cost_calculation_non_zero(self):
+        """有定价数据时成本计算非零。"""
+        # 创建定价数据库
+        conn = sqlite3.connect(str(self.cc_switch_db))
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS model_pricing (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_id TEXT NOT NULL,
+                input_cost_per_million REAL NOT NULL DEFAULT 0,
+                output_cost_per_million REAL NOT NULL DEFAULT 0,
+                cache_read_cost_per_million REAL NOT NULL DEFAULT 0,
+                cache_creation_cost_per_million REAL NOT NULL DEFAULT 0
+            )
+        """)
+        conn.execute(
+            "INSERT INTO model_pricing (model_id, input_cost_per_million, "
+            "output_cost_per_million, cache_read_cost_per_million, cache_creation_cost_per_million) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("qwen3.6-plus", 2.5, 10.0, 0.5, 2.0),
+        )
+        conn.commit()
+        conn.close()
+
+        now = datetime.now()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        self._insert_token_stat(
+            request_id="req-1", target_model="qwen3.6-plus",
+            request_ts=ts, input_tokens=1000, output_tokens=2000
+        )
+        self._setup_config_db()
+
+        service = self._create_service()
+        result = service.fetch_by_upstream("day")
+
+        self.assertEqual(len(result["upstreams"]), 1)
+        up = result["upstreams"][0]
+        self.assertGreater(up["estimated_cost_usd"], 0)
+        # 验证计算: (1000/1M * 2.5) + (2000/1M * 10.0) = 0.0025 + 0.02 = 0.0225
+        expected = 1000 / 1_000_000 * 2.5 + 2000 / 1_000_000 * 10.0
+        self.assertAlmostEqual(up["estimated_cost_usd"], expected, places=6)
+
+    def test_session_and_token_orphan_merged_to_unknown(self):
+        """orphan sessions + orphan token_stats 都归入 __unknown__ 并合并。"""
+        now = datetime.now()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        # orphan token_stats
+        self._insert_token_stat(
+            request_id="orphan-proxy", target_model="orphan-model",
+            request_ts=ts, input_tokens=50, output_tokens=100
+        )
+        # orphan session
+        self._insert_session(
+            model="orphan-model", started_at=ts, input_tokens=30, output_tokens=60
+        )
+        self._setup_config_db()
+
+        service = self._create_service()
+        result = service.fetch_by_upstream("day")
+
+        unknown = [up for up in result["upstreams"] if up["upstream_id"] == "__unknown__"]
+        self.assertEqual(len(unknown), 1)
+        self.assertEqual(unknown[0]["request_count"], 2)  # 1 + 1
+        self.assertEqual(unknown[0]["input_tokens"], 80)  # 50 + 30
+        self.assertEqual(unknown[0]["output_tokens"], 160)  # 100 + 60
 
