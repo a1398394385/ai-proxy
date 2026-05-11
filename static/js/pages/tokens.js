@@ -407,37 +407,66 @@ function showTooltip(mouseX, mouseY, data) {
 function renderModelTable(models) {
   const filter = document.getElementById('model-search').value.toLowerCase();
   const filtered = filter ? models.filter(m => m.model.toLowerCase().includes(filter)) : models;
-  
+
   document.getElementById('model-count').textContent = `${filtered.length} 个模型`;
-  
+
   const totalTokens = filtered.reduce((sum, m) => sum + m.total_tokens, 0) || 1;
   const tbody = document.querySelector('#model-table tbody');
-  
+
   if (!filtered.length) {
     tbody.innerHTML = '<tr><td colspan="9" class="empty-state">没有找到模型</td></tr>';
     return;
   }
-  
-  tbody.innerHTML = filtered.map(m => {
+
+  // 按 total_tokens 排序以分配排名
+  const sorted = [...filtered].sort((a, b) => b.total_tokens - a.total_tokens);
+  const rankMap = {};
+  sorted.forEach((m, i) => { rankMap[m.model] = i + 1; });
+
+  // 颜色池 — 给每个模型分配一个独特的点颜色
+  const dotColors = [
+    '#3b82f6', '#22c55e', '#a855f7', '#f97316', '#f43f5e',
+    '#06b6d4', '#eab308', '#84cc16', '#ec4899', '#6366f1',
+    '#14b8a6', '#f59e0b', '#8b5cf6', '#ef4444', '#0ea5e9',
+  ];
+
+  tbody.innerHTML = filtered.map((m, idx) => {
+    const rank = rankMap[m.model] || 99;
+    const rankClass = rank === 1 ? 'model-rank-1' : rank === 2 ? 'model-rank-2' : rank === 3 ? 'model-rank-3' : 'model-rank-default';
     const pct = ((m.total_tokens / totalTokens) * 100).toFixed(1);
+    const dotColor = dotColors[idx % dotColors.length];
+
+    const inputPct = (m.input_tokens / totalTokens * 100);
+    const outputPct = (m.output_tokens / totalTokens * 100);
+    const cacheReadPct = (m.cache_read_tokens / totalTokens * 100);
+    const cacheWritePct = (m.cache_write_tokens / totalTokens * 100);
+
     return `<tr>
-      <td><span class="badge badge-blue">${m.model}</span></td>
-      <td>${(m.request_count || 0).toLocaleString()}</td>
-      <td>${formatTokens(m.input_tokens)}</td>
-      <td>${formatTokens(m.output_tokens)}</td>
-      <td>${formatTokens(m.cache_read_tokens)}</td>
-      <td>${formatTokens(m.cache_write_tokens)}</td>
-      <td><b>${formatTokens(m.total_tokens)}</b></td>
-      <td style="min-width:120px">
-        ${pct}%
-        <div class="progress-bar">
-          <div class="progress-segment input" style="width:${(m.input_tokens/totalTokens*100)}%"></div>
-          <div class="progress-segment output" style="width:${(m.output_tokens/totalTokens*100)}%"></div>
-          <div class="progress-segment cache-read" style="width:${(m.cache_read_tokens/totalTokens*100)}%"></div>
-          <div class="progress-segment cache-write" style="width:${(m.cache_write_tokens/totalTokens*100)}%"></div>
+      <td>
+        <div class="model-name-cell">
+          <span class="model-rank ${rankClass}">${rank}</span>
+          <span class="model-dot" style="background:${dotColor}"></span>
+          <span class="model-name-text">${m.model}</span>
         </div>
       </td>
-      <td style="color:hsl(var(--red));font-weight:500">$${m.estimated_cost_usd.toFixed(4)}</td>
+      <td class="cell-requests">${(m.request_count || 0).toLocaleString()}</td>
+      <td class="cell-number">${formatTokens(m.input_tokens)}</td>
+      <td class="cell-number">${formatTokens(m.output_tokens)}</td>
+      <td class="cell-number">${formatTokens(m.cache_read_tokens)}</td>
+      <td class="cell-number">${formatTokens(m.cache_write_tokens)}</td>
+      <td class="cell-total">${formatTokens(m.total_tokens)}</td>
+      <td>
+        <div class="pct-cell">
+          <div class="pct-bar-track">
+            <div class="pct-bar-segment input" style="width:${inputPct}%"></div>
+            <div class="pct-bar-segment output" style="width:${outputPct}%"></div>
+            <div class="pct-bar-segment cache-read" style="width:${cacheReadPct}%"></div>
+            <div class="pct-bar-segment cache-write" style="width:${cacheWritePct}%"></div>
+          </div>
+          <span class="pct-value">${pct}%</span>
+        </div>
+      </td>
+      <td class="cell-cost">$${m.estimated_cost_usd.toFixed(4)}</td>
     </tr>`;
   }).join('');
 }
