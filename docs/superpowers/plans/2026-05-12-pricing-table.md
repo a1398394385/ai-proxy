@@ -841,7 +841,78 @@ class _CostCalculator:
        return _stats_service_instance
    ```
 
-- [ ] **Step 3: 更新 test_stats_service.py**
+- [ ] **Step 3: 新增 _CostCalculator 单元测试**
+
+在 `test/test_stats_service.py` 中新增测试类：
+
+```python
+class TestCostCalculatorCNY(unittest.TestCase):
+    """_CostCalculator 币种换算和缓存失效测试。"""
+
+    def setUp(self):
+        self.tmpdir = TemporaryDirectory()
+        self.db_path = Path(self.tmpdir.name) / "config.db"
+        from proxy.pricing_manager import PricingDB
+        PricingDB(self.db_path)  # 建表 + 种子数据
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_usd_pricing_converted_to_cny(self):
+        """USD 定价应自动 × 7 换算为人民币。"""
+        from stats_service import _CostCalculator
+        calc = _CostCalculator(self.db_path)
+        pricing = calc.get_pricing()
+        # claude-sonnet-4-6: input=3 USD → 应返回 3*7=21 RMB
+        self.assertIn("claude-sonnet-4-6-20260217", pricing)
+        self.assertAlmostEqual(pricing["claude-sonnet-4-6-20260217"]["input_cost"], 21.0)
+
+    def test_calculate_returns_cny(self):
+        """calculate() 返回人民币金额。"""
+        from stats_service import _CostCalculator
+        calc = _CostCalculator(self.db_path)
+        # 1M input tokens × $3/1M = $3 → ¥21
+        cost = calc.calculate("claude-sonnet-4-6-20260217", 1_000_000, 0, 0, 0)
+        self.assertAlmostEqual(cost, 21.0)
+
+    def test_unknown_model_returns_zero(self):
+        """未知模型返回 0。"""
+        from stats_service import _CostCalculator
+        calc = _CostCalculator(self.db_path)
+        cost = calc.calculate("nonexistent-model", 1000, 1000, 0, 0)
+        self.assertEqual(cost, 0)
+
+    def test_invalidate_cache(self):
+        """invalidate_cache 后下次 get_pricing 重新加载。"""
+        from stats_service import _CostCalculator
+        calc = _CostCalculator(self.db_path)
+        pricing1 = calc.get_pricing()
+        calc.invalidate_cache()
+        # 验证缓存已清空
+        self.assertEqual(calc._pricing_cache, {})
+        self.assertEqual(calc._pricing_cache_time, 0.0)
+        # 再次获取应重新加载
+        pricing2 = calc.get_pricing()
+        self.assertEqual(len(pricing1), len(pricing2))
+
+    def test_invalidate_pricing_cache_on_stats_service(self):
+        """StatsService.invalidate_pricing_cache() 委托到 _CostCalculator。"""
+        from stats_service import StatsService
+        service = StatsService(
+            access_log_db_path=str(Path(self.tmpdir.name) / "access_log.db"),
+            config_db_path=str(self.db_path),
+            state_db_path=str(Path(self.tmpdir.name) / "state.db"),
+        )
+        # 先触发 calculator 懒加载
+        calc = service._get_calculator()
+        calc.get_pricing()
+        self.assertGreater(calc._pricing_cache_time, 0)
+        # 失效
+        service.invalidate_pricing_cache()
+        self.assertEqual(calc._pricing_cache_time, 0.0)
+```
+
+- [ ] **Step 4: 更新 test_stats_service.py 构造函数**
 
 所有创建 `StatsService` 的地方，移除 `cc_switch_db_path` 参数。全局搜索替换：
 
@@ -852,12 +923,12 @@ StatsService(access_log_db_path=..., config_db_path=..., state_db_path=..., cc_s
 StatsService(access_log_db_path=..., config_db_path=..., state_db_path=...)
 ```
 
-- [ ] **Step 4: 运行全量测试确认通过**
+- [ ] **Step 5: 运行全量测试确认通过**
 
 Run: `python3 -m pytest test/ -q`
 Expected: all passed
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
 git add stats_service.py server.py test/test_stats_service.py
@@ -872,9 +943,13 @@ git commit -m "feat: _CostCalculator 改用 PricingDB + 缓存失效 + 移除 cc
 - Modify: `stats_service.py`
 - Modify: `test/test_stats_service.py`
 
-- [ ] **Step 1: 重命名 stats_service.py 中所有 estimated_cost_usd**
+- [ ] **Step 1: 重命名 stats_service.py 中的字典键和赋值**
 
-全局替换 `estimated_cost_usd` → `estimated_cost_cny`，同时修改 `round(cost, 4)` → `round(cost, 6)`。
+替换规则：
+- **替换**：所有字典键 `"estimated_cost_usd"` → `"estimated_cost_cny"`（约 10 处）
+- **替换**：`round(cost, 4)` → `round(cost, 6)`、`round(total_cost, 4)` → `round(total_cost, 6)`
+- **替换**：`round(calculator.calculate(...), 6)` 中已有的 6 保留不动
+- **保留**：`# 5. 计算 total_tokens 和 estimated_cost_usd` 等注释中的字段名也一并替换为 `estimated_cost_cny`
 
 涉及行（参考）：
 - 1017: `m["estimated_cost_cny"] = round(calculator.calculate(...), 6)`
@@ -887,9 +962,12 @@ git commit -m "feat: _CostCalculator 改用 PricingDB + 缓存失效 + 移除 cc
 - 1266: `result["estimated_cost_cny"] = round(total_cost, 6)`
 - 1314-1333: 同上
 
-- [ ] **Step 2: 重命名 test_stats_service.py 中所有 estimated_cost_usd**
+- [ ] **Step 2: 重命名 test_stats_service.py**
 
-全局替换 `estimated_cost_usd` → `estimated_cost_cny`。
+替换规则：
+- **替换**：所有 `estimated_cost_usd` → `estimated_cost_cny`（字典键、断言、注释）
+- **保留**：测试方法名如 `test_sorted_by_estimated_cost_usd_desc` **不重命名**（不影响运行，重命名反而增加 diff 噪音）
+- **替换**：`assertIn("estimated_cost_cny", ...)` 等断言中的字段名
 
 - [ ] **Step 3: 运行全量测试确认通过**
 
@@ -1157,28 +1235,6 @@ git commit -m "feat: /api/pricing/* CRUD 路由 + 缓存失效联动"
     background: hsl(150 60% 40% / 0.15);
     color: hsl(150 60% 45%);
 }
-.pricing-modal .form-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 12px;
-}
-.pricing-modal .form-row label {
-    flex: 0 0 120px;
-    text-align: right;
-    font-size: 13px;
-    color: hsl(var(--muted));
-}
-.pricing-modal .form-row input,
-.pricing-modal .form-row select {
-    flex: 1;
-    padding: 6px 10px;
-    border-radius: 6px;
-    border: 1px solid hsl(var(--border));
-    background: hsl(var(--card));
-    color: hsl(var(--foreground));
-    font-size: 13px;
-}
 ```
 
 - [ ] **Step 2: 创建 pricing.js**
@@ -1193,16 +1249,18 @@ function formatCny(value, currency) {
   return '¥' + parseFloat(rmb).toFixed(6);
 }
 
-export async function init() {
+export async function loadPricingPage() {
   const container = document.getElementById('page-pricing');
   if (!container) return;
+  if (container.dataset.loaded) { await loadPricingTable(); return; }
+  container.dataset.loaded = '1';
   container.innerHTML = `
     <div class="pricing-toolbar">
       <div class="search-box">
         <input type="text" id="pricing-search" placeholder="搜索模型名 / 显示名...">
       </div>
       <span class="pricing-count" id="pricing-count"></span>
-      <button class="btn btn-primary" style="margin-left:auto" id="add-pricing-btn">＋ 新增定价</button>
+      <button class="btn btn-primary" style="margin-left:auto" onclick="showPricingModal()">＋ 新增定价</button>
     </div>
     <div style="overflow-x:auto">
       <table id="pricing-table">
@@ -1224,10 +1282,10 @@ export async function init() {
   `;
 
   document.getElementById('pricing-search').addEventListener('keyup', loadPricingTable);
-  document.getElementById('add-pricing-btn').addEventListener('click', () => showPricingModal());
-
   await loadPricingTable();
 }
+
+export function initPricingPage() {}
 
 async function loadPricingTable() {
   const search = document.getElementById('pricing-search')?.value?.trim() || '';
@@ -1241,6 +1299,7 @@ async function loadPricingTable() {
     const currencyBadge = p.currency === 'RMB'
       ? '<span class="badge badge-rmb">RMB</span>'
       : '<span class="badge badge-usd">USD</span>';
+    const mid = escHtml(p.model_id).replace(/'/g, "\\'");
     return `<tr>
       <td style="font-family:monospace">${escHtml(p.model_id)}</td>
       <td>${escHtml(p.display_name)}</td>
@@ -1250,88 +1309,82 @@ async function loadPricingTable() {
       <td class="cell-price">${formatCny(p.cache_creation_cost_per_million, p.currency)}</td>
       <td>${currencyBadge}</td>
       <td>
-        <button class="btn btn-secondary btn-sm" onclick="window._editPricing('${escHtml(p.model_id)}')">编辑</button>
-        <button class="btn btn-danger btn-sm" onclick="window._deletePricing('${escHtml(p.model_id)}')">删除</button>
+        <button class="btn btn-secondary btn-sm" onclick="editPricing('${mid}')">编辑</button>
+        <button class="btn btn-danger btn-sm" onclick="deletePricing('${mid}')">删除</button>
       </td>
     </tr>`;
   }).join('');
 }
 
-window._editPricing = async function(modelId) {
+async function editPricing(modelId) {
   const data = await api(`/api/pricing/${encodeURIComponent(modelId)}`);
   if (data.error) return alert(data.error);
   showPricingModal(data);
-};
+}
 
-window._deletePricing = async function(modelId) {
+async function deletePricing(modelId) {
   if (!confirm(`确定删除模型 ${modelId} 的定价？`)) return;
   const result = await api(`/api/pricing/${encodeURIComponent(modelId)}`, { method: 'DELETE' });
   if (result.error) return alert(result.error);
   await loadPricingTable();
-};
+}
 
 function showPricingModal(existing = null) {
   const isEdit = !!existing;
   const title = isEdit ? '编辑定价' : '新增定价';
-  const html = `
-    <div class="pricing-modal">
-      <div class="form-row">
-        <label>模型 ID</label>
-        <input id="pm-model-id" value="${escHtml(existing?.model_id || '')}" ${isEdit ? 'disabled' : ''}>
-      </div>
-      <div class="form-row">
-        <label>显示名</label>
-        <input id="pm-display-name" value="${escHtml(existing?.display_name || '')}">
-      </div>
-      <div class="form-row">
-        <label>输入价格 / 1M tokens</label>
-        <input id="pm-input" type="number" step="0.000001" value="${existing?.input_cost_per_million || ''}">
-      </div>
-      <div class="form-row">
-        <label>输出价格 / 1M tokens</label>
-        <input id="pm-output" type="number" step="0.000001" value="${existing?.output_cost_per_million || ''}">
-      </div>
-      <div class="form-row">
-        <label>缓存读价格 / 1M</label>
-        <input id="pm-cache-read" type="number" step="0.000001" value="${existing?.cache_read_cost_per_million || '0'}">
-      </div>
-      <div class="form-row">
-        <label>缓存写价格 / 1M</label>
-        <input id="pm-cache-write" type="number" step="0.000001" value="${existing?.cache_creation_cost_per_million || '0'}">
-      </div>
-      <div class="form-row">
-        <label>币种</label>
-        <select id="pm-currency">
-          <option value="USD" ${existing?.currency !== 'RMB' ? 'selected' : ''}>USD (美元)</option>
-          <option value="RMB" ${existing?.currency === 'RMB' ? 'selected' : ''}>RMB (人民币)</option>
-        </select>
-      </div>
-    </div>
+  const content = `
+    <div class="form-group"><label class="form-label">模型 ID</label>
+      <input class="form-input" id="pm-model-id" value="${escHtml(existing?.model_id || '')}" ${isEdit ? 'disabled' : ''}></div>
+    <div class="form-group"><label class="form-label">显示名</label>
+      <input class="form-input" id="pm-display-name" value="${escHtml(existing?.display_name || '')}"></div>
+    <div class="form-group"><label class="form-label">输入价格 / 1M tokens</label>
+      <input class="form-input" id="pm-input" type="number" step="0.000001" value="${existing?.input_cost_per_million || ''}"></div>
+    <div class="form-group"><label class="form-label">输出价格 / 1M tokens</label>
+      <input class="form-input" id="pm-output" type="number" step="0.000001" value="${existing?.output_cost_per_million || ''}"></div>
+    <div class="form-group"><label class="form-label">缓存读价格 / 1M</label>
+      <input class="form-input" id="pm-cache-read" type="number" step="0.000001" value="${existing?.cache_read_cost_per_million || '0'}"></div>
+    <div class="form-group"><label class="form-label">缓存写价格 / 1M</label>
+      <input class="form-input" id="pm-cache-write" type="number" step="0.000001" value="${existing?.cache_creation_cost_per_million || '0'}"></div>
+    <div class="form-group"><label class="form-label">币种</label>
+      <select class="form-input" id="pm-currency">
+        <option value="USD" ${existing?.currency !== 'RMB' ? 'selected' : ''}>USD (美元)</option>
+        <option value="RMB" ${existing?.currency === 'RMB' ? 'selected' : ''}>RMB (人民币)</option>
+      </select></div>
   `;
-  showModal(title, html, async () => {
-    const payload = {
-      model_id: document.getElementById('pm-model-id').value.trim(),
-      display_name: document.getElementById('pm-display-name').value.trim(),
-      input_cost_per_million: document.getElementById('pm-input').value,
-      output_cost_per_million: document.getElementById('pm-output').value,
-      cache_read_cost_per_million: document.getElementById('pm-cache-read').value || '0',
-      cache_creation_cost_per_million: document.getElementById('pm-cache-write').value || '0',
-      currency: document.getElementById('pm-currency').value,
-    };
-    if (!payload.model_id || !payload.display_name || !payload.input_cost_per_million || !payload.output_cost_per_million) {
-      alert('模型 ID、显示名、输入/输出价格为必填');
-      return false;
-    }
-    const url = isEdit
-      ? `/api/pricing/${encodeURIComponent(existing.model_id)}`
-      : '/api/pricing';
-    const method = isEdit ? 'PUT' : 'POST';
-    const result = await api(url, { method, body: JSON.stringify(payload) });
-    if (result.error) { alert(result.error); return false; }
-    closeModal();
-    await loadPricingTable();
-  });
+  const editId = isEdit ? `'${escHtml(existing.model_id).replace(/'/g, "\\'")}'` : 'null';
+  const footer = `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="savePricing(${editId})">保存</button>`;
+  showModal(title, content, footer);
 }
+
+async function savePricing(editModelId) {
+  const payload = {
+    model_id: document.getElementById('pm-model-id').value.trim(),
+    display_name: document.getElementById('pm-display-name').value.trim(),
+    input_cost_per_million: document.getElementById('pm-input').value,
+    output_cost_per_million: document.getElementById('pm-output').value,
+    cache_read_cost_per_million: document.getElementById('pm-cache-read').value || '0',
+    cache_creation_cost_per_million: document.getElementById('pm-cache-write').value || '0',
+    currency: document.getElementById('pm-currency').value,
+  };
+  if (!payload.model_id || !payload.display_name || !payload.input_cost_per_million || !payload.output_cost_per_million) {
+    alert('模型 ID、显示名、输入/输出价格为必填');
+    return;
+  }
+  const url = editModelId
+    ? `/api/pricing/${encodeURIComponent(editModelId)}`
+    : '/api/pricing';
+  const method = editModelId ? 'PUT' : 'POST';
+  const result = await api(url, { method, body: JSON.stringify(payload) });
+  if (result.error) { alert(result.error); return; }
+  closeModal();
+  await loadPricingTable();
+}
+
+// 挂载到 window（ES Module onclick 需要）
+window.showPricingModal = showPricingModal;
+window.editPricing = editPricing;
+window.deletePricing = deletePricing;
+window.savePricing = savePricing;
 ```
 
 - [ ] **Step 3: 提交**
@@ -1372,10 +1425,29 @@ git commit -m "feat: 计费表前端页面 pricing.js + pricing.css"
 
 - [ ] **Step 2: 修改 app.js — 注册 pricing 页面**
 
-在 `app.js` 的页面加载器映射中新增：
+1. 顶部新增静态导入（与现有页面一致）：
 ```javascript
-  pricing: () => import('./pages/pricing.js'),
+import { loadPricingPage, initPricingPage } from './pages/pricing.js';
 ```
+
+2. 在 `pageLoaders` 映射中新增：
+```javascript
+pageLoaders.pricing = loadPricingPage;
+```
+
+3. 在 `initXxxPage()` 调用区域新增：
+```javascript
+initPricingPage();
+```
+
+4. 在 Tab 点击事件处理器中，新增 visibility toggle 和加载调用：
+```javascript
+document.getElementById('page-pricing').classList.toggle('hidden', page !== 'pricing');
+// ...
+if (page === 'pricing') loadPricingPage();
+```
+
+5. 在 `core.js` 的 `pageLoaders` 初始对象中新增 `pricing: null` 键（如需要）。
 
 - [ ] **Step 3: 重启服务并用 Playwright 验证**
 
@@ -1402,16 +1474,20 @@ git commit -m "feat: 计费表 Tab 注册 + 页面集成"
 **Files:**
 - Modify: `static/js/pages/tokens.js`
 
-- [ ] **Step 1: 全局替换 tokens.js**
+- [ ] **Step 1: 逐个替换 tokens.js 中的费用显示**
 
-1. `estimated_cost_usd` → `estimated_cost_cny`（所有出现处）
-2. `$${...}` → `¥${...}`（所有美元符号显示）
-3. `.toFixed(4)` → `.toFixed(6)`（所有费用精度）
+**8 处 `estimated_cost_usd` → `estimated_cost_cny`：**
+- L87: `$${(stats.estimated_cost_usd || 0).toFixed(4)}` → `¥${(stats.estimated_cost_cny || 0).toFixed(6)}`
+- L178: `d.estimated_cost_usd || 0` → `d.estimated_cost_cny || 0`
+- L317: `(d.estimated_cost_usd || 0) / costYMax` → `(d.estimated_cost_cny || 0) / costYMax`
+- L383: `'$' + data.estimated_cost_usd.toFixed(4)` → `'¥' + data.estimated_cost_cny.toFixed(6)`
+- L476: `$${m.estimated_cost_usd.toFixed(4)}` → `¥${m.estimated_cost_cny.toFixed(6)}`
+- L534: `$${(r.estimated_cost_usd || 0).toFixed(4)}` → `¥${(r.estimated_cost_cny || 0).toFixed(6)}`
+- L705: `$${(r.estimated_cost_usd || 0).toFixed(4)}` → `¥${(r.estimated_cost_cny || 0).toFixed(6)}`
+- L811: `(b.estimated_cost_usd || 0) - (a.estimated_cost_usd || 0)` → `(b.estimated_cost_cny || 0) - (a.estimated_cost_cny || 0)`
+- L856: `$${(u.estimated_cost_usd || 0).toFixed(4)}` → `¥${(u.estimated_cost_cny || 0).toFixed(6)}`
 
-注意：搜索 `$` 前缀时需仔细检查拼接方式，包括：
-- 模板字符串中的 `$${...}`
-- 字符串拼接中的 `'$' + ...`
-- tooltip 中的 `'成本', value: '$' + ...`
+注意：替换后需确认 `toFixed` 调用中的变量一定是 `estimated_cost_cny`，不要漏改。
 
 - [ ] **Step 2: 重启服务并验证**
 
@@ -1506,4 +1582,19 @@ curl -s -X DELETE http://127.0.0.1:18742/api/pricing/test-rmb
 
 **占位符扫描：** 无 TBD/TODO/模糊描述
 
-**类型一致性：** `estimated_cost_cny` 在 Task 5 命名，Task 6/10/11 一致使用。PricingDB 方法签名在 Task 1-3 定义，Task 4/7 调用一致。
+**类型一致性：** `estimated_cost_cny` 在 Task 5 命名，Task 6/10/11 一致使用。PricingDB 方法签名在 Task 1-3 定义，Task 4/7 调用一致。`invalidate_pricing_cache()` 在 Task 4 定义，Task 7 调用一致。`showModal(title, content, footer)` 在 Task 8 使用正确的三参数模式。
+
+**审阅反馈修复记录：**
+- 致命 #1：showModal 改用 footer HTML + window 全局函数（匹配 routes.js 模式）
+- 致命 #2：页面注册改用静态 import + pageLoaders + Tab 点击处理器（匹配 app.js 模式）
+- 致命 #3：Task 4 已显式定义 invalidate_cache() + invalidate_pricing_cache() + 单元测试
+- 严重 #4：PricingDB 共用 config.db 是设计决策，后期 Migrations 独立重构时统一管理
+- 严重 #5：Task 4 补充了完整代码和 _CostCalculator 单元测试
+- 严重 #6：Task 4/5 新增 TestCostCalculatorCNY 测试类
+- 中等 #7：Task 5 细化替换范围，区分字典键和方法名
+- 中等 #8：Task 6 保持原 TDD 流程（rename 后字段名一致，测试先写再修）
+- 中等 #9：pricing.js 中 model_id 转义加了 `.replace(/'/g, "\\'")`
+- 中等 #10：Task 10 列出全部 9 处替换位置
+- 次要 #11：CSS 改用 .form-group/.form-label/.form-input（复用 base.css）
+- 次要 #12：toFixed(6) 保留（用户明确要求 6 位小数）
+- 次要 #13：种子数据 reasoning effort 变体与主模型同价（来自 cc-switch 原始数据，保持原样）
