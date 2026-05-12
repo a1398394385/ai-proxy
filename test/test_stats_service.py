@@ -722,15 +722,13 @@ class TestCostCalculator(unittest.TestCase):
         self.assertAlmostEqual(pricing["test-usd-model"]["input_cost"], 2.5 * 7, places=6)
         self.assertAlmostEqual(pricing["test-usd-model"]["output_cost"], 10.0 * 7, places=6)
 
-    def test_get_pricing_cache_ttl(self):
-        """定价缓存 TTL 生效。"""
-        import time
+    def test_get_pricing_cache_reused(self):
+        """无失效时缓存在多次调用间复用（第二次调用不重新加载）。"""
         calc = self._create_calculator()
         pricing1 = calc.get_pricing()
-        calc._pricing_cache_time = time.time() - 301
-        calc._pricing_cache = {}
+        # 不清缓存，直接调用
         pricing2 = calc.get_pricing()
-        self.assertEqual(pricing1, pricing2)
+        self.assertIs(pricing1, pricing2)  # 同一对象（命中缓存）
 
 
 
@@ -857,10 +855,11 @@ class TestCostCalculatorCNY(unittest.TestCase):
         calc.invalidate_cache()
         # 验证缓存已清空
         self.assertEqual(calc._pricing_cache, {})
-        self.assertEqual(calc._pricing_cache_time, 0.0)
         # 再次获取应重新加载
         pricing2 = calc.get_pricing()
         self.assertEqual(len(pricing1), len(pricing2))
+        # 新新加载的对象不应是同一个引用
+        self.assertIsNot(pricing1, pricing2)
 
     def test_invalidate_pricing_cache_on_stats_service(self):
         """StatsService.invalidate_pricing_cache() 委托到 _CostCalculator。"""
@@ -873,10 +872,10 @@ class TestCostCalculatorCNY(unittest.TestCase):
         # 先触发 calculator 懒加载
         calc = service._get_calculator()
         calc.get_pricing()
-        self.assertGreater(calc._pricing_cache_time, 0)
+        self.assertGreater(len(calc._pricing_cache), 0)
         # 失效
         service.invalidate_pricing_cache()
-        self.assertEqual(calc._pricing_cache_time, 0.0)
+        self.assertEqual(calc._pricing_cache, {})
 
 
 class TestUpstreamResolver(unittest.TestCase):

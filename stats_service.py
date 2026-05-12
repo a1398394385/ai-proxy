@@ -447,10 +447,11 @@ class _UpstreamResolver:
 
 
 class _CostCalculator:
-    """成本计算器 — 从 config.db 加载 model_pricing 表（通过 PricingDB），内置 TTL 缓存。
+    """成本计算器 — 从 config.db 加载 model_pricing 表（通过 PricingDB），无过期缓存。
 
     USD 价格自动 × 7 转为人民币，RMB 价格原样使用。
     calculate() 统一返回人民币金额。
+    缓存仅在显式调用 invalidate_cache() 后失效。
 
     Args:
         config_db_path: config.db 路径
@@ -460,9 +461,7 @@ class _CostCalculator:
 
     def __init__(self, config_db_path: str | Path) -> None:
         self._pricing_db = PricingDB(Path(config_db_path))
-        self._cache_ttl = 300  # 缓存 5 分钟
         self._pricing_cache: dict = {}
-        self._pricing_cache_time: float = 0.0
 
     # ─── 定价加载 ───
 
@@ -473,7 +472,7 @@ class _CostCalculator:
             {model_id: {input_cost, output_cost, cache_read_cost, cache_creation_cost}}
             价格单位：RMB / 1M tokens
         """
-        if time.time() - self._pricing_cache_time < self._cache_ttl and self._pricing_cache:
+        if self._pricing_cache:
             return self._pricing_cache
 
         try:
@@ -488,7 +487,6 @@ class _CostCalculator:
                     "cache_creation_cost": float(r["cache_creation_cost_per_million"]) * rate,
                 }
             self._pricing_cache = pricing
-            self._pricing_cache_time = time.time()
             return pricing
         except Exception as e:
             print(f"Error reading model pricing: {e}")
@@ -497,7 +495,6 @@ class _CostCalculator:
     def invalidate_cache(self):
         """主动失效缓存，供定价修改后调用。"""
         self._pricing_cache = {}
-        self._pricing_cache_time = 0.0
 
     # ─── 成本计算 ───
 
