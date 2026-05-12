@@ -53,6 +53,8 @@ page-tokens
 - `models` tab → 显示 `#model-search-box`
 - `requests` / `upstream` tab → 隐藏 `#model-search-box`
 
+搜索值保留策略：切换到其他 tab 时仅隐藏搜索框，不清空 `#model-search` 的 value。切回"按模型统计"时搜索框恢复显示，表格按原搜索词继续过滤，用户体验更连贯。
+
 #### 周期切换回调
 
 `initTokenPage()` 中 period-btn 点击回调不变。`loadTokenStats()` 刷新 KPI + 图表 + 模型表格，各 sub-tab 的数据加载各自独立。
@@ -63,7 +65,7 @@ page-tokens
 
 ### CSS 变更
 
-- `.subtab-nav` 增加 `margin-top: 24px`，与图表区域拉开间距
+- `.subtab-nav` margin 改为 `margin: 24px 0 16px 0`，与图表间距 24px，与表格间距 16px
 - 无新增 CSS 类
 
 ### 不改动的部分
@@ -90,4 +92,6 @@ page-tokens
 5. 切回"按模型统计" → 搜索框恢复
 6. 点击模型行展开详情 → 正常展开/收起
 7. 请求日志筛选和分页 → 正常工作
-8. 运行 `python3 -m pytest test/ -q` → 全部通过
+8. 输入搜索词 → 切到"请求日志" → 切回"按模型统计" → 确认搜索词保留、表格过滤状态正确
+9. 页面首次加载时搜索框可见（默认 models tab）
+10. 运行 `python3 -m pytest test/ -q` → 全部通过
