@@ -17,6 +17,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 from pathlib import Path
 
 from proxy.config_manager import ConfigDB, Migrations
+from proxy.pricing_manager import PricingDB
 from proxy.common import get_port, get_host, load_config, CONFIG, CONFIG_PATH
 
 # 配置
@@ -27,6 +28,10 @@ ACCESS_LOG_DB_PATH = Path("data/access_log.db")
 
 def get_config_db():
     return ConfigDB(CONFIG_DB_PATH)
+
+
+def get_pricing_db():
+    return PricingDB(CONFIG_DB_PATH)
 
 
 MAX_BODY_SIZE = 10 * 1024 * 1024  # 10MB
@@ -493,6 +498,22 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             result = stats_service.fetch_by_upstream(period=period)
             return json_response(self, result)
 
+        # ===== 计费表 API =====
+        pricing_m = re.match(r"/api/pricing/?$", path)
+        if pricing_m:
+            search = qs.get("search", [None])[0]
+            db = get_pricing_db()
+            result = db.list_pricings(search=search)
+            return json_response(self, {"pricings": result})
+
+        pricing_detail_m = re.match(r"/api/pricing/([^/]+)$", path)
+        if pricing_detail_m:
+            db = get_pricing_db()
+            result = db.get_pricing(pricing_detail_m.group(1))
+            if not result:
+                return json_response(self, {"error": "Not found"}, 404)
+            return json_response(self, result)
+
         # 新增：按模型请求（路径参数）
         m = re.match(r"/api/token_stats/by_model/([^/]+)/requests$", path)
         if m:
@@ -685,6 +706,19 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 db.close()
                 return json_response(self, {"error": str(e)}, 409)
 
+        # ===== 计费表 API =====
+        if path == "/api/pricing":
+            data = _read_json(self)
+            if not data:
+                return
+            db = get_pricing_db()
+            try:
+                model_id = db.add_pricing(data)
+                _get_stats_service().invalidate_pricing_cache()
+                return json_response(self, {"id": model_id, "message": "Created"}, 201)
+            except (sqlite3.IntegrityError, ValueError) as e:
+                return json_response(self, {"error": str(e)}, 400)
+
         if path == "/api/config/reload":
             result = {}
             # Reload AI Proxy
@@ -859,6 +893,22 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 db.close()
                 return json_response(self, {"error": str(e)}, 409)
 
+        # ===== 计费表 API =====
+        pricing_m = re.match(r"/api/pricing/([^/]+)$", path)
+        if pricing_m:
+            data = _read_json(self)
+            if not data:
+                return
+            db = get_pricing_db()
+            try:
+                ok = db.update_pricing(pricing_m.group(1), data)
+                if not ok:
+                    return json_response(self, {"error": "Not found"}, 404)
+                _get_stats_service().invalidate_pricing_cache()
+                return json_response(self, {"message": "Updated"})
+            except ValueError as e:
+                return json_response(self, {"error": str(e)}, 400)
+
         # ===== Fact Store API =====
         m = re.match(r"/api/facts/(\d+)$", path)
         if m:
@@ -959,6 +1009,16 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             except sqlite3.IntegrityError as e:
                 db.close()
                 return json_response(self, {"error": str(e)}, 409)
+
+        # ===== 计费表 API =====
+        pricing_m = re.match(r"/api/pricing/([^/]+)$", path)
+        if pricing_m:
+            db = get_pricing_db()
+            ok = db.delete_pricing(pricing_m.group(1))
+            if not ok:
+                return json_response(self, {"error": "Not found"}, 404)
+            _get_stats_service().invalidate_pricing_cache()
+            return json_response(self, {"message": "Deleted"})
 
         # ===== Fact Store API =====
         m = re.match(r"/api/facts/(\d+)$", path)
