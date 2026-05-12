@@ -565,8 +565,8 @@ class TestStatsService(unittest.TestCase):
             self.assertIn("request_count", up)
             self.assertIn("input_tokens", up)
             self.assertIn("output_tokens", up)
-            self.assertIn("cached_read_tokens", up)
-            self.assertIn("cached_write_tokens", up)
+            self.assertIn("cache_read_tokens", up)
+            self.assertIn("cache_write_tokens", up)
             self.assertIn("total_tokens", up)
             self.assertIn("estimated_cost_usd", up)
 
@@ -2501,6 +2501,22 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         # 验证计算: (1000/1M * 2.5) + (2000/1M * 10.0) = 0.0025 + 0.02 = 0.0225
         expected = 1000 / 1_000_000 * 2.5 + 2000 / 1_000_000 * 10.0
         self.assertAlmostEqual(up["estimated_cost_usd"], expected, places=6)
+
+    def test_output_uses_cache_not_cached_prefix(self):
+        """fetch_by_upstream 输出字段名统一为 cache_*。"""
+        now = datetime.now()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        self._insert_token_stat(
+            request_id="req-1", target_model="qwen3.6-plus",
+            request_ts=ts, input_tokens=100, output_tokens=200
+        )
+        self._setup_config_db()
+        result = self._create_service().fetch_by_upstream("week")
+        for u in result["upstreams"]:
+            self.assertIn("cache_read_tokens", u)
+            self.assertNotIn("cached_read_tokens", u)
+            self.assertIn("cache_write_tokens", u)
+            self.assertNotIn("cached_write_tokens", u)
 
     def test_session_and_token_orphan_merged_to_unknown(self):
         """orphan sessions + orphan token_stats 都归入 __unknown__ 并合并。"""

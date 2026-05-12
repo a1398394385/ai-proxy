@@ -1221,8 +1221,8 @@ class StatsService:
                 "request_count": agg["request_count"],
                 "input_tokens": agg["input_tokens"],
                 "output_tokens": agg["output_tokens"],
-                "cached_read_tokens": agg["cached_read_tokens"],
-                "cached_write_tokens": agg["cached_write_tokens"],
+                "cache_read_tokens": agg["cached_read_tokens"],
+                "cache_write_tokens": agg["cached_write_tokens"],
                 "total_tokens": agg["total_tokens"],
                 "estimated_cost_usd": round(cost, 6),
             })
