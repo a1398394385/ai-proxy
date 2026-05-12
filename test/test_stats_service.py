@@ -2461,3 +2461,166 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         self.assertEqual(unknown[0]["input_tokens"], 80)  # 50 + 30
         self.assertEqual(unknown[0]["output_tokens"], 160)  # 100 + 60
 
+
+class TestMerger(unittest.TestCase):
+    """_Merger 双源合并测试。"""
+
+    def test_merge_summary_sums_fields(self):
+        proxy = {
+            "period": "week", "request_count": 10,
+            "input_tokens": 100, "output_tokens": 50,
+            "cached_read_tokens": 200, "cached_write_tokens": 30,
+            "total_tokens": 380, "avg_duration_ms": 150.0,
+        }
+        session = {
+            "period": "week", "request_count": 5,
+            "input_tokens": 80, "output_tokens": 40,
+            "cached_read_tokens": 160, "cached_write_tokens": 20,
+            "total_tokens": 300, "avg_duration_ms": 0,
+        }
+        from stats_service import _Merger
+        result = _Merger.merge_summary(proxy, session)
+        self.assertEqual(result["request_count"], 15)
+        self.assertEqual(result["input_tokens"], 180)
+        self.assertEqual(result["output_tokens"], 90)
+        self.assertEqual(result["cache_read_tokens"], 360)
+        self.assertEqual(result["cache_write_tokens"], 50)
+        self.assertEqual(result["total_tokens"], 680)
+        self.assertEqual(result["avg_duration_ms"], 150.0)
+
+    def test_merge_summary_renames_cached_to_cache(self):
+        from stats_service import _Merger
+        proxy = {"period": "day", "request_count": 1, "input_tokens": 10,
+                 "output_tokens": 5, "cached_read_tokens": 20,
+                 "cached_write_tokens": 3, "total_tokens": 38,
+                 "avg_duration_ms": 0}
+        session = {"period": "day", "request_count": 0, "input_tokens": 0,
+                   "output_tokens": 0, "cached_read_tokens": 0,
+                   "cached_write_tokens": 0, "total_tokens": 0,
+                   "avg_duration_ms": 0}
+        result = _Merger.merge_summary(proxy, session)
+        self.assertIn("cache_read_tokens", result)
+        self.assertNotIn("cached_read_tokens", result)
+        self.assertIn("cache_write_tokens", result)
+        self.assertNotIn("cached_write_tokens", result)
+
+    def test_merge_summary_empty_session(self):
+        from stats_service import _Merger
+        proxy = {"period": "week", "request_count": 10, "input_tokens": 100,
+                 "output_tokens": 50, "cached_read_tokens": 200,
+                 "cached_write_tokens": 30, "total_tokens": 380,
+                 "avg_duration_ms": 100.0}
+        result = _Merger.merge_summary(proxy, {})
+        self.assertEqual(result["request_count"], 10)
+        self.assertEqual(result["cache_read_tokens"], 200)
+
+    def test_merge_summary_no_estimated_cost(self):
+        from stats_service import _Merger
+        proxy = {"period": "week", "request_count": 1, "input_tokens": 100,
+                 "output_tokens": 50, "cached_read_tokens": 0,
+                 "cached_write_tokens": 0, "total_tokens": 150,
+                 "avg_duration_ms": 0}
+        result = _Merger.merge_summary(proxy, {})
+        self.assertNotIn("estimated_cost_usd", result)
+
+    def test_merge_model_lists_sums_same_model(self):
+        from stats_service import _Merger
+        proxy = [
+            {"model": "claude-3.5-sonnet", "request_count": 5,
+             "input_tokens": 100, "output_tokens": 50,
+             "cached_read_tokens": 20, "cached_write_tokens": 10,
+             "total_tokens": 180, "avg_duration_ms": 200.0},
+        ]
+        session = [
+            {"model": "claude-3.5-sonnet", "request_count": 3,
+             "input_tokens": 60, "output_tokens": 30,
+             "cached_read_tokens": 15, "cached_write_tokens": 5,
+             "total_tokens": 110},
+        ]
+        result = _Merger.merge_model_lists(proxy, session)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["model"], "claude-3.5-sonnet")
+        self.assertEqual(result[0]["request_count"], 8)
+        self.assertEqual(result[0]["input_tokens"], 160)
+        self.assertEqual(result[0]["cache_read_tokens"], 35)
+        self.assertEqual(result[0]["avg_duration_ms"], 200.0)
+
+    def test_merge_model_lists_different_models(self):
+        from stats_service import _Merger
+        proxy = [
+            {"model": "model-a", "request_count": 2, "input_tokens": 10,
+             "output_tokens": 5, "cached_read_tokens": 0,
+             "cached_write_tokens": 0, "total_tokens": 15,
+             "avg_duration_ms": 100.0},
+        ]
+        session = [
+            {"model": "model-b", "request_count": 3, "input_tokens": 20,
+             "output_tokens": 10, "cached_read_tokens": 0,
+             "cached_write_tokens": 0, "total_tokens": 30},
+        ]
+        result = _Merger.merge_model_lists(proxy, session)
+        self.assertEqual(len(result), 2)
+
+    def test_merge_model_lists_normalizes_names(self):
+        from stats_service import _Merger
+        proxy = [
+            {"model": "claude-3.5-sonnet", "request_count": 5,
+             "input_tokens": 100, "output_tokens": 50,
+             "cached_read_tokens": 20, "cached_write_tokens": 10,
+             "total_tokens": 180, "avg_duration_ms": 0},
+        ]
+        session = [
+            {"model": "claude-3.5-sonnet[1m]", "request_count": 3,
+             "input_tokens": 60, "output_tokens": 30,
+             "cached_read_tokens": 15, "cached_write_tokens": 5,
+             "total_tokens": 110},
+        ]
+        result = _Merger.merge_model_lists(proxy, session)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["request_count"], 8)
+
+    def test_merge_trend_lists_sums_same_time(self):
+        from stats_service import _Merger
+        proxy = [
+            {"time": "2026-05-11", "request_count": 5,
+             "input_tokens": 100, "output_tokens": 50,
+             "cached_read_tokens": 20, "cached_write_tokens": 10,
+             "total_tokens": 180},
+        ]
+        session = [
+            {"time": "2026-05-11", "request_count": 3,
+             "input_tokens": 60, "output_tokens": 30,
+             "cached_read_tokens": 15, "cached_write_tokens": 5,
+             "total_tokens": 110},
+        ]
+        result = _Merger.merge_trend_lists(proxy, session)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["request_count"], 8)
+        self.assertEqual(result[0]["input_tokens"], 160)
+        self.assertEqual(result[0]["cache_read_tokens"], 35)
+
+    def test_merge_trend_lists_output_key_is_date(self):
+        from stats_service import _Merger
+        proxy = [
+            {"time": "2026-05-11", "request_count": 5,
+             "input_tokens": 100, "output_tokens": 50,
+             "cached_read_tokens": 20, "cached_write_tokens": 10,
+             "total_tokens": 180},
+        ]
+        result = _Merger.merge_trend_lists(proxy, [])
+        self.assertIn("date", result[0])
+        self.assertNotIn("time", result[0])
+        self.assertEqual(result[0]["date"], "2026-05-11")
+
+    def test_merge_trend_lists_empty_session(self):
+        from stats_service import _Merger
+        proxy = [
+            {"time": "2026-05-11", "request_count": 5,
+             "input_tokens": 100, "output_tokens": 50,
+             "cached_read_tokens": 20, "cached_write_tokens": 10,
+             "total_tokens": 180},
+        ]
+        result = _Merger.merge_trend_lists(proxy, [])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["cache_read_tokens"], 20)
+
