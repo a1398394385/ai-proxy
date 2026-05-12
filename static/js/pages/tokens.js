@@ -866,6 +866,7 @@ export function initTokenPage() {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
+      window.currentPeriod = btn.dataset.period;
       loadTokenStats();
       const activeSubtab = getActiveSubtab();
       if (activeSubtab === 'requests') {
@@ -875,8 +876,9 @@ export function initTokenPage() {
       } else if (activeSubtab === 'upstream') {
         loadUpstreamStats();
       }
+    });
   });
-  
+
   // Refresh button
   const refreshBtn = document.getElementById('refresh-token');
   if (refreshBtn) refreshBtn.addEventListener('click', loadTokenStats);
