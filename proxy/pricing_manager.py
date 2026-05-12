@@ -213,3 +213,35 @@ class PricingDB:
                 logging.info(f"[PricingDB] 已导入 {len(_SEED_PRICING)} 条种子定价数据")
         finally:
             conn.close()
+
+    # ─── 查询方法 ───
+
+    def list_pricings(self, search: Optional[str] = None) -> list:
+        """列出所有定价，可选按模型名/显示名模糊搜索。"""
+        conn = self._connect()
+        try:
+            if search:
+                rows = conn.execute(
+                    "SELECT * FROM model_pricing "
+                    "WHERE model_id LIKE ? OR display_name LIKE ? "
+                    "ORDER BY model_id",
+                    (f"%{search}%", f"%{search}%"),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM model_pricing ORDER BY model_id"
+                ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def get_pricing(self, model_id: str) -> Optional[dict]:
+        """获取单个模型定价。"""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM model_pricing WHERE model_id = ?", (model_id,)
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()

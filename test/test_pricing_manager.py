@@ -63,3 +63,41 @@ class TestPricingDBEnsureTable(unittest.TestCase):
         count_after = conn.execute("SELECT COUNT(*) FROM model_pricing").fetchone()[0]
         conn.close()
         self.assertEqual(count_before, count_after)
+
+
+class TestPricingDBListAndGet(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = TemporaryDirectory()
+        self.db_path = Path(self.tmpdir.name) / "config.db"
+        from proxy.pricing_manager import PricingDB
+        self.db = PricingDB(self.db_path)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_list_pricings_returns_all(self):
+        result = self.db.list_pricings()
+        self.assertIsInstance(result, list)
+        self.assertGreater(len(result), 0)
+        self.assertIn("model_id", result[0])
+        self.assertIn("currency", result[0])
+
+    def test_list_pricings_with_search(self):
+        result = self.db.list_pricings(search="claude")
+        self.assertGreater(len(result), 0)
+        for r in result:
+            self.assertIn("claude", r["model_id"].lower() + r["display_name"].lower())
+
+    def test_list_pricings_search_no_match(self):
+        result = self.db.list_pricings(search="nonexistent_model_xyz")
+        self.assertEqual(len(result), 0)
+
+    def test_get_pricing_existing(self):
+        result = self.db.get_pricing("claude-sonnet-4-6-20260217")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["model_id"], "claude-sonnet-4-6-20260217")
+        self.assertEqual(result["input_cost_per_million"], "3")
+
+    def test_get_pricing_nonexistent(self):
+        result = self.db.get_pricing("nonexistent_model")
+        self.assertIsNone(result)
