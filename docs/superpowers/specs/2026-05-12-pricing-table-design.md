@@ -39,7 +39,7 @@ CREATE TABLE model_pricing (
 - `currency` 只允许 `USD` 或 `RMB`，默认 `USD`（兼容 cc-switch 导入数据）
 - 无 `created_at`/`updated_at`，定价是配置数据
 
-种子数据从 cc-switch 的 `model_pricing_export.sql` 提取 INSERT 语句，内嵌为 Python 常量列表，首次建表且为空时批量插入。
+种子数据从 cc-switch 的 `model_pricing_export.sql` 提取 INSERT 语句，内嵌为 Python 常量列表，首次建表且为空时批量插入。种子 INSERT 不显式指定 `currency` 列，依赖 `DEFAULT 'USD'`。
 
 ## PricingManager 模块
 
@@ -61,10 +61,11 @@ class PricingDB:
 ```
 
 关键点：
-- 不依赖 `Migrations`，`_ensure_table()` 幂等建表
+- 不依赖 `Migrations`，`_ensure_table()` 幂等建表（有意为之，后期会将 Migrations 独立重构）
 - `db_path` 传入 config.db 路径，与 upstreams/target_models 共库不同表
 - `search` 参数对 `model_id` 和 `display_name` 做 LIKE 匹配
 - 每次查询新建连接，用完关闭（与项目约定一致）
+- `add_pricing`/`update_pricing`/`delete_pricing` 执行后调用 `_CostCalculator.invalidate_cache()` 使缓存立即失效
 
 ## _CostCalculator 改造
 
@@ -73,7 +74,7 @@ class PricingDB:
 - 数据源：从 `cc-switch.db` 改为读 `config.db`（通过 `PricingDB`）
 - 币种换算：加载定价时，USD 价格 × 7 转为人民币，RMB 价格原样使用
 - 输出：`calculate()` 统一返回人民币金额（float，6 位小数精度）
-- 缓存：保留现有 TTL 缓存机制（300s）
+- 缓存：保留现有 TTL 缓存机制（300s），新增 `invalidate_cache()` 方法供定价修改后主动失效
 
 ```python
 class _CostCalculator:
@@ -96,7 +97,14 @@ class _CostCalculator:
         return pricing
 ```
 
-`StatsService` 构造函数移除 `cc_switch_db_path` 参数，改为通过 `config_db_path` 使用 `PricingDB`。API 返回字段 `estimated_cost_usd` 改为 `estimated_cost_cny`。
+`StatsService` 构造函数移除 `cc_switch_db_path` 参数，改为通过 `config_db_path` 使用 `PricingDB`。需同步修改 `server.py` 中 `_get_stats_service()` 的调用方式。API 返回字段 `estimated_cost_usd` 改为 `estimated_cost_cny`。
+
+## 趋势图成本计算修复
+
+当前 `StatsService.fetch_trend()` 返回的趋势数据没有 `estimated_cost_usd` 字段，导致前端趋势图成本线始终为 $0。本次一并修复：
+
+- `fetch_trend()` 中对每个趋势数据点按模型逐点计算成本，注入 `estimated_cost_cny` 字段
+- 前端 `tokens.js` 的 `renderTrendChart()` 和 `showTooltip()` 使用新字段渲染成本线
 
 ## API 路由
 
