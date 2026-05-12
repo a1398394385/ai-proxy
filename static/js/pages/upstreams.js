@@ -37,7 +37,7 @@ async function loadUpstreamTable() {
       <td>
         <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); showUpstreamModal('${escHtml(u.id)}')">编辑</button>
         <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); testUpstream('${escHtml(u.id)}')">测试</button>
-        ${u.is_active ? '<button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); confirmDisableUpstream(\'' + escHtml(u.id) + '\')">禁用</button>' : ''}
+        <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); showDeleteUpstreamModal('${escHtml(u.id)}')">删除</button>
       </td>
     </tr>`
   ).join('');
@@ -201,19 +201,47 @@ async function testUpstream(id) {
   }
 }
 
-async function confirmDisableUpstream(id) {
+async function showDeleteUpstreamModal(id) {
   const data = await api('/api/upstreams');
   const u = data.upstreams.find(x => x.id === id);
   if (!u) return;
   const models = await api('/api/models?upstream_id=' + encodeURIComponent(id));
   const routes = await api('/api/routes');
   const affected = routes.routes.filter(r => r.upstream_id === id);
-  const msg = '确认禁用上游 "' + id + '"？\n\n关联模型: ' + models.models.length + ' 个\n活跃路由引用: ' + affected.length + ' 个\n\n禁用后相关路由将无法使用。';
-  if (!confirm(msg)) return;
+  const modelNames = models.models.map(m => m.name).join(', ') || '无';
+
+  if (affected.length > 0) {
+    // 有引用：显示路由列表，确认按钮禁用
+    const routeList = affected.map(r => '  • ' + escHtml(r.source)).join('\n');
+    showModal('\u{1F5D1}  删除上游',
+      '<div style="font-size:14px;line-height:1.8">' +
+      '<div>上游 ID: <code>' + escHtml(id) + '</code></div>' +
+      '<div>关联模型: ' + escHtml(modelNames) + '</div>' +
+      '<div style="color:hsl(var(--red));margin-top:12px">❌ 该上游被以下路由引用：</div>' +
+      '<pre style="background:hsl(var(--muted));padding:8px;border-radius:4px;font-size:12px;margin:8px 0">' + escHtml(routeList) + '</pre>' +
+      '<div style="color:hsl(var(--muted-foreground));font-size:13px">请先在路由管理中解绑这些路由。</div>' +
+      '</div>',
+      '<button class="btn btn-secondary" onclick="closeModal()">关闭</button>' +
+      '<button class="btn btn-danger" disabled>确认删除</button>');
+  } else {
+    // 无引用：可以安全删除
+    showModal('\u{1F5D1}  删除上游',
+      '<div style="font-size:14px;line-height:1.8">' +
+      '<div>上游 ID: <code>' + escHtml(id) + '</code></div>' +
+      '<div>关联模型: ' + escHtml(modelNames) + '</div>' +
+      '<div style="color:hsl(var(--green));margin-top:12px">✅ 无路由引用，可以安全删除</div>' +
+      '</div>',
+      '<button class="btn btn-secondary" onclick="closeModal()">取消</button>' +
+      '<button class="btn btn-danger" onclick="confirmDeleteUpstream(\'' + escHtml(id) + '\')">确认删除</button>');
+  }
+}
+
+async function confirmDeleteUpstream(id) {
   const result = await api('/api/upstreams/' + id, { method: 'DELETE' });
   if (result.error) {
-    alert('❌ 无法禁用: ' + result.error + '\n\n被引用的路由: ' + (result.referenced_routes || []).join(', '));
+    alert('❌ 无法删除: ' + result.error + '\n\n被引用的路由: ' + (result.referenced_routes || []).join(', '));
   } else {
+    closeModal();
     bus.emit('config:upstream-changed', {});
     loadAllModelConfigTables();
   }
@@ -450,7 +478,8 @@ function initUpstreamPage() {
 window.showUpstreamModal = showUpstreamModal;
 window.saveUpstream = saveUpstream;
 window.testUpstream = testUpstream;
-window.confirmDisableUpstream = confirmDisableUpstream;
+window.showDeleteUpstreamModal = showDeleteUpstreamModal;
+window.confirmDeleteUpstream = confirmDeleteUpstream;
 window.showModelModal = showModelModal;
 window.showModelModalForUpstream = showModelModalForUpstream;
 window.saveModel = saveModel;
