@@ -1,0 +1,50 @@
+/* 计费表页面样式 */
+.pricing-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 20px;
+    border-bottom: 1px solid hsl(var(--border));
+}
+.pricing-toolbar .search-box {
+    flex: 0 1 320px;
+}
+.pricing-count {
+    color: hsl(var(--muted));
+    font-size: 13px;
+    white-space: nowrap;
+}
+#pricing-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+#pricing-table th {
+    padding: 10px 12px;
+    text-align: left;
+    font-weight: 600;
+    color: hsl(var(--muted));
+    border-bottom: 2px solid hsl(var(--border));
+    white-space: nowrap;
+}
+#pricing-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid hsl(var(--border));
+    vertical-align: middle;
+}
+#pricing-table tbody tr:hover {
+    background: hsl(var(--accent) / 0.05);
+}
+.cell-price {
+    font-family: monospace;
+    text-align: right;
+    white-space: nowrap;
+}
+.badge-usd {
+    background: hsl(220 70% 55% / 0.15);
+    color: hsl(220 70% 60%);
+}
+.badge-rmb {
+    background: hsl(150 60% 40% / 0.15);
+    color: hsl(150 60% 45%);
+}
