@@ -8,7 +8,7 @@
 
 | 服务 | 入口文件 | 端口 | 用途 |
 |------|----------|------|------|
-| Hermes Data Browser | `server.py` | 18742 | Web UI — Fact Store / Token 统计 / 模型路由 CRUD / SQL 查询 |
+| Hermes Data Browser | `server/` 包 | 18742 | Web UI — Fact Store / Token 统计 / 模型路由 CRUD / SQL 查询 |
 | AI Proxy | `proxy.py` | 48743 | 统一代理 — 协议转换 + 透传（OpenAI Responses / Anthropic Messages → Chat Completions）|
 
 > **注意**：`pass_through.py` 已删除，其功能合并到 `proxy/handler.py` 的 `_handle_passthrough()` 中。不再有独立的 48744 端口服务。
@@ -17,10 +17,21 @@
 
 ```
 ├── proxy.py                    # 瘦入口 (96行) — ThreadedHTTPServer 启动 + 日志轮转
-├── server.py                   # Hermes Data Browser HTTP server (1157行)
+├── server.py                   # 瘦入口 (3行) → from server import main
 ├── server.sh                   # 服务管理（start/stop/status/restart）
 ├── proxy_config.yaml           # 全局配置（端口/上游/日志/模型映射）
 ├── quick_test.py               # Token 统计快速冒烟
+│
+├── server/                     # ★ Hermes Data Browser 核心包 (10 文件)
+│   ├── __init__.py             # re-export + main() 入口
+│   ├── handler.py              # HermesDataHandler 类 + 分发表
+│   ├── common.py               # 共享工具 — json/DB 上下文管理器/常量
+│   ├── config_api.py           # upstreams/models/routes CRUD + 上游检测
+│   ├── fact_api.py             # facts/categories/stats
+│   ├── token_api.py            # token_stats/* 系列端点
+│   ├── pricing_api.py          # pricing CRUD
+│   ├── dbquery_api.py          # /api/db/query
+│   └── static_files.py         # 静态文件服务
 │
 ├── proxy/                      # ★ AI Proxy 核心包 (11 文件)
 │   ├── __init__.py             # 公共 API re-export
@@ -48,11 +59,11 @@
 │           ├── routes.js       # 路由映射 CRUD
 │           └── dbquery.js      # SQL 查询编辑器
 │
-├── test/                       # 406 tests (14 文件)
+├── test/                       # 533 tests (14 文件)
 │   ├── test_transform.py       # Responses API 转换 (2030行, 138 tests)
 │   ├── test_transform_anthropic.py  # Anthropic 转换 (689行, 44 tests)
 │   ├── test_handler.py         # 统一 Handler (555行, 20 tests)
-│   ├── test_db_query.py        # SQL 查询端点 (398行, 35 tests)
+│   ├── test_db_query.py        # SQL 查询端点 (199行, 17 tests)
 │   ├── test_config_manager.py  # ConfigDB/ConfigCache (445行, 46 tests)
 │   ├── test_request_logger.py  # RequestLogger (465行, 26 tests)
 │   ├── test_proxy_logger_integration.py  # proxy+logger 集成 (468行, 9 tests)
@@ -79,7 +90,8 @@
 | 日志记录 | `proxy/request_logger.py` → `RequestLogger` | 四阶段 + token_stats |
 | 上游连接 | `proxy/common.py` → `_create_upstream_conn()` | 支持 HTTP 代理/HTTPS Tunneling |
 | 配置管理 | `proxy_config.yaml` + `~/.hermes/config.db` | 静态 YAML + 动态 SQLite |
-| Data Browser API | `server.py` → `HermesDataHandler` | 全部 /api/* 路由 |
+| Data Browser API | `server/handler.py` → 分发表 | 各模块 handle_get/handle_post/handle_put/handle_delete |
+| 添加 Data Browser API 路由 | `server/*_api.py` → 导出 handler 函数 | 注册到 `server/handler.py` 分发表 |
 | 前端页面 | `static/js/pages/*.js` | 每页面一个模块 |
 
 ## 开发命令
@@ -92,7 +104,7 @@
 ./server.sh restart   # 重启（修改代码后必须执行，无热重载）
 
 # 测试
-python3 -m pytest test/ -q                    # 全量（406 tests）
+python3 -m pytest test/ -q                    # 全量（533 tests）
 python3 -m pytest test/test_transform.py -q  # 单文件
 python3 -m pytest test/test_handler.py -q    # Handler 测试
 
