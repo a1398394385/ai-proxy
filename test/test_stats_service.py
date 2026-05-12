@@ -1786,6 +1786,16 @@ class TestFetchRequestsMerged(unittest.TestCase):
             self.assertIn("estimated_cost_usd", r)
             self.assertIsInstance(r["estimated_cost_usd"], (int, float))
 
+    def test_request_record_uses_cache_prefix(self):
+        """proxy 记录字段名统一为 cache_*。"""
+        self._insert_token_stat(input_tokens=100, output_tokens=200,
+                                cached_read_tokens=20, cached_write_tokens=10)
+        result = self._create_service().fetch_requests("day")
+        for req in result["requests"]:
+            if req.get("_source") == "proxy":
+                self.assertIn("cache_read_tokens", req)
+                self.assertNotIn("cached_read_tokens", req)
+
 
 
 if __name__ == "__main__":

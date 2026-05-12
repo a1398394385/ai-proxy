@@ -1068,23 +1068,25 @@ class StatsService:
 
         for row in token_rows:
             row_dict = dict(row) if hasattr(row, 'keys') else dict(row)
+            row_dict = _Merger._rename(row_dict)
             row_dict["_source"] = "proxy"
             row_dict["estimated_cost_usd"] = calculator.calculate(
                 model=row_dict.get("target_model", row_dict.get("model", "")),
                 input_tokens=row_dict.get("input_tokens", 0),
                 output_tokens=row_dict.get("output_tokens", 0),
-                cache_read_tokens=row_dict.get("cached_read_tokens", 0),
-                cache_write_tokens=row_dict.get("cached_write_tokens", 0),
+                cache_read_tokens=row_dict.get("cache_read_tokens", 0),
+                cache_write_tokens=row_dict.get("cache_write_tokens", 0),
             )
             unified_requests.append(row_dict)
 
         for rec in session_rows:
+            rec = _Merger._rename(rec)
             rec["estimated_cost_usd"] = calculator.calculate(
                 model=rec.get("target_model", rec.get("model", "")),
                 input_tokens=rec.get("input_tokens", 0),
                 output_tokens=rec.get("output_tokens", 0),
-                cache_read_tokens=rec.get("cached_read_tokens", 0),
-                cache_write_tokens=rec.get("cached_write_tokens", 0),
+                cache_read_tokens=rec.get("cache_read_tokens", 0),
+                cache_write_tokens=rec.get("cache_write_tokens", 0),
             )
             unified_requests.append(rec)
 
@@ -1315,23 +1317,25 @@ class StatsService:
 
         for row in token_rows:
             row_dict = dict(row) if hasattr(row, 'keys') else dict(row)
+            row_dict = _Merger._rename(row_dict)
             row_dict["_source"] = "proxy"
             row_dict["estimated_cost_usd"] = calculator.calculate(
                 model=row_dict.get("target_model", row_dict.get("model", "")),
                 input_tokens=row_dict.get("input_tokens", 0),
                 output_tokens=row_dict.get("output_tokens", 0),
-                cache_read_tokens=row_dict.get("cached_read_tokens", 0),
-                cache_write_tokens=row_dict.get("cached_write_tokens", 0),
+                cache_read_tokens=row_dict.get("cache_read_tokens", 0),
+                cache_write_tokens=row_dict.get("cache_write_tokens", 0),
             )
             unified_requests.append(row_dict)
 
         for rec in session_rows:
+            rec = _Merger._rename(rec)
             rec["estimated_cost_usd"] = calculator.calculate(
                 model=rec.get("target_model", rec.get("model", "")),
                 input_tokens=rec.get("input_tokens", 0),
                 output_tokens=rec.get("output_tokens", 0),
-                cache_read_tokens=rec.get("cached_read_tokens", 0),
-                cache_write_tokens=rec.get("cached_write_tokens", 0),
+                cache_read_tokens=rec.get("cache_read_tokens", 0),
+                cache_write_tokens=rec.get("cache_write_tokens", 0),
             )
             unified_requests.append(rec)
 
