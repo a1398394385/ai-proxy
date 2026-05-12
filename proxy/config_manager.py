@@ -187,6 +187,25 @@ class ConfigDB:
         finally:
             conn.close()
 
+    def delete_upstream_with_models(self, upstream_id: str):
+        """删除上游及其关联模型（前置：已确认无路由引用）。
+        使用显式事务保证原子性。"""
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN TRANSACTION")
+            model_ids = [r["id"] for r in conn.execute(
+                "SELECT id FROM target_models WHERE upstream_id = ?", (upstream_id,)
+            ).fetchall()]
+            for mid in model_ids:
+                conn.execute("DELETE FROM target_models WHERE id = ?", (mid,))
+            conn.execute("DELETE FROM upstreams WHERE id = ?", (upstream_id,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     # ─── 目标模型 CRUD ────────────────────────────────────────────
 
     def list_models(self, upstream_id=None):

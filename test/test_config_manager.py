@@ -195,6 +195,35 @@ class TestModelCRUD(unittest.TestCase):
         self.assertEqual(set(refs), {"gpt-4", "o4-mini"})
 
 
+class TestDeleteUpstream(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "config.db"
+        from proxy.config_manager import ConfigDB
+        self.db = ConfigDB(self.db_path)
+        self.db.add_upstream({"id": "up-a", "base_url": "http://a"})
+        self.db.add_upstream({"id": "up-b", "base_url": "http://b"})
+        self.m1 = self.db.add_model({"name": "gpt-4", "upstream_id": "up-a"})
+        self.m2 = self.db.add_model({"name": "gpt-35", "upstream_id": "up-a"})
+        self.m3 = self.db.add_model({"name": "claude", "upstream_id": "up-b"})
+
+    def tearDown(self):
+        self.db.close()
+        self.tmp.cleanup()
+
+    def test_delete_upstream_with_models_no_refs(self):
+        """无路由引用时，删除上游及其关联模型。"""
+        self.db.delete_upstream_with_models("up-a")
+        # 上游已删除
+        self.assertIsNone(self.db.get_upstream("up-a"))
+        # 关联模型已删除
+        models = self.db.list_models(upstream_id="up-a")
+        self.assertEqual(len(models), 0)
+        # 其他上游不受影响
+        self.assertIsNotNone(self.db.get_upstream("up-b"))
+        self.assertEqual(len(self.db.list_models(upstream_id="up-b")), 1)
+
+
 class TestRouteCRUD(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
