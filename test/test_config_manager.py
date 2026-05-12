@@ -223,6 +223,59 @@ class TestDeleteUpstream(unittest.TestCase):
         self.assertIsNotNone(self.db.get_upstream("up-b"))
         self.assertEqual(len(self.db.list_models(upstream_id="up-b")), 1)
 
+    def test_delete_upstream_cascades_to_models(self):
+        """验证删除上游后，该上游下的模型全部被删除。"""
+        # 确认 up-a 下有 2 个模型
+        models_before = self.db.list_models(upstream_id="up-a")
+        self.assertEqual(len(models_before), 2)
+
+        self.db.delete_upstream_with_models("up-a")
+
+        # 上游已不存在
+        self.assertIsNone(self.db.get_upstream("up-a"))
+        # 模型也全部消失
+        models_after = self.db.list_models(upstream_id="up-a")
+        self.assertEqual(len(models_after), 0)
+
+    def test_delete_upstream_rollback_on_error(self):
+        """执行过程中抛出异常，事务应回滚，上游和模型保持不变。"""
+        call_count = [0]
+
+        class FailingConn:
+            def __init__(self, real):
+                self._real = real
+
+            def execute(self, sql, params=None):
+                call_count[0] += 1
+                # 在第三次 execute（第一个 DELETE FROM target_models）时抛出异常
+                if call_count[0] == 3 and "DELETE FROM target_models" in (sql or ""):
+                    raise RuntimeError("Simulated failure")
+                if params is None:
+                    return self._real.execute(sql)
+                return self._real.execute(sql, params)
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        original_connect = self.db._connect
+
+        def patched_connect():
+            real = original_connect()
+            return FailingConn(real)
+
+        self.db._connect = patched_connect
+
+        try:
+            with self.assertRaises(RuntimeError):
+                self.db.delete_upstream_with_models("up-a")
+        finally:
+            self.db._connect = original_connect
+
+        # 验证回滚：上游和模型仍然存在
+        self.assertIsNotNone(self.db.get_upstream("up-a"))
+        models_after = self.db.list_models(upstream_id="up-a")
+        self.assertEqual(len(models_after), 2)
+
 
 class TestRouteCRUD(unittest.TestCase):
     def setUp(self):
