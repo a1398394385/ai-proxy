@@ -1,4 +1,4 @@
-import { api, escHtml, showModal, closeModal, bus } from '../core.js';
+import { api, escHtml, showModal, closeModal } from '../core.js';
 
 const EXCHANGE_RATE = 7;
 
