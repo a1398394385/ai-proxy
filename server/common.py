@@ -102,17 +102,6 @@ def state_db():
         conn.close()
 
 
-@contextmanager
-def data_db():
-    """数据数据库连接上下文管理器。"""
-    conn = sqlite3.connect(str(DATA_DB), timeout=5)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-    finally:
-        conn.close()
-
-
 # ─── 代理通知 ───
 
 

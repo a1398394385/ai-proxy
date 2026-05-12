@@ -3,7 +3,7 @@
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, unquote
 
-from . import config_api, fact_api, token_api, pricing_api, dbquery_api, static_files
+from . import config_api, fact_api, token_api, pricing_api, static_files
 from .common import json_response
 
 
@@ -21,7 +21,6 @@ _GET_HANDLERS = [
 _POST_HANDLERS = [
     config_api.handle_post,
     pricing_api.handle_post,
-    dbquery_api.handle_post,
     fact_api.handle_post,
 ]
 
