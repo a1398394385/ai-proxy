@@ -866,7 +866,7 @@ class _Merger:
     @staticmethod
     def merge_summary(proxy_summary: dict, session_summary: dict) -> dict:
         """合并两个汇总 dict，各数值字段求和，字段重命名为 cache*。
-        不计算 estimated_cost_usd，由调用方处理。"""
+        不计算 estimated_cost_cny，由调用方处理。"""
         p = _Merger._rename(proxy_summary) if proxy_summary else {}
         s = _Merger._rename(session_summary) if session_summary else {}
         return {
@@ -1004,7 +1004,7 @@ class StatsService:
         merged = _Merger.merge_model_lists(proxy_models, session_models)
         calculator = self._get_calculator()
         for m in merged:
-            m["estimated_cost_usd"] = round(calculator.calculate(
+            m["estimated_cost_cny"] = round(calculator.calculate(
                 model=m["model"], input_tokens=m["input_tokens"],
                 output_tokens=m["output_tokens"],
                 cache_read_tokens=m["cache_read_tokens"],
@@ -1060,7 +1060,7 @@ class StatsService:
             row_dict = dict(row) if hasattr(row, 'keys') else dict(row)
             row_dict = _Merger._rename(row_dict)
             row_dict["_source"] = "proxy"
-            row_dict["estimated_cost_usd"] = calculator.calculate(
+            row_dict["estimated_cost_cny"] = calculator.calculate(
                 model=row_dict.get("target_model", row_dict.get("model", "")),
                 input_tokens=row_dict.get("input_tokens", 0),
                 output_tokens=row_dict.get("output_tokens", 0),
@@ -1071,7 +1071,7 @@ class StatsService:
 
         for rec in session_rows:
             rec = _Merger._rename(rec)
-            rec["estimated_cost_usd"] = calculator.calculate(
+            rec["estimated_cost_cny"] = calculator.calculate(
                 model=rec.get("target_model", rec.get("model", "")),
                 input_tokens=rec.get("input_tokens", 0),
                 output_tokens=rec.get("output_tokens", 0),
@@ -1101,7 +1101,7 @@ class StatsService:
         Returns:
             {upstreams: [{upstream_id, base_url, request_count, input_tokens,
              output_tokens, cached_read_tokens, cached_write_tokens,
-             total_tokens, estimated_cost_usd}]}
+             total_tokens, estimated_cost_cny}]}
         """
         token_dao = self._get_dao()
         upstream_map = self._load_upstream_map()
@@ -1172,7 +1172,7 @@ class StatsService:
                 m["cached_read_tokens"] += sdata["cached_read_tokens"]
                 m["cached_write_tokens"] += sdata["cached_write_tokens"]
 
-        # 5. 计算 total_tokens 和 estimated_cost_usd
+        # 5. 计算 total_tokens 和 estimated_cost_cny
         calculator = self._get_calculator()
         result = []
         for name, agg in merged.items():
@@ -1216,11 +1216,11 @@ class StatsService:
                 "cache_read_tokens": agg["cached_read_tokens"],
                 "cache_write_tokens": agg["cached_write_tokens"],
                 "total_tokens": agg["total_tokens"],
-                "estimated_cost_usd": round(cost, 6),
+                "estimated_cost_cny": round(cost, 6),
             })
 
-        # 6. 按 estimated_cost_usd DESC 排序
-        result.sort(key=lambda x: x["estimated_cost_usd"], reverse=True)
+        # 6. 按 estimated_cost_cny DESC 排序
+        result.sort(key=lambda x: x["estimated_cost_cny"], reverse=True)
         return {"upstreams": result}
 
     def fetch_trend(self, period: str) -> list:
@@ -1253,7 +1253,7 @@ class StatsService:
                 cache_read_tokens=m["cache_read_tokens"],
                 cache_write_tokens=m["cache_write_tokens"],
             )
-        result["estimated_cost_usd"] = round(total_cost, 4)
+        result["estimated_cost_cny"] = round(total_cost, 6)
         return result
 
     def fetch_all_summaries(self) -> dict:
@@ -1301,7 +1301,7 @@ class StatsService:
             offset=0,
         )
 
-        # 3. 合并两个列表,统一添加 estimated_cost_usd 字段
+        # 3. 合并两个列表,统一添加 estimated_cost_cny 字段
         calculator = self._get_calculator()
         unified_requests = []
 
@@ -1309,7 +1309,7 @@ class StatsService:
             row_dict = dict(row) if hasattr(row, 'keys') else dict(row)
             row_dict = _Merger._rename(row_dict)
             row_dict["_source"] = "proxy"
-            row_dict["estimated_cost_usd"] = calculator.calculate(
+            row_dict["estimated_cost_cny"] = calculator.calculate(
                 model=row_dict.get("target_model", row_dict.get("model", "")),
                 input_tokens=row_dict.get("input_tokens", 0),
                 output_tokens=row_dict.get("output_tokens", 0),
@@ -1320,7 +1320,7 @@ class StatsService:
 
         for rec in session_rows:
             rec = _Merger._rename(rec)
-            rec["estimated_cost_usd"] = calculator.calculate(
+            rec["estimated_cost_cny"] = calculator.calculate(
                 model=rec.get("target_model", rec.get("model", "")),
                 input_tokens=rec.get("input_tokens", 0),
                 output_tokens=rec.get("output_tokens", 0),

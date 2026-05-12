@@ -550,7 +550,7 @@ class TestStatsService(unittest.TestCase):
 
         self.assertEqual(len(result["upstreams"]), 2)
         upstreams = result["upstreams"]
-        # 按 estimated_cost_usd 降序（qwen3.6-plus 有种子数据定价，claude-sonnet-4 没有）
+        # 按 estimated_cost_cny 降序（qwen3.6-plus 有种子数据定价，claude-sonnet-4 没有）
         self.assertEqual(upstreams[0]["upstream_id"], "https://api.openai.com")
         self.assertEqual(upstreams[0]["output_tokens"], 200)
         self.assertEqual(upstreams[1]["upstream_id"], "https://api.anthropic.com")
@@ -565,7 +565,7 @@ class TestStatsService(unittest.TestCase):
             self.assertIn("cache_read_tokens", up)
             self.assertIn("cache_write_tokens", up)
             self.assertIn("total_tokens", up)
-            self.assertIn("estimated_cost_usd", up)
+            self.assertIn("estimated_cost_cny", up)
 
     def test_fetch_by_upstream_no_config_db(self):
         """没有 config.db 时返回空列表。"""
@@ -1584,7 +1584,7 @@ class TestFetchRequestsMerged(unittest.TestCase):
         self.assertEqual(result["requests"][0]["_source"], "proxy")
 
     def test_merged_cost_calculation(self):
-        """每条记录都有 estimated_cost_usd。"""
+        """每条记录都有 estimated_cost_cny。"""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._insert_token_stat(request_id="proxy-1", input_tokens=100, output_tokens=200)
         self._insert_session(model="qwen3.6-plus", input_tokens=100, output_tokens=200)
@@ -1593,8 +1593,8 @@ class TestFetchRequestsMerged(unittest.TestCase):
         result = service.fetch_requests("day")
 
         for r in result["requests"]:
-            self.assertIn("estimated_cost_usd", r)
-            self.assertIsInstance(r["estimated_cost_usd"], (int, float))
+            self.assertIn("estimated_cost_cny", r)
+            self.assertIsInstance(r["estimated_cost_cny"], (int, float))
 
     def test_request_record_uses_cache_prefix(self):
         """proxy 记录字段名统一为 cache_*。"""
@@ -1856,7 +1856,7 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
         self.assertEqual(result["total"], 2)
 
     def test_cost_calculation(self):
-        """每条记录都有 estimated_cost_usd。"""
+        """每条记录都有 estimated_cost_cny。"""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._insert_token_stat(request_id="proxy-1", target_model="qwen3.6-plus",
                                 input_tokens=100, output_tokens=200)
@@ -1866,8 +1866,8 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
         result = service.fetch_by_model_requests("qwen3.6-plus", "day")
 
         for r in result["requests"]:
-            self.assertIn("estimated_cost_usd", r)
-            self.assertIsInstance(r["estimated_cost_usd"], (int, float))
+            self.assertIn("estimated_cost_cny", r)
+            self.assertIsInstance(r["estimated_cost_cny"], (int, float))
 
 
 
@@ -2191,8 +2191,8 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
             "currency": "USD",
         })
 
-    def test_sorted_by_estimated_cost_usd_desc(self):
-        """结果按 estimated_cost_usd 降序排列。"""
+    def test_sorted_by_estimated_cost_cny_desc(self):
+        """结果按 estimated_cost_cny 降序排列。"""
         self._setup_pricing_db()
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -2213,7 +2213,7 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         self.assertEqual(len(result["upstreams"]), 2)
         # anthropic should be first (higher cost per token)
         self.assertEqual(result["upstreams"][0]["upstream_id"], "https://api.anthropic.com")
-        self.assertGreater(result["upstreams"][0]["estimated_cost_usd"], result["upstreams"][1]["estimated_cost_usd"])
+        self.assertGreater(result["upstreams"][0]["estimated_cost_cny"], result["upstreams"][1]["estimated_cost_cny"])
         self.assertEqual(result["upstreams"][1]["upstream_id"], "https://api.openai.com")
 
     def test_base_url_correct(self):
@@ -2283,10 +2283,10 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
 
         self.assertEqual(len(result["upstreams"]), 1)
         up = result["upstreams"][0]
-        self.assertGreater(up["estimated_cost_usd"], 0)
+        self.assertGreater(up["estimated_cost_cny"], 0)
         # 验证计算（RMB）：(1000/1M * 0.325*7) + (2000/1M * 1.95*7) = 0.002275 + 0.0273 = 0.029575
         expected = (1000 / 1_000_000 * 0.325 * 7) + (2000 / 1_000_000 * 1.95 * 7)
-        self.assertAlmostEqual(up["estimated_cost_usd"], expected, places=6)
+        self.assertAlmostEqual(up["estimated_cost_cny"], expected, places=6)
 
     def test_output_uses_cache_not_cached_prefix(self):
         """fetch_by_upstream 输出字段名统一为 cache_*。"""
@@ -2388,7 +2388,7 @@ class TestMerger(unittest.TestCase):
                  "cached_write_tokens": 0, "total_tokens": 150,
                  "avg_duration_ms": 0}
         result = _Merger.merge_summary(proxy, {})
-        self.assertNotIn("estimated_cost_usd", result)
+        self.assertNotIn("estimated_cost_cny", result)
 
     def test_merge_model_lists_sums_same_model(self):
         from stats_service import _Merger
@@ -2556,7 +2556,7 @@ class TestFetchSummaryMerged(unittest.TestCase):
         self.assertNotIn("cached_read_tokens", result)
         self.assertEqual(result["cache_read_tokens"], 35)  # 20 + 15
         self.assertEqual(result["cache_write_tokens"], 15)  # 10 + 5
-        self.assertIn("estimated_cost_usd", result)
+        self.assertIn("estimated_cost_cny", result)
 
     def test_fetch_summary_proxy_only(self):
         conn = sqlite3.connect(str(self.state_db))
@@ -2575,5 +2575,5 @@ class TestFetchSummaryMerged(unittest.TestCase):
         self.assertIn("week", result)
         self.assertIn("month", result)
         self.assertIn("cache_read_tokens", result["week"])
-        self.assertIn("estimated_cost_usd", result["week"])
+        self.assertIn("estimated_cost_cny", result["week"])
 
