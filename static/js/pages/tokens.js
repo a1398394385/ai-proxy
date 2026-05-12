@@ -82,10 +82,10 @@ function renderKPI(stats) {
     <div class="kpi-card">
       <div class="kpi-header">
         <span class="kpi-label">估算成本</span>
-        <div class="kpi-icon red">$</div>
+        <div class="kpi-icon red">¥</div>
       </div>
-      <div class="kpi-value red">$${(stats.estimated_cost_usd || 0).toFixed(4)}</div>
-      <div class="kpi-sub">USD</div>
+      <div class="kpi-value red">¥${(stats.estimated_cost_cny || 0).toFixed(6)}</div>
+      <div class="kpi-sub">CNY</div>
     </div>
   `;
 }
@@ -175,15 +175,15 @@ function renderTrendChart(trends) {
     axesGroup.appendChild(text);
   }
 
-  const costValues = chartData.map(d => d.estimated_cost_usd || 0);
+  const costValues = chartData.map(d => d.estimated_cost_cny || 0);
   const costYMax = niceMax(Math.max(...costValues, 0.0001));
 
   function formatCostAxis(v) {
-    if (v === 0) return '$0';
-    if (v >= 10)  return '$' + v.toFixed(1);
-    if (v >= 1)   return '$' + v.toFixed(2);
-    if (v >= 0.1) return '$' + v.toFixed(3);
-    return '$' + v.toFixed(4);
+    if (v === 0) return '¥0';
+    if (v >= 10)  return '¥' + v.toFixed(1);
+    if (v >= 1)   return '¥' + v.toFixed(2);
+    if (v >= 0.1) return '¥' + v.toFixed(3);
+    return '¥' + v.toFixed(6);
   }
 
   const rightLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
@@ -314,7 +314,7 @@ function renderTrendChart(trends) {
   if (!hiddenSeries.has('costLine')) {
     const costPoints = chartData.map((d, i) => ({
       x: margin.left + i * xStep,
-      y: margin.top + chartHeight * (1 - (d.estimated_cost_usd || 0) / costYMax)
+      y: margin.top + chartHeight * (1 - (d.estimated_cost_cny || 0) / costYMax)
     }));
     let costD = '';
     costPoints.forEach((p, i) => {
@@ -380,7 +380,7 @@ function showTooltip(mouseX, mouseY, data) {
     { label: '输出 Tokens', value: data.output_tokens, color: '#22c55e', key: 'outputTokens' },
     { label: '缓存读取', value: data.cache_read_tokens, color: '#a855f7', key: 'cacheReadTokens' },
     { label: '缓存写入', value: data.cache_write_tokens, color: '#f97316', key: 'cacheWriteTokens' },
-    { label: '成本', value: '$' + data.estimated_cost_usd.toFixed(4), color: '#f43f5e', bold: true }
+    { label: '成本', value: '¥' + data.estimated_cost_cny.toFixed(6), color: '#f43f5e', bold: true }
   ];
   
   content.innerHTML = items.filter(item => !item.key || !hiddenSeries.has(item.key)).map(item => `
@@ -473,7 +473,7 @@ function renderModelTable(models) {
           <span class="pct-value">${pct}%</span>
         </div>
       </td>
-      <td class="cell-cost">$${m.estimated_cost_usd.toFixed(4)}</td>
+      <td class="cell-cost">¥${m.estimated_cost_cny.toFixed(6)}</td>
     </tr>`;
   }).join('');
 
@@ -531,7 +531,7 @@ function expandModelRow(model, rowElement) {
              <td class="cell-number">${formatTokens(r.cache_write_tokens || 0)}</td>
              <td class="cell-total">${formatTokens((r.input_tokens || 0) + (r.output_tokens || 0) + (r.cache_read_tokens || 0) + (r.cache_write_tokens || 0))}</td>
              <td class="cell-number">${r.duration_ms ? r.duration_ms + 'ms' : '-'}</td>
-             <td class="cell-cost">$${(r.estimated_cost_usd || 0).toFixed(4)}</td>`;
+             <td class="cell-cost">¥${(r.estimated_cost_cny || 0).toFixed(6)}</td>`;
 
         return `<tr class="detail-row">
           <td class="cell-detail-id">${escHtml(r.request_id || r.id || '-')}</td>
@@ -702,7 +702,7 @@ function renderRequestTable(requests) {
          <td class="cell-number">${formatTokens(r.cache_write_tokens || 0)}</td>
          <td class="cell-total">${formatTokens((r.input_tokens || 0) + (r.output_tokens || 0) + (r.cache_read_tokens || 0) + (r.cache_write_tokens || 0))}</td>
          <td class="cell-number">${r.duration_ms ? r.duration_ms + 'ms' : '-'}</td>
-         <td class="cell-cost">$${(r.estimated_cost_usd || 0).toFixed(4)}</td>`;
+         <td class="cell-cost">¥${(r.estimated_cost_cny || 0).toFixed(6)}</td>`;
 
     return `<tr>
       <td class="model-name-text">${escHtml(r.model || '-')}</td>
@@ -808,7 +808,7 @@ function renderUpstreamTable(data) {
   const subtabEl = document.getElementById('subtab-upstream');
   if (!subtabEl) return;
 
-  const sorted = [...data].sort((a, b) => (b.estimated_cost_usd || 0) - (a.estimated_cost_usd || 0));
+  const sorted = [...data].sort((a, b) => (b.estimated_cost_cny || 0) - (a.estimated_cost_cny || 0));
 
   const headerBar = `<div class="table-card">
     <div class="table-header">
@@ -853,7 +853,7 @@ function renderUpstreamTable(data) {
       <td class="cell-number">${formatTokens(u.cache_read_tokens || 0)}</td>
       <td class="cell-number">${formatTokens(u.cache_write_tokens || 0)}</td>
       <td class="cell-total">${formatTokens(u.total_tokens || 0)}</td>
-      <td class="cell-cost">$${(u.estimated_cost_usd || 0).toFixed(4)}</td>
+      <td class="cell-cost">¥${(u.estimated_cost_cny || 0).toFixed(6)}</td>
     </tr>`;
   }).join('');
 }
