@@ -106,9 +106,9 @@ def _call_upstream_models(upstream: dict) -> dict:
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     scheme = parsed.scheme
 
-    # 构建请求路径
+    # 构建候选路径：先 /v1/models（OpenAI 标准格式），再 /models
     base_path = parsed.path.rstrip("/")
-    request_path = base_path + "/models"
+    candidate_paths = [base_path + "/v1/models", base_path + "/models"]
 
     # 构建请求头
     headers = {"Accept": "application/json"}
@@ -123,41 +123,52 @@ def _call_upstream_models(upstream: dict) -> dict:
 
     result = {"reachable": False, "model_ids": [], "error": None}
 
-    try:
-        if scheme == "https":
-            conn = http.client.HTTPSConnection(host, port, timeout=15, context=ssl_context)
-        else:
-            conn = http.client.HTTPConnection(host, port, timeout=15)
-
+    for request_path in candidate_paths:
         try:
-            conn.request("GET", request_path, headers=headers)
-            resp = conn.getresponse()
-            raw_body = resp.read()
-            status = resp.status
-
-            if 200 <= status < 300:
-                result["reachable"] = True
-                try:
-                    data = json.loads(raw_body)
-                except json.JSONDecodeError as e:
-                    result["error"] = f"上游返回了无效 JSON: {e}"
-                    return result
-
-                model_list = data.get("data", [])
-                model_ids = [
-                    item["id"]
-                    for item in model_list
-                    if isinstance(item, dict) and item.get("id")
-                ]
-                result["model_ids"] = model_ids
+            if scheme == "https":
+                conn = http.client.HTTPSConnection(host, port, timeout=15, context=ssl_context)
             else:
-                # 4xx/5xx：服务器应答了，网络可达
-                result["reachable"] = True
-                result["error"] = f"HTTP {status}"
-        finally:
-            conn.close()
-    except (socket.gaierror, socket.timeout, OSError) as e:
-        result["error"] = str(e)
+                conn = http.client.HTTPConnection(host, port, timeout=15)
+
+            try:
+                conn.request("GET", request_path, headers=headers)
+                resp = conn.getresponse()
+                raw_body = resp.read()
+                status = resp.status
+
+                if 200 <= status < 300:
+                    result["reachable"] = True
+                    try:
+                        data = json.loads(raw_body)
+                    except json.JSONDecodeError as e:
+                        result["error"] = f"上游返回了无效 JSON: {e}"
+                        return result
+
+                    model_list = data.get("data", [])
+                    model_ids = [
+                        item["id"]
+                        for item in model_list
+                        if isinstance(item, dict) and item.get("id")
+                    ]
+                    result["model_ids"] = model_ids
+                    return result
+                elif status in (404, 405):
+                    # 路径不对，尝试下一个候选路径
+                    continue
+                else:
+                    # 其他 4xx/5xx：服务器应答了，网络可达但不成功
+                    result["reachable"] = True
+                    result["error"] = f"HTTP {status}"
+                    return result
+            finally:
+                conn.close()
+        except (socket.gaierror, socket.timeout, OSError) as e:
+            result["error"] = str(e)
+            return result
+
+    # 所有候选路径都返回 404/405
+    result["reachable"] = True
+    result["error"] = "所有候选路径均返回 404/405"
 
     return result
 STATE_DB_PATH = os.path.expanduser("~/.hermes/state.db")
@@ -274,6 +285,7 @@ def json_response(handler, data, status=200):
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Cache-Control", "no-cache")
     handler.send_header("Access-Control-Allow-Origin", "*")
     handler.end_headers()
     handler.wfile.write(body)
