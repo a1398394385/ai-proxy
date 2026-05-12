@@ -2,7 +2,7 @@
 
 import re
 
-from .common import json_response, _read_json, access_log_db
+from .common import json_response, _read_json, data_db
 
 
 def handle_post(path, handler) -> bool:
@@ -43,7 +43,7 @@ def handle_post(path, handler) -> bool:
         sql += " LIMIT 500"
 
     # 执行查询
-    with access_log_db() as conn:
+    with data_db() as conn:
         try:
             cursor = conn.execute(sql)
             columns = [col[0] for col in cursor.description]

@@ -6,7 +6,7 @@ import io
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from server.common import json_response, _read_json, access_log_db
+from server.common import json_response, _read_json, data_db
 from proxy.paths import DATA_DB
 from server.dbquery_api import handle_post as dbquery_handle_post
 
@@ -87,7 +87,7 @@ class TestDbQuery:
 
     def test_normal_select_returns_columns_and_rows(self):
         """正常 SELECT 查询返回 columns + rows 结构"""
-        with access_log_db() as conn:
+        with data_db() as conn:
             cursor = conn.execute("SELECT id, request_id FROM debug_log ORDER BY id LIMIT 2")
             columns = [col[0] for col in cursor.description]
             rows = [list(row) for row in cursor.fetchall()]
@@ -96,7 +96,7 @@ class TestDbQuery:
 
     def test_select_token_stats(self):
         """token_stats 表查询正常"""
-        with access_log_db() as conn:
+        with data_db() as conn:
             cursor = conn.execute("SELECT * FROM token_stats ORDER BY id")
             rows = [list(row) for row in cursor.fetchall()]
         assert len(rows) == 2

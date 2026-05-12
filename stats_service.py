@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """StatsService — Token 统计数据查询服务层。
 
-从 access_log.db 的 token_stats 表读取数据，提供按模型、上游、趋势、
+从 data db 的 token_stats 表读取数据，提供按模型、上游、趋势、
 汇总等维度的统计查询接口。
 
 职责：
@@ -13,7 +13,7 @@
     from stats_service import StatsService
 
     service = StatsService(
-        access_log_db_path=None,
+        data_db_path=None,
         data_db_path=None,
         state_db_path="~/.hermes/state.db",
     )
@@ -23,7 +23,7 @@
 import sqlite3
 import time
 from pathlib import Path
-from proxy.paths import get_data_path, DATA_DB
+from proxy.paths import DATA_DB
 from proxy.pricing_manager import PricingDB
 
 class _TokenStatsDao:
@@ -32,7 +32,7 @@ class _TokenStatsDao:
     封装 token_stats 表的 SQL 查询逻辑，每次查询新建 SQLite 连接，用完立即关闭。
 
     Args:
-        db_path: access_log.db 路径
+        db_path: data db 路径
     """
 
     def __init__(self, db_path: Path) -> None:
@@ -981,18 +981,15 @@ class StatsService:
     """Token 统计数据查询服务。
 
     Args:
-        access_log_db_path: access_log.db 路径（token_stats 表所在）
-        data_db_path: 数据数据库路径（模型路由配置 + 定价数据）
+        data_db_path: data db 路径
         state_db_path: state.db 路径（运行时状态）
     """
 
     def __init__(
         self,
-        access_log_db_path: str,
         data_db_path: str,
         state_db_path: str,
     ) -> None:
-        self.access_log_db_path = Path(access_log_db_path) if access_log_db_path else get_data_path("access_log.db")
         self.data_db_path = Path(data_db_path) if data_db_path else DATA_DB
         self.state_db_path = Path(state_db_path)
 
@@ -1003,7 +1000,7 @@ class StatsService:
 
     def _get_dao(self) -> _TokenStatsDao:
         """获取 TokenStatsDao 实例。"""
-        return _TokenStatsDao(self.access_log_db_path)
+        return _TokenStatsDao(self.data_db_path)
 
     def _get_session_dao(self) -> _SessionDao:
         """获取 SessionDao 实例。"""

@@ -19,11 +19,11 @@ class TestStatsService(unittest.TestCase):
     def setUp(self):
         """创建临时目录和空 token_stats 表。"""
         self.tmpdir = tempfile.mkdtemp()
-        self.access_log_db = Path(self.tmpdir) / "access_log.db"
-        self.config_db = Path(self.tmpdir) / "config.db"
+        self.data_db = Path(self.tmpdir) / "access_log.db"
+        self.config_db = self.data_db
         self.state_db = Path(self.tmpdir) / "state.db"
         # 创建空 token_stats 表（复用 token_stats.py 的建表 SQL）
-        conn = sqlite3.connect(str(self.access_log_db))
+        conn = sqlite3.connect(str(self.data_db))
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS token_stats (
@@ -63,12 +63,12 @@ class TestStatsService(unittest.TestCase):
 
     def tearDown(self):
         """清理临时文件。"""
-        for db_path in [self.access_log_db, self.config_db, self.state_db]:
+        for db_path in [self.data_db, self.config_db, self.state_db]:
             if db_path.exists():
                 os.remove(str(db_path))
         # 清理可能存在的 -wal / -shm 文件
         for suffix in ["-wal", "-shm"]:
-            wal_path = Path(str(self.access_log_db) + suffix)
+            wal_path = Path(str(self.data_db) + suffix)
             if wal_path.exists():
                 os.remove(str(wal_path))
         os.rmdir(self.tmpdir)
@@ -76,9 +76,9 @@ class TestStatsService(unittest.TestCase):
     def _create_service(self):
         """创建 StatsService 实例。"""
         from stats_service import StatsService
+
         return StatsService(
-            access_log_db_path=str(self.access_log_db),
-            data_db_path=str(self.config_db),
+            data_db_path=str(self.data_db),
             state_db_path=str(self.state_db),
         )
 
@@ -88,7 +88,7 @@ class TestStatsService(unittest.TestCase):
         Args:
             records: list of dicts with token_stats fields
         """
-        conn = sqlite3.connect(str(self.access_log_db))
+        conn = sqlite3.connect(str(self.data_db))
         for r in records:
             conn.execute(
                 "INSERT INTO token_stats "
@@ -164,7 +164,7 @@ class TestStatsService(unittest.TestCase):
         """验证 StatsService 可以正确实例化。"""
         service = self._create_service()
         self.assertIsNotNone(service)
-        self.assertEqual(service.access_log_db_path, self.access_log_db)
+        self.assertEqual(service.data_db_path, self.data_db)
         self.assertEqual(service.data_db_path, self.config_db)
         self.assertEqual(service.state_db_path, self.state_db)
 
@@ -439,12 +439,14 @@ class TestStatsService(unittest.TestCase):
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
         for i in range(5):
-            self._insert_test_data([
-                {
-                    "request_id": f"req-{i}",
-                    "request_ts": ts,
-                }
-            ])
+            self._insert_test_data(
+                [
+                    {
+                        "request_id": f"req-{i}",
+                        "request_ts": ts,
+                    }
+                ]
+            )
 
         service = self._create_service()
         result = service.fetch_requests("day", limit=2, offset=0)
@@ -492,6 +494,7 @@ class TestStatsService(unittest.TestCase):
         self.assertEqual(len(result["requests"]), 2)
         for r in result["requests"]:
             self.assertEqual(r["target_model"], "qwen3.6-plus")
+
     # ─── fetch_trend 测试 ───
 
     def test_fetch_trend_basic(self):
@@ -523,14 +526,22 @@ class TestStatsService(unittest.TestCase):
     def test_fetch_trend_includes_estimated_cost_cny(self):
         """趋势数据应包含 estimated_cost_cny 字段。"""
         from proxy.pricing_manager import PricingDB
+
         PricingDB(self.config_db)  # 建表 + 种子数据
 
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
-        self._insert_test_data([
-            {"request_id": "req-1", "target_model": "claude-sonnet-4-6-20260217",
-             "request_ts": ts, "input_tokens": 1000, "output_tokens": 2000},
-        ])
+        self._insert_test_data(
+            [
+                {
+                    "request_id": "req-1",
+                    "target_model": "claude-sonnet-4-6-20260217",
+                    "request_ts": ts,
+                    "input_tokens": 1000,
+                    "output_tokens": 2000,
+                },
+            ]
+        )
 
         service = self._create_service()
         result = service.fetch_trend("day")
@@ -593,13 +604,15 @@ class TestStatsService(unittest.TestCase):
         """没有 config.db 时返回空列表。"""
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
-        self._insert_test_data([
-            {
-                "request_id": "req-1",
-                "target_model": "qwen3.6-plus",
-                "request_ts": ts,
-            }
-        ])
+        self._insert_test_data(
+            [
+                {
+                    "request_id": "req-1",
+                    "target_model": "qwen3.6-plus",
+                    "request_ts": ts,
+                }
+            ]
+        )
 
         service = self._create_service()
         result = service.fetch_by_upstream("day")
@@ -608,13 +621,19 @@ class TestStatsService(unittest.TestCase):
     # ─── Period 格式兼容测试 ───
 
     def test_period_day_formats(self):
-
         """day 和 24h 格式应等效。"""
         service = self._create_service()
         result_day = service.fetch_summary("day")
         result_24h = service.fetch_summary("24h")
-        data_keys = ["request_count", "input_tokens", "output_tokens", "total_tokens",
-                     "cache_read_tokens", "cache_write_tokens", "avg_duration_ms"]
+        data_keys = [
+            "request_count",
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "avg_duration_ms",
+        ]
         for key in data_keys:
             self.assertEqual(result_day[key], result_24h[key], f"Mismatch on {key}")
 
@@ -623,8 +642,15 @@ class TestStatsService(unittest.TestCase):
         service = self._create_service()
         result_week = service.fetch_summary("week")
         result_7d = service.fetch_summary("7d")
-        data_keys = ["request_count", "input_tokens", "output_tokens", "total_tokens",
-                     "cache_read_tokens", "cache_write_tokens", "avg_duration_ms"]
+        data_keys = [
+            "request_count",
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "avg_duration_ms",
+        ]
         for key in data_keys:
             self.assertEqual(result_week[key], result_7d[key], f"Mismatch on {key}")
 
@@ -633,10 +659,18 @@ class TestStatsService(unittest.TestCase):
         service = self._create_service()
         result_month = service.fetch_summary("month")
         result_30d = service.fetch_summary("30d")
-        data_keys = ["request_count", "input_tokens", "output_tokens", "total_tokens",
-                     "cache_read_tokens", "cache_write_tokens", "avg_duration_ms"]
+        data_keys = [
+            "request_count",
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "avg_duration_ms",
+        ]
         for key in data_keys:
             self.assertEqual(result_month[key], result_30d[key], f"Mismatch on {key}")
+
 
 class TestCostCalculator(unittest.TestCase):
     """_CostCalculator 测试（通过 PricingDB + config.db）。"""
@@ -646,27 +680,32 @@ class TestCostCalculator(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.data_db_path = Path(self.tmpdir) / "config.db"
         from proxy.pricing_manager import PricingDB
+
         db = PricingDB(self.data_db_path)  # 建表 + 种子数据
         # 添加自定义测试模型（避免与种子数据冲突）
-        db.add_pricing({
-            "model_id": "test-usd-model",
-            "display_name": "Test USD",
-            "input_cost_per_million": "2.5",
-            "output_cost_per_million": "10.0",
-            "cache_read_cost_per_million": "0.5",
-            "cache_creation_cost_per_million": "2.0",
-            "currency": "USD",
-        })
+        db.add_pricing(
+            {
+                "model_id": "test-usd-model",
+                "display_name": "Test USD",
+                "input_cost_per_million": "2.5",
+                "output_cost_per_million": "10.0",
+                "cache_read_cost_per_million": "0.5",
+                "cache_creation_cost_per_million": "2.0",
+                "currency": "USD",
+            }
+        )
 
     def tearDown(self):
         """清理临时文件。"""
         import shutil
+
         if os.path.exists(self.tmpdir):
             shutil.rmtree(self.tmpdir)
 
     def _create_calculator(self):
         """创建 _CostCalculator 实例。"""
         from stats_service import _CostCalculator
+
         return _CostCalculator(self.data_db_path)
 
     def test_calculate_known_model(self):
@@ -691,14 +730,17 @@ class TestCostCalculator(unittest.TestCase):
     def test_calculate_rmb_model(self):
         """RMB 定价直接使用不换算。"""
         from proxy.pricing_manager import PricingDB
+
         db = PricingDB(self.data_db_path)
-        db.add_pricing({
-            "model_id": "test-rmb-model",
-            "display_name": "Test RMB",
-            "input_cost_per_million": "10",
-            "output_cost_per_million": "50",
-            "currency": "RMB",
-        })
+        db.add_pricing(
+            {
+                "model_id": "test-rmb-model",
+                "display_name": "Test RMB",
+                "input_cost_per_million": "10",
+                "output_cost_per_million": "50",
+                "currency": "RMB",
+            }
+        )
         calc = self._create_calculator()
         cost = calc.calculate("test-rmb-model", 1_000_000, 500_000, 0, 0)
         expected = 10 + 50 * 0.5  # 10 input + 25 output = 35 RMB
@@ -722,8 +764,12 @@ class TestCostCalculator(unittest.TestCase):
         pricing = calc.get_pricing()
         self.assertIn("test-usd-model", pricing)
         # 2.5 USD × 7 = 17.5 RMB
-        self.assertAlmostEqual(pricing["test-usd-model"]["input_cost"], 2.5 * 7, places=6)
-        self.assertAlmostEqual(pricing["test-usd-model"]["output_cost"], 10.0 * 7, places=6)
+        self.assertAlmostEqual(
+            pricing["test-usd-model"]["input_cost"], 2.5 * 7, places=6
+        )
+        self.assertAlmostEqual(
+            pricing["test-usd-model"]["output_cost"], 10.0 * 7, places=6
+        )
 
     def test_get_pricing_cache_reused(self):
         """无失效时缓存在多次调用间复用（第二次调用不重新加载）。"""
@@ -734,20 +780,17 @@ class TestCostCalculator(unittest.TestCase):
         self.assertIs(pricing1, pricing2)  # 同一对象（命中缓存）
 
 
-
-
-
 class TestStatsServiceCostCalculation(unittest.TestCase):
     """StatsService.calculate_cost 和 get_pricing 委托测试（通过 PricingDB）。"""
 
     def setUp(self):
         """创建临时目录和空 access_log.db。"""
         self.tmpdir = tempfile.mkdtemp()
-        self.access_log_db = Path(self.tmpdir) / "access_log.db"
-        self.config_db = Path(self.tmpdir) / "config.db"
+        self.data_db = Path(self.tmpdir) / "access_log.db"
+        self.config_db = self.data_db
         self.state_db = Path(self.tmpdir) / "state.db"
 
-        conn = sqlite3.connect(str(self.access_log_db))
+        conn = sqlite3.connect(str(self.data_db))
         conn.execute("CREATE TABLE IF NOT EXISTS token_stats (id INTEGER PRIMARY KEY)")
         conn.commit()
         conn.close()
@@ -755,32 +798,36 @@ class TestStatsServiceCostCalculation(unittest.TestCase):
     def tearDown(self):
         """清理临时文件。"""
         import shutil
+
         if os.path.exists(self.tmpdir):
             shutil.rmtree(self.tmpdir)
 
     def _create_service(self):
         """创建 StatsService 实例。"""
         from stats_service import StatsService
+
         return StatsService(
-            access_log_db_path=str(self.access_log_db),
-            data_db_path=str(self.config_db),
+            data_db_path=str(self.data_db),
             state_db_path=str(self.state_db),
         )
 
     def _setup_pricing_db(self):
         """通过 PricingDB 填充测试定价数据（USD 自定义值）。"""
         from proxy.pricing_manager import PricingDB
+
         db = PricingDB(self.config_db)
         # 用自定义模型避免与种子数据冲突
-        db.add_pricing({
-            "model_id": "test-calc-model",
-            "display_name": "Test Calc",
-            "input_cost_per_million": "2.5",
-            "output_cost_per_million": "10.0",
-            "cache_read_cost_per_million": "0.5",
-            "cache_creation_cost_per_million": "2.0",
-            "currency": "USD",
-        })
+        db.add_pricing(
+            {
+                "model_id": "test-calc-model",
+                "display_name": "Test Calc",
+                "input_cost_per_million": "2.5",
+                "output_cost_per_million": "10.0",
+                "cache_read_cost_per_million": "0.5",
+                "cache_creation_cost_per_million": "2.0",
+                "currency": "USD",
+            }
+        )
 
     def test_service_calculate_cost_known_model(self):
         """StatsService.calculate_cost 委托正确（USD × 7 = RMB）。"""
@@ -811,7 +858,9 @@ class TestStatsServiceCostCalculation(unittest.TestCase):
         pricing = service.get_pricing()
         self.assertIn("test-calc-model", pricing)
         # 2.5 USD × 7 = 17.5 RMB
-        self.assertAlmostEqual(pricing["test-calc-model"]["input_cost"], 2.5 * 7, places=6)
+        self.assertAlmostEqual(
+            pricing["test-calc-model"]["input_cost"], 2.5 * 7, places=6
+        )
 
 
 class TestCostCalculatorCNY(unittest.TestCase):
@@ -821,6 +870,7 @@ class TestCostCalculatorCNY(unittest.TestCase):
         self.tmpdir = TemporaryDirectory()
         self.db_path = Path(self.tmpdir.name) / "config.db"
         from proxy.pricing_manager import PricingDB
+
         PricingDB(self.db_path)  # 建表 + 种子数据
 
     def tearDown(self):
@@ -829,15 +879,19 @@ class TestCostCalculatorCNY(unittest.TestCase):
     def test_usd_pricing_converted_to_cny(self):
         """USD 定价应自动 × 7 换算为人民币。"""
         from stats_service import _CostCalculator
+
         calc = _CostCalculator(self.db_path)
         pricing = calc.get_pricing()
         # claude-sonnet-4-6: input=3 USD → 应返回 3*7=21 RMB
         self.assertIn("claude-sonnet-4-6-20260217", pricing)
-        self.assertAlmostEqual(pricing["claude-sonnet-4-6-20260217"]["input_cost"], 21.0)
+        self.assertAlmostEqual(
+            pricing["claude-sonnet-4-6-20260217"]["input_cost"], 21.0
+        )
 
     def test_calculate_returns_cny(self):
         """calculate() 返回人民币金额。"""
         from stats_service import _CostCalculator
+
         calc = _CostCalculator(self.db_path)
         # 1M input tokens × $3/1M = $3 → ¥21
         cost = calc.calculate("claude-sonnet-4-6-20260217", 1_000_000, 0, 0, 0)
@@ -846,6 +900,7 @@ class TestCostCalculatorCNY(unittest.TestCase):
     def test_unknown_model_returns_zero(self):
         """未知模型返回 0。"""
         from stats_service import _CostCalculator
+
         calc = _CostCalculator(self.db_path)
         cost = calc.calculate("nonexistent-model", 1000, 1000, 0, 0)
         self.assertEqual(cost, 0)
@@ -853,6 +908,7 @@ class TestCostCalculatorCNY(unittest.TestCase):
     def test_invalidate_cache(self):
         """invalidate_cache 后下次 get_pricing 重新加载。"""
         from stats_service import _CostCalculator
+
         calc = _CostCalculator(self.db_path)
         pricing1 = calc.get_pricing()
         calc.invalidate_cache()
@@ -867,9 +923,9 @@ class TestCostCalculatorCNY(unittest.TestCase):
     def test_invalidate_pricing_cache_on_stats_service(self):
         """StatsService.invalidate_pricing_cache() 委托到 _CostCalculator。"""
         from stats_service import StatsService
+
         service = StatsService(
-            access_log_db_path=str(Path(self.tmpdir.name) / "access_log.db"),
-            data_db_path=str(self.db_path),
+            data_db_path=str(Path(self.tmpdir.name) / "access_log.db"),
             state_db_path=str(Path(self.tmpdir.name) / "state.db"),
         )
         # 先触发 calculator 懒加载
@@ -887,11 +943,13 @@ class TestUpstreamResolver(unittest.TestCase):
     def setUp(self):
         """创建临时目录和 config.db。"""
         self.tmpdir = tempfile.mkdtemp()
-        self.config_db = Path(self.tmpdir) / "config.db"
+        self.config_db = Path(self.tmpdir) / "data.db"
+        self.data_db = self.config_db
 
     def tearDown(self):
         """清理临时文件。"""
         import shutil
+
         if os.path.exists(self.tmpdir):
             shutil.rmtree(self.tmpdir)
 
@@ -1014,11 +1072,11 @@ class TestUpstreamResolver(unittest.TestCase):
         """StatsService 使用 _UpstreamResolver。"""
         from stats_service import StatsService
 
-        access_log_db = Path(self.tmpdir) / "access_log.db"
         state_db = Path(self.tmpdir) / "state.db"
 
-        # 创建空 access_log.db
-        conn = sqlite3.connect(str(access_log_db))
+        # 在同一个数据库中创建 token_stats 表和 config 表
+        self._setup_config_db()
+        conn = sqlite3.connect(str(self.data_db))
         conn.execute("""
             CREATE TABLE IF NOT EXISTS token_stats (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1039,11 +1097,8 @@ class TestUpstreamResolver(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        self._setup_config_db()
-
         service = StatsService(
-            access_log_db_path=str(access_log_db),
-            data_db_path=str(self.config_db),
+            data_db_path=str(self.data_db),
             state_db_path=str(state_db),
         )
 
@@ -1053,7 +1108,6 @@ class TestUpstreamResolver(unittest.TestCase):
         # 验证 resolve 方法可用
         result = service._resolve_upstream("qwen3.6-plus")
         self.assertEqual(result["upstream_name"], "https://api.openai.com")
-
 
 
 class TestSessionDao(unittest.TestCase):
@@ -1084,17 +1138,20 @@ class TestSessionDao(unittest.TestCase):
     def tearDown(self):
         """清理临时文件。"""
         import shutil
+
         if os.path.exists(self.tmpdir):
             shutil.rmtree(self.tmpdir)
 
     def _create_dao(self):
         """创建 _SessionDao 实例。"""
         from stats_service import _SessionDao
+
         return _SessionDao(self.state_db)
 
     def _insert_session(self, **kwargs):
         """插入一条 session 测试数据。"""
         import time as _time
+
         defaults = {
             "model": "qwen3.6-plus",
             "started_at": _time.time(),
@@ -1112,8 +1169,15 @@ class TestSessionDao(unittest.TestCase):
             "(model, started_at, input_tokens, output_tokens, "
             "cache_read_tokens, cache_write_tokens, message_count) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (d["model"], d["started_at"], d["input_tokens"], d["output_tokens"],
-             d["cache_read_tokens"], d["cache_write_tokens"], d["message_count"]),
+            (
+                d["model"],
+                d["started_at"],
+                d["input_tokens"],
+                d["output_tokens"],
+                d["cache_read_tokens"],
+                d["cache_write_tokens"],
+                d["message_count"],
+            ),
         )
         conn.commit()
         conn.close()
@@ -1140,6 +1204,7 @@ class TestSessionDao(unittest.TestCase):
     def test_query_sessions_db_not_exists(self):
         """state.db 不存在时返回空列表，不抛异常。"""
         from stats_service import _SessionDao
+
         dao = _SessionDao(Path("/nonexistent/path/state.db"))
         result = dao.query_sessions("day")
         self.assertEqual(result, [])
@@ -1158,9 +1223,12 @@ class TestSessionDao(unittest.TestCase):
     def test_query_sessions_period_filter(self):
         """Period 过滤只返回时间范围内数据。"""
         import time as _time
+
         now_ts = _time.time()
         self._insert_session(model="qwen3.6-plus", started_at=now_ts)
-        self._insert_session(model="claude-sonnet-4", started_at=now_ts - 10 * 86400, input_tokens=999)
+        self._insert_session(
+            model="claude-sonnet-4", started_at=now_ts - 10 * 86400, input_tokens=999
+        )
         dao = self._create_dao()
         result = dao.query_sessions("day")
 
@@ -1177,13 +1245,24 @@ class TestSessionDao(unittest.TestCase):
     def test_period_filter_works_with_unix_timestamp(self):
         """验证 _period_to_condition 对 Unix 时间戳的 started_at 正确过滤。"""
         import time as _time
+
         now_ts = _time.time()
-        self._insert_session(model="recent", started_at=now_ts - 3600,
-                             input_tokens=100, output_tokens=50,
-                             cache_read_tokens=0, cache_write_tokens=0)
-        self._insert_session(model="old", started_at=now_ts - 8 * 86400,
-                             input_tokens=200, output_tokens=100,
-                             cache_read_tokens=0, cache_write_tokens=0)
+        self._insert_session(
+            model="recent",
+            started_at=now_ts - 3600,
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+        )
+        self._insert_session(
+            model="old",
+            started_at=now_ts - 8 * 86400,
+            input_tokens=200,
+            output_tokens=100,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+        )
         dao = self._create_dao()
         week_sessions = dao.query_sessions("week")
         week_models = [s["model"] for s in week_sessions]
@@ -1199,27 +1278,30 @@ class TestSessionDao(unittest.TestCase):
     def test_normalize_model_name_with_bracket(self):
         """去除 [xxx] 上下文后缀。"""
         from stats_service import _SessionDao
+
         self.assertEqual(
-            _SessionDao._normalize_model_name("qwen3.6-plus [hermes]"),
-            "qwen3.6-plus"
+            _SessionDao._normalize_model_name("qwen3.6-plus [hermes]"), "qwen3.6-plus"
         )
 
     def test_normalize_model_name_no_bracket(self):
         """无括号的模型名保持不变。"""
         from stats_service import _SessionDao
+
         self.assertEqual(
-            _SessionDao._normalize_model_name("qwen3.6-plus"),
-            "qwen3.6-plus"
+            _SessionDao._normalize_model_name("qwen3.6-plus"), "qwen3.6-plus"
         )
 
     def test_normalize_model_name_none(self):
         """None 输入返回 None。"""
         from stats_service import _SessionDao
+
         self.assertIsNone(_SessionDao._normalize_model_name(None))
 
     def test_session_record_has_normalized_target_model(self):
         """session 记录的 target_model 已去除 [xxx] 后缀。"""
-        self._insert_session(model="qwen3.6-plus [hermes]", input_tokens=50, output_tokens=100)
+        self._insert_session(
+            model="qwen3.6-plus [hermes]", input_tokens=50, output_tokens=100
+        )
         dao = self._create_dao()
         result = dao.query_sessions("day")
 
@@ -1232,12 +1314,15 @@ class TestSessionDao(unittest.TestCase):
     def test_aggregate_by_model_basic(self):
         """按模型聚合正确。"""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._insert_session(model="qwen3.6-plus", input_tokens=100, output_tokens=200,
-                             started_at=now)
-        self._insert_session(model="qwen3.6-plus", input_tokens=50, output_tokens=100,
-                             started_at=now)
-        self._insert_session(model="claude-sonnet-4", input_tokens=300, output_tokens=500,
-                             started_at=now)
+        self._insert_session(
+            model="qwen3.6-plus", input_tokens=100, output_tokens=200, started_at=now
+        )
+        self._insert_session(
+            model="qwen3.6-plus", input_tokens=50, output_tokens=100, started_at=now
+        )
+        self._insert_session(
+            model="claude-sonnet-4", input_tokens=300, output_tokens=500, started_at=now
+        )
         dao = self._create_dao()
         result = dao.aggregate_by_model("day")
 
@@ -1257,6 +1342,7 @@ class TestSessionDao(unittest.TestCase):
     def test_aggregate_by_model_db_not_exists(self):
         """state.db 不存在时返回空列表。"""
         from stats_service import _SessionDao
+
         dao = _SessionDao(Path("/nonexistent/state.db"))
         result = dao.aggregate_by_model("day")
         self.assertEqual(result, [])
@@ -1264,10 +1350,15 @@ class TestSessionDao(unittest.TestCase):
     def test_aggregate_by_model_merges_context_suffix(self):
         """同名带 [ctx] 后缀的模型聚合到同一 base model。"""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._insert_session(model="qwen3.6-plus", input_tokens=100, output_tokens=200,
-                             started_at=now)
-        self._insert_session(model="qwen3.6-plus [coder]", input_tokens=50, output_tokens=100,
-                             started_at=now)
+        self._insert_session(
+            model="qwen3.6-plus", input_tokens=100, output_tokens=200, started_at=now
+        )
+        self._insert_session(
+            model="qwen3.6-plus [coder]",
+            input_tokens=50,
+            output_tokens=100,
+            started_at=now,
+        )
         dao = self._create_dao()
         result = dao.aggregate_by_model("day")
 
@@ -1281,10 +1372,12 @@ class TestSessionDao(unittest.TestCase):
     def test_aggregate_by_model_sorted_by_total_tokens(self):
         """聚合结果按 total_tokens 降序排列。"""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._insert_session(model="small-model", input_tokens=10, output_tokens=20,
-                             started_at=now)
-        self._insert_session(model="big-model", input_tokens=1000, output_tokens=2000,
-                             started_at=now)
+        self._insert_session(
+            model="small-model", input_tokens=10, output_tokens=20, started_at=now
+        )
+        self._insert_session(
+            model="big-model", input_tokens=1000, output_tokens=2000, started_at=now
+        )
         dao = self._create_dao()
         result = dao.aggregate_by_model("day")
 
@@ -1295,13 +1388,24 @@ class TestSessionDao(unittest.TestCase):
 
     def test_aggregate_summary_basic(self):
         import time as _time
+
         now_ts = _time.time()
-        self._insert_session(model="model-a", started_at=now_ts - 3600,
-                             input_tokens=100, output_tokens=50,
-                             cache_read_tokens=20, cache_write_tokens=10)
-        self._insert_session(model="model-b", started_at=now_ts - 1800,
-                             input_tokens=200, output_tokens=100,
-                             cache_read_tokens=40, cache_write_tokens=20)
+        self._insert_session(
+            model="model-a",
+            started_at=now_ts - 3600,
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=20,
+            cache_write_tokens=10,
+        )
+        self._insert_session(
+            model="model-b",
+            started_at=now_ts - 1800,
+            input_tokens=200,
+            output_tokens=100,
+            cache_read_tokens=40,
+            cache_write_tokens=20,
+        )
         dao = self._create_dao()
         result = dao.aggregate_summary("week")
         self.assertEqual(result["request_count"], 2)
@@ -1312,6 +1416,7 @@ class TestSessionDao(unittest.TestCase):
 
     def test_aggregate_summary_db_not_exists(self):
         from stats_service import _SessionDao
+
         dao = _SessionDao(Path("/nonexistent/state.db"))
         result = dao.aggregate_summary("week")
         self.assertEqual(result["request_count"], 0)
@@ -1321,10 +1426,16 @@ class TestSessionDao(unittest.TestCase):
 
     def test_aggregate_trend_basic(self):
         import time as _time
+
         now_ts = _time.time()
-        self._insert_session(model="model-a", started_at=now_ts - 3600,
-                             input_tokens=100, output_tokens=50,
-                             cache_read_tokens=20, cache_write_tokens=10)
+        self._insert_session(
+            model="model-a",
+            started_at=now_ts - 3600,
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=20,
+            cache_write_tokens=10,
+        )
         dao = self._create_dao()
         result = dao.aggregate_trend("week")
         self.assertIsInstance(result, list)
@@ -1336,11 +1447,10 @@ class TestSessionDao(unittest.TestCase):
 
     def test_aggregate_trend_db_not_exists(self):
         from stats_service import _SessionDao
+
         dao = _SessionDao(Path("/nonexistent/state.db"))
         result = dao.aggregate_trend("week")
         self.assertEqual(result, [])
-
-
 
 
 class TestFetchRequestsMerged(unittest.TestCase):
@@ -1349,12 +1459,12 @@ class TestFetchRequestsMerged(unittest.TestCase):
     def setUp(self):
         """创建临时目录和两个数据库。"""
         self.tmpdir = tempfile.mkdtemp()
-        self.access_log_db = Path(self.tmpdir) / "access_log.db"
-        self.config_db = Path(self.tmpdir) / "config.db"
+        self.data_db = Path(self.tmpdir) / "access_log.db"
+        self.config_db = self.data_db
         self.state_db = Path(self.tmpdir) / "state.db"
 
         # 创建 token_stats 表
-        conn = sqlite3.connect(str(self.access_log_db))
+        conn = sqlite3.connect(str(self.data_db))
         conn.execute("""
             CREATE TABLE IF NOT EXISTS token_stats (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1394,14 +1504,15 @@ class TestFetchRequestsMerged(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         if os.path.exists(self.tmpdir):
             shutil.rmtree(self.tmpdir)
 
     def _create_service(self):
         from stats_service import StatsService
+
         return StatsService(
-            access_log_db_path=str(self.access_log_db),
-            data_db_path=str(self.config_db),
+            data_db_path=str(self.data_db),
             state_db_path=str(self.state_db),
         )
 
@@ -1423,15 +1534,26 @@ class TestFetchRequestsMerged(unittest.TestCase):
         }
         defaults.update(kwargs)
         d = defaults
-        conn = sqlite3.connect(str(self.access_log_db))
+        conn = sqlite3.connect(str(self.data_db))
         conn.execute(
             "INSERT INTO token_stats (request_id, request_type, model, target_model, "
             "request_ts, duration_ms, input_tokens, output_tokens, cached_read_tokens, "
             "cached_write_tokens, status, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (d["request_id"], d["request_type"], d["model"], d["target_model"],
-             d["request_ts"], d["duration_ms"], d["input_tokens"], d["output_tokens"],
-             d["cached_read_tokens"], d["cached_write_tokens"], d["status"], d["created_at"]),
+            (
+                d["request_id"],
+                d["request_type"],
+                d["model"],
+                d["target_model"],
+                d["request_ts"],
+                d["duration_ms"],
+                d["input_tokens"],
+                d["output_tokens"],
+                d["cached_read_tokens"],
+                d["cached_write_tokens"],
+                d["status"],
+                d["created_at"],
+            ),
         )
         conn.commit()
         conn.close()
@@ -1453,8 +1575,14 @@ class TestFetchRequestsMerged(unittest.TestCase):
             "INSERT INTO sessions (model, started_at, input_tokens, output_tokens, "
             "cache_read_tokens, cache_write_tokens) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (d["model"], d["started_at"], d["input_tokens"], d["output_tokens"],
-             d["cache_read_tokens"], d["cache_write_tokens"]),
+            (
+                d["model"],
+                d["started_at"],
+                d["input_tokens"],
+                d["output_tokens"],
+                d["cache_read_tokens"],
+                d["cache_write_tokens"],
+            ),
         )
         conn.commit()
         conn.close()
@@ -1480,7 +1608,9 @@ class TestFetchRequestsMerged(unittest.TestCase):
         """token_stats 和 sessions 都有数据时正确合并。"""
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
-        self._insert_token_stat(request_id="proxy-1", target_model="qwen3.6-plus", request_ts=ts)
+        self._insert_token_stat(
+            request_id="proxy-1", target_model="qwen3.6-plus", request_ts=ts
+        )
         self._insert_session(model="qwen3.6-plus", started_at=ts)
 
         service = self._create_service()
@@ -1565,8 +1695,12 @@ class TestFetchRequestsMerged(unittest.TestCase):
     def test_merged_filter_by_model(self):
         """按 model 筛选只返回匹配的记录。"""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._insert_token_stat(request_id="proxy-qwen", target_model="qwen3.6-plus", request_ts=now)
-        self._insert_token_stat(request_id="proxy-claude", target_model="claude-sonnet-4", request_ts=now)
+        self._insert_token_stat(
+            request_id="proxy-qwen", target_model="qwen3.6-plus", request_ts=now
+        )
+        self._insert_token_stat(
+            request_id="proxy-claude", target_model="claude-sonnet-4", request_ts=now
+        )
         self._insert_session(model="qwen3.6-plus", started_at=now)
         self._insert_session(model="claude-sonnet-4", started_at=now)
 
@@ -1580,7 +1714,9 @@ class TestFetchRequestsMerged(unittest.TestCase):
     def test_merged_filter_by_request_type_session(self):
         """按 request_type='session' 筛选只返回 sessions。"""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._insert_token_stat(request_id="proxy-1", request_type="chat", request_ts=now)
+        self._insert_token_stat(
+            request_id="proxy-1", request_type="chat", request_ts=now
+        )
         self._insert_session(model="qwen3.6-plus", started_at=now)
 
         service = self._create_service()
@@ -1593,7 +1729,9 @@ class TestFetchRequestsMerged(unittest.TestCase):
     def test_merged_filter_by_request_type_chat(self):
         """按 request_type='chat' 筛选只返回 proxy。"""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._insert_token_stat(request_id="proxy-1", request_type="chat", request_ts=now)
+        self._insert_token_stat(
+            request_id="proxy-1", request_type="chat", request_ts=now
+        )
         self._insert_session(model="qwen3.6-plus", started_at=now)
 
         service = self._create_service()
@@ -1605,7 +1743,9 @@ class TestFetchRequestsMerged(unittest.TestCase):
     def test_merged_cost_calculation(self):
         """每条记录都有 estimated_cost_cny。"""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._insert_token_stat(request_id="proxy-1", input_tokens=100, output_tokens=200)
+        self._insert_token_stat(
+            request_id="proxy-1", input_tokens=100, output_tokens=200
+        )
         self._insert_session(model="qwen3.6-plus", input_tokens=100, output_tokens=200)
 
         service = self._create_service()
@@ -1617,8 +1757,12 @@ class TestFetchRequestsMerged(unittest.TestCase):
 
     def test_request_record_uses_cache_prefix(self):
         """proxy 记录字段名统一为 cache_*。"""
-        self._insert_token_stat(input_tokens=100, output_tokens=200,
-                                cached_read_tokens=20, cached_write_tokens=10)
+        self._insert_token_stat(
+            input_tokens=100,
+            output_tokens=200,
+            cached_read_tokens=20,
+            cached_write_tokens=10,
+        )
         result = self._create_service().fetch_requests("day")
         for req in result["requests"]:
             if req.get("_source") == "proxy":
@@ -1626,10 +1770,8 @@ class TestFetchRequestsMerged(unittest.TestCase):
                 self.assertNotIn("cached_read_tokens", req)
 
 
-
 if __name__ == "__main__":
     unittest.main()
-
 
 
 class TestFetchByModelRequestsMerged(unittest.TestCase):
@@ -1638,12 +1780,12 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
     def setUp(self):
         """创建临时目录和两个数据库。"""
         self.tmpdir = tempfile.mkdtemp()
-        self.access_log_db = Path(self.tmpdir) / "access_log.db"
-        self.config_db = Path(self.tmpdir) / "config.db"
+        self.data_db = Path(self.tmpdir) / "access_log.db"
+        self.config_db = self.data_db
         self.state_db = Path(self.tmpdir) / "state.db"
 
         # 创建 token_stats 表
-        conn = sqlite3.connect(str(self.access_log_db))
+        conn = sqlite3.connect(str(self.data_db))
         conn.execute("""
             CREATE TABLE IF NOT EXISTS token_stats (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1684,15 +1826,16 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
     def tearDown(self):
         """清理临时文件。"""
         import shutil
+
         if os.path.exists(self.tmpdir):
             shutil.rmtree(self.tmpdir)
 
     def _create_service(self):
         """创建 StatsService 实例。"""
         from stats_service import StatsService
+
         return StatsService(
-            access_log_db_path=str(self.access_log_db),
-            data_db_path=str(self.config_db),
+            data_db_path=str(self.data_db),
             state_db_path=str(self.state_db),
         )
 
@@ -1715,15 +1858,26 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
         }
         defaults.update(kwargs)
         d = defaults
-        conn = sqlite3.connect(str(self.access_log_db))
+        conn = sqlite3.connect(str(self.data_db))
         conn.execute(
             "INSERT INTO token_stats (request_id, request_type, model, target_model, "
             "request_ts, duration_ms, input_tokens, output_tokens, cached_read_tokens, "
             "cached_write_tokens, status, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (d["request_id"], d["request_type"], d["model"], d["target_model"],
-             d["request_ts"], d["duration_ms"], d["input_tokens"], d["output_tokens"],
-             d["cached_read_tokens"], d["cached_write_tokens"], d["status"], d["created_at"]),
+            (
+                d["request_id"],
+                d["request_type"],
+                d["model"],
+                d["target_model"],
+                d["request_ts"],
+                d["duration_ms"],
+                d["input_tokens"],
+                d["output_tokens"],
+                d["cached_read_tokens"],
+                d["cached_write_tokens"],
+                d["status"],
+                d["created_at"],
+            ),
         )
         conn.commit()
         conn.close()
@@ -1746,8 +1900,14 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
             "INSERT INTO sessions (model, started_at, input_tokens, output_tokens, "
             "cache_read_tokens, cache_write_tokens) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (d["model"], d["started_at"], d["input_tokens"], d["output_tokens"],
-             d["cache_read_tokens"], d["cache_write_tokens"]),
+            (
+                d["model"],
+                d["started_at"],
+                d["input_tokens"],
+                d["output_tokens"],
+                d["cache_read_tokens"],
+                d["cache_write_tokens"],
+            ),
         )
         conn.commit()
         conn.close()
@@ -1776,7 +1936,9 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
         """token_stats 和 sessions 都有数据时正确合并。"""
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
-        self._insert_token_stat(request_id="proxy-1", target_model="qwen3.6-plus", request_ts=ts)
+        self._insert_token_stat(
+            request_id="proxy-1", target_model="qwen3.6-plus", request_ts=ts
+        )
         self._insert_session(model="qwen3.6-plus", started_at=ts)
 
         service = self._create_service()
@@ -1811,7 +1973,9 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
         recent_ts = (now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
 
         # proxy: old, session: recent
-        self._insert_token_stat(request_id="proxy-old", target_model="qwen3.6-plus", request_ts=old_ts)
+        self._insert_token_stat(
+            request_id="proxy-old", target_model="qwen3.6-plus", request_ts=old_ts
+        )
         self._insert_session(model="qwen3.6-plus", started_at=recent_ts)
 
         service = self._create_service()
@@ -1826,10 +1990,14 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
         """分页 limit 正确限制返回数量。"""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         for i in range(15):
-            self._insert_token_stat(request_id=f"req-{i}", target_model="qwen3.6-plus", request_ts=now)
+            self._insert_token_stat(
+                request_id=f"req-{i}", target_model="qwen3.6-plus", request_ts=now
+            )
 
         service = self._create_service()
-        result = service.fetch_by_model_requests("qwen3.6-plus", "day", limit=10, offset=0)
+        result = service.fetch_by_model_requests(
+            "qwen3.6-plus", "day", limit=10, offset=0
+        )
         self.assertEqual(len(result["requests"]), 10)
         self.assertEqual(result["total"], 15)
         self.assertEqual(result["limit"], 10)
@@ -1838,18 +2006,26 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
         """分页 offset 正确跳过前面的记录。"""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         for i in range(10):
-            self._insert_token_stat(request_id=f"req-{i}", target_model="qwen3.6-plus", request_ts=now)
+            self._insert_token_stat(
+                request_id=f"req-{i}", target_model="qwen3.6-plus", request_ts=now
+            )
 
         service = self._create_service()
-        result = service.fetch_by_model_requests("qwen3.6-plus", "day", limit=5, offset=5)
+        result = service.fetch_by_model_requests(
+            "qwen3.6-plus", "day", limit=5, offset=5
+        )
         self.assertEqual(len(result["requests"]), 5)
         self.assertEqual(result["offset"], 5)
 
     def test_model_filter_exact_match(self):
         """按 model 精确筛选。"""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._insert_token_stat(request_id="proxy-qwen", target_model="qwen3.6-plus", request_ts=now)
-        self._insert_token_stat(request_id="proxy-claude", target_model="claude-sonnet-4", request_ts=now)
+        self._insert_token_stat(
+            request_id="proxy-qwen", target_model="qwen3.6-plus", request_ts=now
+        )
+        self._insert_token_stat(
+            request_id="proxy-claude", target_model="claude-sonnet-4", request_ts=now
+        )
         self._insert_session(model="qwen3.6-plus", started_at=now)
         self._insert_session(model="claude-sonnet-4", started_at=now)
 
@@ -1876,8 +2052,12 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
     def test_cost_calculation(self):
         """每条记录都有 estimated_cost_cny。"""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._insert_token_stat(request_id="proxy-1", target_model="qwen3.6-plus",
-                                input_tokens=100, output_tokens=200)
+        self._insert_token_stat(
+            request_id="proxy-1",
+            target_model="qwen3.6-plus",
+            input_tokens=100,
+            output_tokens=200,
+        )
         self._insert_session(model="qwen3.6-plus", input_tokens=100, output_tokens=200)
 
         service = self._create_service()
@@ -1888,21 +2068,18 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
             self.assertIsInstance(r["estimated_cost_cny"], (int, float))
 
 
-
-
-
 class TestFetchByUpstreamMerged(unittest.TestCase):
     """fetch_by_upstream 合并 token_stats + sessions 测试。"""
 
     def setUp(self):
         """创建临时目录和两个数据库。"""
         self.tmpdir = tempfile.mkdtemp()
-        self.access_log_db = Path(self.tmpdir) / "access_log.db"
-        self.config_db = Path(self.tmpdir) / "config.db"
+        self.data_db = Path(self.tmpdir) / "access_log.db"
+        self.config_db = self.data_db
         self.state_db = Path(self.tmpdir) / "state.db"
 
         # 创建 token_stats 表
-        conn = sqlite3.connect(str(self.access_log_db))
+        conn = sqlite3.connect(str(self.data_db))
         conn.execute("""
             CREATE TABLE IF NOT EXISTS token_stats (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1943,15 +2120,16 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
     def tearDown(self):
         """清理临时文件。"""
         import shutil
+
         if os.path.exists(self.tmpdir):
             shutil.rmtree(self.tmpdir)
 
     def _create_service(self):
         """创建 StatsService 实例。"""
         from stats_service import StatsService
+
         return StatsService(
-            access_log_db_path=str(self.access_log_db),
-            data_db_path=str(self.config_db),
+            data_db_path=str(self.data_db),
             state_db_path=str(self.state_db),
         )
 
@@ -2018,15 +2196,26 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         }
         defaults.update(kwargs)
         d = defaults
-        conn = sqlite3.connect(str(self.access_log_db))
+        conn = sqlite3.connect(str(self.data_db))
         conn.execute(
             "INSERT INTO token_stats (request_id, request_type, model, target_model, "
             "request_ts, duration_ms, input_tokens, output_tokens, cached_read_tokens, "
             "cached_write_tokens, status, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (d["request_id"], d["request_type"], d["model"], d["target_model"],
-             d["request_ts"], d["duration_ms"], d["input_tokens"], d["output_tokens"],
-             d["cached_read_tokens"], d["cached_write_tokens"], d["status"], d["created_at"]),
+            (
+                d["request_id"],
+                d["request_type"],
+                d["model"],
+                d["target_model"],
+                d["request_ts"],
+                d["duration_ms"],
+                d["input_tokens"],
+                d["output_tokens"],
+                d["cached_read_tokens"],
+                d["cached_write_tokens"],
+                d["status"],
+                d["created_at"],
+            ),
         )
         conn.commit()
         conn.close()
@@ -2049,8 +2238,14 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
             "INSERT INTO sessions (model, started_at, input_tokens, output_tokens, "
             "cache_read_tokens, cache_write_tokens) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (d["model"], d["started_at"], d["input_tokens"], d["output_tokens"],
-             d["cache_read_tokens"], d["cache_write_tokens"]),
+            (
+                d["model"],
+                d["started_at"],
+                d["input_tokens"],
+                d["output_tokens"],
+                d["cache_read_tokens"],
+                d["cache_write_tokens"],
+            ),
         )
         conn.commit()
         conn.close()
@@ -2073,12 +2268,18 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
         self._insert_token_stat(
-            request_id="req-1", target_model="qwen3.6-plus",
-            request_ts=ts, input_tokens=100, output_tokens=200
+            request_id="req-1",
+            target_model="qwen3.6-plus",
+            request_ts=ts,
+            input_tokens=100,
+            output_tokens=200,
         )
         self._insert_token_stat(
-            request_id="req-2", target_model="qwen3.6-plus",
-            request_ts=ts, input_tokens=50, output_tokens=100
+            request_id="req-2",
+            target_model="qwen3.6-plus",
+            request_ts=ts,
+            input_tokens=50,
+            output_tokens=100,
         )
         self._setup_config_db()
 
@@ -2097,8 +2298,12 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         """仅有 sessions 数据时正确聚合。"""
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
-        self._insert_session(model="qwen3.6-plus", started_at=ts, input_tokens=100, output_tokens=200)
-        self._insert_session(model="qwen3.6-plus", started_at=ts, input_tokens=50, output_tokens=100)
+        self._insert_session(
+            model="qwen3.6-plus", started_at=ts, input_tokens=100, output_tokens=200
+        )
+        self._insert_session(
+            model="qwen3.6-plus", started_at=ts, input_tokens=50, output_tokens=100
+        )
         self._setup_config_db()
 
         service = self._create_service()
@@ -2117,8 +2322,11 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
         # token_stats: 100 input, 200 output
         self._insert_token_stat(
-            request_id="proxy-1", target_model="qwen3.6-plus",
-            request_ts=ts, input_tokens=100, output_tokens=200
+            request_id="proxy-1",
+            target_model="qwen3.6-plus",
+            request_ts=ts,
+            input_tokens=100,
+            output_tokens=200,
         )
         # sessions: 50 input, 100 output
         self._insert_session(
@@ -2142,8 +2350,11 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
         # token_stats → openai
         self._insert_token_stat(
-            request_id="proxy-1", target_model="qwen3.6-plus",
-            request_ts=ts, input_tokens=100, output_tokens=200
+            request_id="proxy-1",
+            target_model="qwen3.6-plus",
+            request_ts=ts,
+            input_tokens=100,
+            output_tokens=200,
         )
         # sessions → anthropic
         self._insert_session(
@@ -2165,14 +2376,19 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
         # orphan session
         self._insert_session(
-            model="unknown-orphan-model", started_at=ts, input_tokens=100, output_tokens=200
+            model="unknown-orphan-model",
+            started_at=ts,
+            input_tokens=100,
+            output_tokens=200,
         )
         self._setup_config_db()
 
         service = self._create_service()
         result = service.fetch_by_upstream("day")
 
-        unknown = [up for up in result["upstreams"] if up["upstream_id"] == "__unknown__"]
+        unknown = [
+            up for up in result["upstreams"] if up["upstream_id"] == "__unknown__"
+        ]
         self.assertEqual(len(unknown), 1)
         self.assertEqual(unknown[0]["request_count"], 1)
         self.assertEqual(unknown[0]["input_tokens"], 100)
@@ -2184,15 +2400,20 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
         self._insert_token_stat(
-            request_id="orphan-1", target_model="orphan-model",
-            request_ts=ts, input_tokens=50, output_tokens=100
+            request_id="orphan-1",
+            target_model="orphan-model",
+            request_ts=ts,
+            input_tokens=50,
+            output_tokens=100,
         )
         self._setup_config_db()
 
         service = self._create_service()
         result = service.fetch_by_upstream("day")
 
-        unknown = [up for up in result["upstreams"] if up["upstream_id"] == "__unknown__"]
+        unknown = [
+            up for up in result["upstreams"] if up["upstream_id"] == "__unknown__"
+        ]
         self.assertEqual(len(unknown), 1)
         self.assertEqual(unknown[0]["request_count"], 1)
         self.assertIsNone(unknown[0]["base_url"])
@@ -2200,14 +2421,17 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
     def _setup_pricing_db(self):
         """通过 PricingDB 创建定价数据。"""
         from proxy.pricing_manager import PricingDB
+
         db = PricingDB(self.config_db)
-        db.add_pricing({
-            "model_id": "claude-sonnet-4",
-            "display_name": "Claude Sonnet 4",
-            "input_cost_per_million": "10.0",
-            "output_cost_per_million": "20.0",
-            "currency": "USD",
-        })
+        db.add_pricing(
+            {
+                "model_id": "claude-sonnet-4",
+                "display_name": "Claude Sonnet 4",
+                "input_cost_per_million": "10.0",
+                "output_cost_per_million": "20.0",
+                "currency": "USD",
+            }
+        )
 
     def test_sorted_by_estimated_cost_cny_desc(self):
         """结果按 estimated_cost_cny 降序排列。"""
@@ -2216,12 +2440,18 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
         # openai: small tokens (qwen3.6-plus 种子定价: 0.325/1.95 USD)
         self._insert_token_stat(
-            request_id="proxy-1", target_model="qwen3.6-plus",
-            request_ts=ts, input_tokens=1000, output_tokens=2000
+            request_id="proxy-1",
+            target_model="qwen3.6-plus",
+            request_ts=ts,
+            input_tokens=1000,
+            output_tokens=2000,
         )
         # anthropic: large tokens (自定义定价: 10.0/20.0 USD)
         self._insert_session(
-            model="claude-sonnet-4", started_at=ts, input_tokens=1000, output_tokens=2000
+            model="claude-sonnet-4",
+            started_at=ts,
+            input_tokens=1000,
+            output_tokens=2000,
         )
         self._setup_config_db()
 
@@ -2230,24 +2460,38 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
 
         self.assertEqual(len(result["upstreams"]), 2)
         # anthropic should be first (higher cost per token)
-        self.assertEqual(result["upstreams"][0]["upstream_id"], "https://api.anthropic.com")
-        self.assertGreater(result["upstreams"][0]["estimated_cost_cny"], result["upstreams"][1]["estimated_cost_cny"])
-        self.assertEqual(result["upstreams"][1]["upstream_id"], "https://api.openai.com")
+        self.assertEqual(
+            result["upstreams"][0]["upstream_id"], "https://api.anthropic.com"
+        )
+        self.assertGreater(
+            result["upstreams"][0]["estimated_cost_cny"],
+            result["upstreams"][1]["estimated_cost_cny"],
+        )
+        self.assertEqual(
+            result["upstreams"][1]["upstream_id"], "https://api.openai.com"
+        )
 
     def test_base_url_correct(self):
         """upstream 的 base_url 正确。"""
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
         self._insert_token_stat(
-            request_id="proxy-1", target_model="qwen3.6-plus",
-            request_ts=ts, input_tokens=100, output_tokens=200
+            request_id="proxy-1",
+            target_model="qwen3.6-plus",
+            request_ts=ts,
+            input_tokens=100,
+            output_tokens=200,
         )
         self._setup_config_db()
 
         service = self._create_service()
         result = service.fetch_by_upstream("day")
 
-        openai = [up for up in result["upstreams"] if up["upstream_id"] == "https://api.openai.com"]
+        openai = [
+            up
+            for up in result["upstreams"]
+            if up["upstream_id"] == "https://api.openai.com"
+        ]
         self.assertEqual(len(openai), 1)
         self.assertEqual(openai[0]["base_url"], "https://api.openai.com")
 
@@ -2263,7 +2507,9 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         service = self._create_service()
         result = service.fetch_by_upstream("day")
 
-        unknown = [up for up in result["upstreams"] if up["upstream_id"] == "__unknown__"]
+        unknown = [
+            up for up in result["upstreams"] if up["upstream_id"] == "__unknown__"
+        ]
         self.assertEqual(len(unknown), 1)
         self.assertIsNone(unknown[0]["base_url"])
 
@@ -2272,8 +2518,11 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
         self._insert_token_stat(
-            request_id="req-1", target_model="qwen3.6-plus",
-            request_ts=ts, input_tokens=100, output_tokens=200
+            request_id="req-1",
+            target_model="qwen3.6-plus",
+            request_ts=ts,
+            input_tokens=100,
+            output_tokens=200,
         )
         # 不创建 config.db
 
@@ -2285,14 +2534,18 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
     def test_cost_calculation_non_zero(self):
         """有定价数据时成本计算非零（USD × 7 = RMB）。"""
         from proxy.pricing_manager import PricingDB
+
         PricingDB(self.config_db)  # 建表 + 种子数据
         # 种子数据中 qwen3.6-plus: 0.325/1.95 USD → ×7 → 2.275/13.65 RMB
 
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
         self._insert_token_stat(
-            request_id="req-1", target_model="qwen3.6-plus",
-            request_ts=ts, input_tokens=1000, output_tokens=2000
+            request_id="req-1",
+            target_model="qwen3.6-plus",
+            request_ts=ts,
+            input_tokens=1000,
+            output_tokens=2000,
         )
         self._setup_config_db()
 
@@ -2311,8 +2564,11 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
         self._insert_token_stat(
-            request_id="req-1", target_model="qwen3.6-plus",
-            request_ts=ts, input_tokens=100, output_tokens=200
+            request_id="req-1",
+            target_model="qwen3.6-plus",
+            request_ts=ts,
+            input_tokens=100,
+            output_tokens=200,
         )
         self._setup_config_db()
         result = self._create_service().fetch_by_upstream("week")
@@ -2328,8 +2584,11 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
         # orphan token_stats
         self._insert_token_stat(
-            request_id="orphan-proxy", target_model="orphan-model",
-            request_ts=ts, input_tokens=50, output_tokens=100
+            request_id="orphan-proxy",
+            target_model="orphan-model",
+            request_ts=ts,
+            input_tokens=50,
+            output_tokens=100,
         )
         # orphan session
         self._insert_session(
@@ -2340,7 +2599,9 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         service = self._create_service()
         result = service.fetch_by_upstream("day")
 
-        unknown = [up for up in result["upstreams"] if up["upstream_id"] == "__unknown__"]
+        unknown = [
+            up for up in result["upstreams"] if up["upstream_id"] == "__unknown__"
+        ]
         self.assertEqual(len(unknown), 1)
         self.assertEqual(unknown[0]["request_count"], 2)  # 1 + 1
         self.assertEqual(unknown[0]["input_tokens"], 80)  # 50 + 30
@@ -2352,18 +2613,27 @@ class TestMerger(unittest.TestCase):
 
     def test_merge_summary_sums_fields(self):
         proxy = {
-            "period": "week", "request_count": 10,
-            "input_tokens": 100, "output_tokens": 50,
-            "cached_read_tokens": 200, "cached_write_tokens": 30,
-            "total_tokens": 380, "avg_duration_ms": 150.0,
+            "period": "week",
+            "request_count": 10,
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cached_read_tokens": 200,
+            "cached_write_tokens": 30,
+            "total_tokens": 380,
+            "avg_duration_ms": 150.0,
         }
         session = {
-            "period": "week", "request_count": 5,
-            "input_tokens": 80, "output_tokens": 40,
-            "cached_read_tokens": 160, "cached_write_tokens": 20,
-            "total_tokens": 300, "avg_duration_ms": 0,
+            "period": "week",
+            "request_count": 5,
+            "input_tokens": 80,
+            "output_tokens": 40,
+            "cached_read_tokens": 160,
+            "cached_write_tokens": 20,
+            "total_tokens": 300,
+            "avg_duration_ms": 0,
         }
         from stats_service import _Merger
+
         result = _Merger.merge_summary(proxy, session)
         self.assertEqual(result["request_count"], 15)
         self.assertEqual(result["input_tokens"], 180)
@@ -2375,14 +2645,27 @@ class TestMerger(unittest.TestCase):
 
     def test_merge_summary_renames_cached_to_cache(self):
         from stats_service import _Merger
-        proxy = {"period": "day", "request_count": 1, "input_tokens": 10,
-                 "output_tokens": 5, "cached_read_tokens": 20,
-                 "cached_write_tokens": 3, "total_tokens": 38,
-                 "avg_duration_ms": 0}
-        session = {"period": "day", "request_count": 0, "input_tokens": 0,
-                   "output_tokens": 0, "cached_read_tokens": 0,
-                   "cached_write_tokens": 0, "total_tokens": 0,
-                   "avg_duration_ms": 0}
+
+        proxy = {
+            "period": "day",
+            "request_count": 1,
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cached_read_tokens": 20,
+            "cached_write_tokens": 3,
+            "total_tokens": 38,
+            "avg_duration_ms": 0,
+        }
+        session = {
+            "period": "day",
+            "request_count": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cached_read_tokens": 0,
+            "cached_write_tokens": 0,
+            "total_tokens": 0,
+            "avg_duration_ms": 0,
+        }
         result = _Merger.merge_summary(proxy, session)
         self.assertIn("cache_read_tokens", result)
         self.assertNotIn("cached_read_tokens", result)
@@ -2391,36 +2674,62 @@ class TestMerger(unittest.TestCase):
 
     def test_merge_summary_empty_session(self):
         from stats_service import _Merger
-        proxy = {"period": "week", "request_count": 10, "input_tokens": 100,
-                 "output_tokens": 50, "cached_read_tokens": 200,
-                 "cached_write_tokens": 30, "total_tokens": 380,
-                 "avg_duration_ms": 100.0}
+
+        proxy = {
+            "period": "week",
+            "request_count": 10,
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cached_read_tokens": 200,
+            "cached_write_tokens": 30,
+            "total_tokens": 380,
+            "avg_duration_ms": 100.0,
+        }
         result = _Merger.merge_summary(proxy, {})
         self.assertEqual(result["request_count"], 10)
         self.assertEqual(result["cache_read_tokens"], 200)
 
     def test_merge_summary_no_estimated_cost(self):
         from stats_service import _Merger
-        proxy = {"period": "week", "request_count": 1, "input_tokens": 100,
-                 "output_tokens": 50, "cached_read_tokens": 0,
-                 "cached_write_tokens": 0, "total_tokens": 150,
-                 "avg_duration_ms": 0}
+
+        proxy = {
+            "period": "week",
+            "request_count": 1,
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cached_read_tokens": 0,
+            "cached_write_tokens": 0,
+            "total_tokens": 150,
+            "avg_duration_ms": 0,
+        }
         result = _Merger.merge_summary(proxy, {})
         self.assertNotIn("estimated_cost_cny", result)
 
     def test_merge_model_lists_sums_same_model(self):
         from stats_service import _Merger
+
         proxy = [
-            {"model": "claude-3.5-sonnet", "request_count": 5,
-             "input_tokens": 100, "output_tokens": 50,
-             "cached_read_tokens": 20, "cached_write_tokens": 10,
-             "total_tokens": 180, "avg_duration_ms": 200.0},
+            {
+                "model": "claude-3.5-sonnet",
+                "request_count": 5,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cached_read_tokens": 20,
+                "cached_write_tokens": 10,
+                "total_tokens": 180,
+                "avg_duration_ms": 200.0,
+            },
         ]
         session = [
-            {"model": "claude-3.5-sonnet", "request_count": 3,
-             "input_tokens": 60, "output_tokens": 30,
-             "cached_read_tokens": 15, "cached_write_tokens": 5,
-             "total_tokens": 110},
+            {
+                "model": "claude-3.5-sonnet",
+                "request_count": 3,
+                "input_tokens": 60,
+                "output_tokens": 30,
+                "cached_read_tokens": 15,
+                "cached_write_tokens": 5,
+                "total_tokens": 110,
+            },
         ]
         result = _Merger.merge_model_lists(proxy, session)
         self.assertEqual(len(result), 1)
@@ -2432,33 +2741,58 @@ class TestMerger(unittest.TestCase):
 
     def test_merge_model_lists_different_models(self):
         from stats_service import _Merger
+
         proxy = [
-            {"model": "model-a", "request_count": 2, "input_tokens": 10,
-             "output_tokens": 5, "cached_read_tokens": 0,
-             "cached_write_tokens": 0, "total_tokens": 15,
-             "avg_duration_ms": 100.0},
+            {
+                "model": "model-a",
+                "request_count": 2,
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cached_read_tokens": 0,
+                "cached_write_tokens": 0,
+                "total_tokens": 15,
+                "avg_duration_ms": 100.0,
+            },
         ]
         session = [
-            {"model": "model-b", "request_count": 3, "input_tokens": 20,
-             "output_tokens": 10, "cached_read_tokens": 0,
-             "cached_write_tokens": 0, "total_tokens": 30},
+            {
+                "model": "model-b",
+                "request_count": 3,
+                "input_tokens": 20,
+                "output_tokens": 10,
+                "cached_read_tokens": 0,
+                "cached_write_tokens": 0,
+                "total_tokens": 30,
+            },
         ]
         result = _Merger.merge_model_lists(proxy, session)
         self.assertEqual(len(result), 2)
 
     def test_merge_model_lists_normalizes_names(self):
         from stats_service import _Merger
+
         proxy = [
-            {"model": "claude-3.5-sonnet", "request_count": 5,
-             "input_tokens": 100, "output_tokens": 50,
-             "cached_read_tokens": 20, "cached_write_tokens": 10,
-             "total_tokens": 180, "avg_duration_ms": 0},
+            {
+                "model": "claude-3.5-sonnet",
+                "request_count": 5,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cached_read_tokens": 20,
+                "cached_write_tokens": 10,
+                "total_tokens": 180,
+                "avg_duration_ms": 0,
+            },
         ]
         session = [
-            {"model": "claude-3.5-sonnet[1m]", "request_count": 3,
-             "input_tokens": 60, "output_tokens": 30,
-             "cached_read_tokens": 15, "cached_write_tokens": 5,
-             "total_tokens": 110},
+            {
+                "model": "claude-3.5-sonnet[1m]",
+                "request_count": 3,
+                "input_tokens": 60,
+                "output_tokens": 30,
+                "cached_read_tokens": 15,
+                "cached_write_tokens": 5,
+                "total_tokens": 110,
+            },
         ]
         result = _Merger.merge_model_lists(proxy, session)
         self.assertEqual(len(result), 1)
@@ -2466,17 +2800,28 @@ class TestMerger(unittest.TestCase):
 
     def test_merge_trend_lists_sums_same_time(self):
         from stats_service import _Merger
+
         proxy = [
-            {"time": "2026-05-11", "request_count": 5,
-             "input_tokens": 100, "output_tokens": 50,
-             "cached_read_tokens": 20, "cached_write_tokens": 10,
-             "total_tokens": 180},
+            {
+                "time": "2026-05-11",
+                "request_count": 5,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cached_read_tokens": 20,
+                "cached_write_tokens": 10,
+                "total_tokens": 180,
+            },
         ]
         session = [
-            {"time": "2026-05-11", "request_count": 3,
-             "input_tokens": 60, "output_tokens": 30,
-             "cached_read_tokens": 15, "cached_write_tokens": 5,
-             "total_tokens": 110},
+            {
+                "time": "2026-05-11",
+                "request_count": 3,
+                "input_tokens": 60,
+                "output_tokens": 30,
+                "cached_read_tokens": 15,
+                "cached_write_tokens": 5,
+                "total_tokens": 110,
+            },
         ]
         result = _Merger.merge_trend_lists(proxy, session)
         self.assertEqual(len(result), 1)
@@ -2486,11 +2831,17 @@ class TestMerger(unittest.TestCase):
 
     def test_merge_trend_lists_output_key_is_date(self):
         from stats_service import _Merger
+
         proxy = [
-            {"time": "2026-05-11", "request_count": 5,
-             "input_tokens": 100, "output_tokens": 50,
-             "cached_read_tokens": 20, "cached_write_tokens": 10,
-             "total_tokens": 180},
+            {
+                "time": "2026-05-11",
+                "request_count": 5,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cached_read_tokens": 20,
+                "cached_write_tokens": 10,
+                "total_tokens": 180,
+            },
         ]
         result = _Merger.merge_trend_lists(proxy, [])
         self.assertIn("date", result[0])
@@ -2499,11 +2850,17 @@ class TestMerger(unittest.TestCase):
 
     def test_merge_trend_lists_empty_session(self):
         from stats_service import _Merger
+
         proxy = [
-            {"time": "2026-05-11", "request_count": 5,
-             "input_tokens": 100, "output_tokens": 50,
-             "cached_read_tokens": 20, "cached_write_tokens": 10,
-             "total_tokens": 180},
+            {
+                "time": "2026-05-11",
+                "request_count": 5,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cached_read_tokens": 20,
+                "cached_write_tokens": 10,
+                "total_tokens": 180,
+            },
         ]
         result = _Merger.merge_trend_lists(proxy, [])
         self.assertEqual(len(result), 1)
@@ -2515,14 +2872,14 @@ class TestFetchSummaryMerged(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.access_log_db = Path(self.tmpdir) / "access_log.db"
+        self.data_db = Path(self.tmpdir) / "access_log.db"
         self.state_db = Path(self.tmpdir) / "state.db"
-        self.config_db = Path(self.tmpdir) / "config.db"
-        self._create_access_log_db()
+        self.config_db = self.data_db
+        self._create_data_db()
         self._create_state_db()
 
-    def _create_access_log_db(self):
-        conn = sqlite3.connect(str(self.access_log_db))
+    def _create_data_db(self):
+        conn = sqlite3.connect(str(self.data_db))
         conn.execute("""CREATE TABLE IF NOT EXISTS token_stats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             request_id TEXT NOT NULL, request_type TEXT NOT NULL,
@@ -2532,13 +2889,16 @@ class TestFetchSummaryMerged(unittest.TestCase):
             cached_read_tokens INTEGER DEFAULT 0, cached_write_tokens INTEGER DEFAULT 0,
             status TEXT DEFAULT 'completed', created_at TEXT NOT NULL)""")
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        conn.execute("INSERT INTO token_stats VALUES (1,'r1','chat','m1','m1',?,100,100,50,20,10,'completed',?)",
-                     (now, now))
+        conn.execute(
+            "INSERT INTO token_stats VALUES (1,'r1','chat','m1','m1',?,100,100,50,20,10,'completed',?)",
+            (now, now),
+        )
         conn.commit()
         conn.close()
 
     def _create_state_db(self):
         import time as _time
+
         conn = sqlite3.connect(str(self.state_db))
         conn.execute("""CREATE TABLE sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT,
@@ -2546,20 +2906,23 @@ class TestFetchSummaryMerged(unittest.TestCase):
             output_tokens INTEGER,
             cache_read_tokens INTEGER DEFAULT 0,
             cache_write_tokens INTEGER DEFAULT 0)""")
-        conn.execute("INSERT INTO sessions VALUES (1,'m1',?,80,40,15,5)", (_time.time(),))
+        conn.execute(
+            "INSERT INTO sessions VALUES (1,'m1',?,80,40,15,5)", (_time.time(),)
+        )
         conn.commit()
         conn.close()
 
     def tearDown(self):
         import shutil
+
         if os.path.exists(self.tmpdir):
             shutil.rmtree(self.tmpdir)
 
     def _create_service(self):
         from stats_service import StatsService
+
         return StatsService(
-            access_log_db_path=str(self.access_log_db),
-            data_db_path=str(self.config_db),
+            data_db_path=str(self.data_db),
             state_db_path=str(self.state_db),
         )
 
@@ -2568,7 +2931,7 @@ class TestFetchSummaryMerged(unittest.TestCase):
         result = svc.fetch_summary("week")
         self.assertEqual(result["request_count"], 2)  # 1 proxy + 1 session
         self.assertEqual(result["input_tokens"], 180)  # 100 + 80
-        self.assertEqual(result["output_tokens"], 90)   # 50 + 40
+        self.assertEqual(result["output_tokens"], 90)  # 50 + 40
         self.assertIn("cache_read_tokens", result)
         self.assertNotIn("cached_read_tokens", result)
         self.assertEqual(result["cache_read_tokens"], 35)  # 20 + 15
@@ -2593,4 +2956,3 @@ class TestFetchSummaryMerged(unittest.TestCase):
         self.assertIn("month", result)
         self.assertIn("cache_read_tokens", result["week"])
         self.assertIn("estimated_cost_cny", result["week"])
-
