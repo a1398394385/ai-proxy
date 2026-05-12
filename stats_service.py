@@ -13,8 +13,8 @@
     from stats_service import StatsService
 
     service = StatsService(
-        access_log_db_path="data/access_log.db",
-        config_db_path="~/.hermes/config.db",
+        access_log_db_path=None,
+        data_db_path=None,
         state_db_path="~/.hermes/state.db",
     )
     summary = service.fetch_summary(period="24h")
@@ -23,6 +23,7 @@
 import sqlite3
 import time
 from pathlib import Path
+from proxy.paths import get_data_path, DATA_DB
 from proxy.pricing_manager import PricingDB
 
 class _TokenStatsDao:
@@ -347,17 +348,17 @@ class _TokenStatsDao:
 
 
 class _UpstreamResolver:
-    """上游解析器 — 从 config.db 加载 model → upstream 映射，内置 TTL 缓存。
+    """上游解析器 — 从 data db 加载 model → upstream 映射，内置 TTL 缓存。
 
     构造时加载全量映射到内存，每次 resolve() 检查缓存是否过期（60s），
-    过期自动刷新。config.db 不存在时返回空映射，不抛异常。
+    过期自动刷新。data db 不存在时返回空映射，不抛异常。
 
     Args:
-        config_db_path: config.db 路径
+        data_db_path: data db 路径
     """
 
-    def __init__(self, config_db_path: Path) -> None:
-        self.config_db_path = config_db_path
+    def __init__(self, data_db_path: Path) -> None:
+        self.data_db_path = data_db_path
         self._cache_ttl = 60  # 缓存 60 秒
         self._loaded_at = 0.0  # 初始化为 0，强制首次加载
         self._model_map: dict = {}  # {model_name: {upstream_name, upstream_url}}
@@ -365,16 +366,16 @@ class _UpstreamResolver:
         self._refresh()
 
     def _refresh(self) -> None:
-        """从 config.db 重新加载映射到内存。"""
+        """从 data db 重新加载映射到内存。"""
         self._loaded_at = time.time()
         self._model_map = {}
         self._upstream_list = []
 
-        if not self.config_db_path.exists():
+        if not self.data_db_path.exists():
             return
 
         try:
-            conn = sqlite3.connect(str(self.config_db_path))
+            conn = sqlite3.connect(str(self.data_db_path))
             conn.row_factory = sqlite3.Row
             try:
                 rows = conn.execute(
@@ -403,7 +404,7 @@ class _UpstreamResolver:
             finally:
                 conn.close()
         except Exception:
-            # config.db 损坏或无法读取时，保持空映射
+            # data db 损坏或无法读取时，保持空映射
             pass
 
     def resolve(self, target_model: str) -> dict:
@@ -446,27 +447,27 @@ class _UpstreamResolver:
 
 
 class _CostCalculator:
-    """成本计算器 — 从 config.db 加载 model_pricing 表（通过 PricingDB），无过期缓存。
+    """成本计算器 — 从 data db 加载 model_pricing 表（通过 PricingDB），无过期缓存。
 
     USD 价格自动 × 7 转为人民币，RMB 价格原样使用。
     calculate() 统一返回人民币金额。
     缓存仅在显式调用 invalidate_cache() 后失效。
 
     Args:
-        config_db_path: config.db 路径
+        data_db_path: data db 路径
     """
 
     EXCHANGE_RATE = 7  # USD → RMB
 
-    def __init__(self, config_db_path: str | Path) -> None:
-        self._pricing_db = PricingDB(Path(config_db_path))
+    def __init__(self, data_db_path: str | Path) -> None:
+        self._pricing_db = PricingDB(Path(data_db_path))
         self._pricing_cache: dict = {}
         self._display_name_cache: dict = {}  # lowercase model_id → display_name
 
     # ─── 定价加载 ───
 
     def get_pricing(self) -> dict:
-        """从 config.db 加载 model_pricing 表（带缓存），自动换算为人民币。
+        """从 data db 加载 model_pricing 表（带缓存），自动换算为人民币。
 
         model_id 统一小写存入缓存，实现大小写不敏感匹配。
 
@@ -981,22 +982,22 @@ class StatsService:
 
     Args:
         access_log_db_path: access_log.db 路径（token_stats 表所在）
-        config_db_path: config.db 路径（模型路由配置 + 定价数据）
+        data_db_path: 数据数据库路径（模型路由配置 + 定价数据）
         state_db_path: state.db 路径（运行时状态）
     """
 
     def __init__(
         self,
         access_log_db_path: str,
-        config_db_path: str,
+        data_db_path: str,
         state_db_path: str,
     ) -> None:
-        self.access_log_db_path = Path(access_log_db_path)
-        self.config_db_path = Path(config_db_path)
+        self.access_log_db_path = Path(access_log_db_path) if access_log_db_path else get_data_path("access_log.db")
+        self.data_db_path = Path(data_db_path) if data_db_path else DATA_DB
         self.state_db_path = Path(state_db_path)
 
         # 初始化上游解析器
-        self._upstream_resolver = _UpstreamResolver(self.config_db_path)
+        self._upstream_resolver = _UpstreamResolver(self.data_db_path)
 
     # ─── TokenStatsDao 实例 ───
 
@@ -1379,7 +1380,7 @@ class StatsService:
     # ─── 辅助方法 ───
 
     def _load_upstream_map(self) -> dict:
-        """从 config.db 读取 target_model -> upstream_name 映射。"""
+        """从 data db 读取 target_model -> upstream_name 映射。"""
         model_map = self._upstream_resolver._model_map
         return {model: info["upstream_name"] for model, info in model_map.items()}
 
@@ -1390,7 +1391,7 @@ class StatsService:
     def _get_calculator(self) -> _CostCalculator:
         """懒加载获取 _CostCalculator 单例。"""
         if not hasattr(self, "_cost_calculator"):
-            self._cost_calculator = _CostCalculator(self.config_db_path)
+            self._cost_calculator = _CostCalculator(self.data_db_path)
         return self._cost_calculator
 
     def invalidate_pricing_cache(self):

@@ -20,6 +20,9 @@ __pycache__/
 # Playwright cache
 .playwright-mcp/
 
+# SuperPowers cache
+.superpowers/
+
 # Claude Code local state (not CLAUDE.md which is tracked)
 # .claude/skills/ 共享到仓库，其余本地状态忽略
 .claude/settings.json

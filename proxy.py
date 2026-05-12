@@ -10,6 +10,7 @@ from socketserver import ThreadingMixIn
 from pathlib import Path
 
 from proxy.common import CONFIG, load_config
+from proxy.paths import DATA_DIR
 from proxy.request_logger import init_logger as init_request_logger
 from proxy.handler import ProxyHandler
 
@@ -70,9 +71,10 @@ def main():
 
     logging_cfg = CONFIG.get("logging", {})
     retention_days = logging_cfg.get("debug_retention_days", 7)
-    log_dir = logging_cfg.get("log_dir", "data")
+    log_dir = logging_cfg.get("log_dir")
     db_file = logging_cfg.get("log_file", "access_log.db")
-    init_request_logger(Path(__file__).parent / log_dir / db_file, retention_days)
+    log_path = (Path(os.path.expanduser(log_dir)) / db_file) if log_dir else (DATA_DIR / db_file)
+    init_request_logger(log_path, retention_days)
 
     server = ThreadedHTTPServer((host, port), ProxyHandler)
     from proxy.response_store import ResponseStore as _ResponseStore

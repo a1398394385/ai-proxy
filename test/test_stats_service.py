@@ -78,7 +78,7 @@ class TestStatsService(unittest.TestCase):
         from stats_service import StatsService
         return StatsService(
             access_log_db_path=str(self.access_log_db),
-            config_db_path=str(self.config_db),
+            data_db_path=str(self.config_db),
             state_db_path=str(self.state_db),
         )
 
@@ -165,7 +165,7 @@ class TestStatsService(unittest.TestCase):
         service = self._create_service()
         self.assertIsNotNone(service)
         self.assertEqual(service.access_log_db_path, self.access_log_db)
-        self.assertEqual(service.config_db_path, self.config_db)
+        self.assertEqual(service.data_db_path, self.config_db)
         self.assertEqual(service.state_db_path, self.state_db)
 
     # ─── Provider 接口签名存在测试 ───
@@ -644,9 +644,9 @@ class TestCostCalculator(unittest.TestCase):
     def setUp(self):
         """创建临时目录及 PricingDB 实例。"""
         self.tmpdir = tempfile.mkdtemp()
-        self.config_db_path = Path(self.tmpdir) / "config.db"
+        self.data_db_path = Path(self.tmpdir) / "config.db"
         from proxy.pricing_manager import PricingDB
-        db = PricingDB(self.config_db_path)  # 建表 + 种子数据
+        db = PricingDB(self.data_db_path)  # 建表 + 种子数据
         # 添加自定义测试模型（避免与种子数据冲突）
         db.add_pricing({
             "model_id": "test-usd-model",
@@ -667,7 +667,7 @@ class TestCostCalculator(unittest.TestCase):
     def _create_calculator(self):
         """创建 _CostCalculator 实例。"""
         from stats_service import _CostCalculator
-        return _CostCalculator(self.config_db_path)
+        return _CostCalculator(self.data_db_path)
 
     def test_calculate_known_model(self):
         """已知模型返回正确成本（USD 自动 × 7 转为人民币）。"""
@@ -691,7 +691,7 @@ class TestCostCalculator(unittest.TestCase):
     def test_calculate_rmb_model(self):
         """RMB 定价直接使用不换算。"""
         from proxy.pricing_manager import PricingDB
-        db = PricingDB(self.config_db_path)
+        db = PricingDB(self.data_db_path)
         db.add_pricing({
             "model_id": "test-rmb-model",
             "display_name": "Test RMB",
@@ -763,7 +763,7 @@ class TestStatsServiceCostCalculation(unittest.TestCase):
         from stats_service import StatsService
         return StatsService(
             access_log_db_path=str(self.access_log_db),
-            config_db_path=str(self.config_db),
+            data_db_path=str(self.config_db),
             state_db_path=str(self.state_db),
         )
 
@@ -869,7 +869,7 @@ class TestCostCalculatorCNY(unittest.TestCase):
         from stats_service import StatsService
         service = StatsService(
             access_log_db_path=str(Path(self.tmpdir.name) / "access_log.db"),
-            config_db_path=str(self.db_path),
+            data_db_path=str(self.db_path),
             state_db_path=str(Path(self.tmpdir.name) / "state.db"),
         )
         # 先触发 calculator 懒加载
@@ -1043,7 +1043,7 @@ class TestUpstreamResolver(unittest.TestCase):
 
         service = StatsService(
             access_log_db_path=str(access_log_db),
-            config_db_path=str(self.config_db),
+            data_db_path=str(self.config_db),
             state_db_path=str(state_db),
         )
 
@@ -1401,7 +1401,7 @@ class TestFetchRequestsMerged(unittest.TestCase):
         from stats_service import StatsService
         return StatsService(
             access_log_db_path=str(self.access_log_db),
-            config_db_path=str(self.config_db),
+            data_db_path=str(self.config_db),
             state_db_path=str(self.state_db),
         )
 
@@ -1692,7 +1692,7 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
         from stats_service import StatsService
         return StatsService(
             access_log_db_path=str(self.access_log_db),
-            config_db_path=str(self.config_db),
+            data_db_path=str(self.config_db),
             state_db_path=str(self.state_db),
         )
 
@@ -1951,7 +1951,7 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         from stats_service import StatsService
         return StatsService(
             access_log_db_path=str(self.access_log_db),
-            config_db_path=str(self.config_db),
+            data_db_path=str(self.config_db),
             state_db_path=str(self.state_db),
         )
 
@@ -2559,7 +2559,7 @@ class TestFetchSummaryMerged(unittest.TestCase):
         from stats_service import StatsService
         return StatsService(
             access_log_db_path=str(self.access_log_db),
-            config_db_path=str(self.config_db),
+            data_db_path=str(self.config_db),
             state_db_path=str(self.state_db),
         )
 

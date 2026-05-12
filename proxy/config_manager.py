@@ -12,10 +12,10 @@ from typing import Optional
 
 
 class ConfigDB:
-    """config.db 数据库操作。每次查询打开新连接（无连接池）。
+    """数据数据库操作。每次查询打开新连接（无连接池）。
 
     参数:
-        db_path: config.db 路径
+        db_path: data db 路径
     """
 
     def __init__(self, db_path: Path):

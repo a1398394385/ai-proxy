@@ -37,7 +37,7 @@ model_map:
 
 logging:
   debug_retention_days: 7
-  log_dir: "data"
+  log_dir: "~/.ai-agent-tools/data"
   log_file: "access_log.db"
 
 response_store:

@@ -6,7 +6,8 @@ import io
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from server.common import json_response, _read_json, access_log_db, ACCESS_LOG_DB_PATH
+from server.common import json_response, _read_json, access_log_db
+from proxy.paths import DATA_DB
 from server.dbquery_api import handle_post as dbquery_handle_post
 
 
@@ -74,7 +75,7 @@ class TestDbQuery:
         """)
         conn.close()
 
-        cls._patcher = patch("server.common.ACCESS_LOG_DB_PATH", cls.db_path)
+        cls._patcher = patch("server.common.DATA_DB", cls.db_path)
         cls._patcher.start()
 
     @classmethod

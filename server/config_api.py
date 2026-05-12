@@ -207,7 +207,8 @@ def handle_get(path, qs, handler) -> bool:
 def handle_post(path, handler) -> bool:
     if path == "/api/migrate":
         try:
-            result = Migrations(Path.home() / ".hermes" / "config.db").migrate()
+            from proxy.paths import DATA_DB
+            result = Migrations(DATA_DB).migrate()
             json_response(handler, result)
         except Exception as e:
             json_response(handler, {"error": str(e)}, 500)

@@ -13,13 +13,12 @@ from pathlib import Path
 from proxy.config_manager import ConfigDB, Migrations
 from proxy.pricing_manager import PricingDB
 from proxy.common import get_port, get_host, load_config, CONFIG_PATH
+from proxy.paths import DATA_DB
 
 
 # ─── 路径常量 ───
 
 DB_PATH = os.path.expanduser("~/.hermes/memory_store.db")
-CONFIG_DB_PATH = Path(os.path.expanduser("~/.hermes/config.db"))
-ACCESS_LOG_DB_PATH = Path("data/access_log.db")
 STATE_DB_PATH = os.path.expanduser("~/.hermes/state.db")
 MAX_BODY_SIZE = 10 * 1024 * 1024  # 10MB
 
@@ -70,7 +69,7 @@ def _read_json(handler):
 
 @contextmanager
 def config_db():
-    db = ConfigDB(CONFIG_DB_PATH)
+    db = ConfigDB(DATA_DB)
     try:
         yield db
     finally:
@@ -79,11 +78,8 @@ def config_db():
 
 @contextmanager
 def pricing_db():
-    db = PricingDB(CONFIG_DB_PATH)
-    try:
-        yield db
-    finally:
-        db.close()
+    """PricingDB 上下文管理器。PricingDB 各方法内部自行管理连接，无需关闭。"""
+    yield PricingDB(DATA_DB)
 
 
 @contextmanager
@@ -108,7 +104,7 @@ def state_db():
 
 @contextmanager
 def access_log_db():
-    conn = sqlite3.connect(str(ACCESS_LOG_DB_PATH), timeout=5)
+    conn = sqlite3.connect(str(DATA_DB), timeout=5)
     conn.row_factory = sqlite3.Row
     try:
         yield conn

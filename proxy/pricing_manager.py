@@ -168,7 +168,7 @@ class PricingDB:
     """model_pricing 表的 CRUD 操作。每次查询新建连接，用完关闭。
 
     参数:
-        db_path: config.db 路径
+        db_path: data db 路径
     """
 
     def __init__(self, db_path: Path):

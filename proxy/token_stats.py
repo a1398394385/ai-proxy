@@ -22,10 +22,11 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from .paths import get_data_path
+
 logger = logging.getLogger(__name__)
 
-# 依赖：token_stats.py 在 proxy/ 子目录，parent.parent 指向项目根目录
-DB_PATH = Path(__file__).parent.parent / "data" / "access_log.db"
+DB_PATH = get_data_path("access_log.db")
 
 
 def _find_first(usage: dict, keys: list, default=0) -> int:

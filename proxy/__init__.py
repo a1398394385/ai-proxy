@@ -23,7 +23,7 @@ from .common import (  # noqa: F401 — re-export
     resolve_model,
     config_cache,
     CONFIG_PATH,
-    CONFIG_DB_PATH,
+    DATA_DB,
 )
 
 from .transform import (  # noqa: F401 — re-export

@@ -6,7 +6,8 @@
 import os
 from http.server import HTTPServer
 
-from .common import HOST, PORT, DB_PATH, STATE_DB_PATH, CONFIG_DB_PATH, ACCESS_LOG_DB_PATH  # noqa: F401
+from .common import HOST, PORT, DB_PATH, STATE_DB_PATH  # noqa: F401
+from proxy.paths import DATA_DB
 from .common import json_response, _read_json, config_db, pricing_db, fact_db, state_db, access_log_db  # noqa: F401
 from .common import _reload_proxies, row_to_dict, MAX_BODY_SIZE  # noqa: F401
 from .handler import HermesDataHandler  # noqa: F401
@@ -25,8 +26,8 @@ def main():
         from stats_service import StatsService
 
         stats = StatsService(
-            access_log_db_path=str(ACCESS_LOG_DB_PATH),
-            config_db_path=str(CONFIG_DB_PATH),
+            access_log_db_path=str(DATA_DB),
+            data_db_path=str(DATA_DB),
             state_db_path=STATE_DB_PATH,
         )
         HermesDataHandler.stats_service = stats

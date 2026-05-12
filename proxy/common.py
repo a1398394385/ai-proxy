@@ -24,13 +24,13 @@ from .request_logger import (
 from .token_stats import record_token_stats
 
 # ─── 配置变量 ──────────────────────────────────────────────────────────
+from .paths import DATA_DIR, get_data_path, DATA_DB  # noqa: F401
 
 CONFIG = {}
 CONFIG_PATH = Path(__file__).parent.parent / "proxy_config.yaml"
 
 # ─── 动态配置缓存（替代静态 model_map）─────────────────────────────
-CONFIG_DB_PATH = Path(os.path.expanduser("~/.hermes/config.db"))
-config_cache = ConfigCache(CONFIG_DB_PATH)
+config_cache = ConfigCache(DATA_DB)
 
 
 def load_config(config_path: Path = None):
@@ -38,7 +38,7 @@ def load_config(config_path: Path = None):
 
     config_path: 可选，覆盖默认配置文件路径（用于测试）。
 
-    model_map 校验已移除，改由 ConfigCache 从 config.db 动态加载。
+    model_map 校验已移除，改由 ConfigCache 从 data db 动态加载。
     """
     global CONFIG
     path = config_path or CONFIG_PATH
