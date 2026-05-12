@@ -178,7 +178,6 @@ def _call_upstream_models(upstream: dict) -> dict:
 
 
 STATE_DB_PATH = os.path.expanduser("~/.hermes/state.db")
-CC_SWITCH_DB_PATH = os.path.expanduser("~/.cc-switch/cc-switch.db")
 load_config(CONFIG_PATH)
 HOST = get_host("data_browser", "127.0.0.1")
 PORT = get_port("data_browser", 18742)
@@ -196,7 +195,6 @@ def _get_stats_service():
             access_log_db_path=str(ACCESS_LOG_DB_PATH),
             config_db_path=str(CONFIG_DB_PATH),
             state_db_path=STATE_DB_PATH,
-            cc_switch_db_path=CC_SWITCH_DB_PATH,
         )
     return _stats_service_instance
 

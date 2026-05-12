@@ -10,6 +10,7 @@ import tempfile
 import os
 from pathlib import Path
 from datetime import datetime, timedelta
+from tempfile import TemporaryDirectory
 
 
 class TestStatsService(unittest.TestCase):
@@ -21,8 +22,6 @@ class TestStatsService(unittest.TestCase):
         self.access_log_db = Path(self.tmpdir) / "access_log.db"
         self.config_db = Path(self.tmpdir) / "config.db"
         self.state_db = Path(self.tmpdir) / "state.db"
-        self.cc_switch_db = Path(self.tmpdir) / "cc-switch.db"
-
         # 创建空 token_stats 表（复用 token_stats.py 的建表 SQL）
         conn = sqlite3.connect(str(self.access_log_db))
         conn.execute("PRAGMA journal_mode=WAL")
@@ -64,7 +63,7 @@ class TestStatsService(unittest.TestCase):
 
     def tearDown(self):
         """清理临时文件。"""
-        for db_path in [self.access_log_db, self.config_db, self.state_db, self.cc_switch_db]:
+        for db_path in [self.access_log_db, self.config_db, self.state_db]:
             if db_path.exists():
                 os.remove(str(db_path))
         # 清理可能存在的 -wal / -shm 文件
@@ -81,7 +80,6 @@ class TestStatsService(unittest.TestCase):
             access_log_db_path=str(self.access_log_db),
             config_db_path=str(self.config_db),
             state_db_path=str(self.state_db),
-            cc_switch_db_path=str(self.cc_switch_db),
         )
 
     def _insert_test_data(self, records: list):
@@ -169,7 +167,6 @@ class TestStatsService(unittest.TestCase):
         self.assertEqual(service.access_log_db_path, self.access_log_db)
         self.assertEqual(service.config_db_path, self.config_db)
         self.assertEqual(service.state_db_path, self.state_db)
-        self.assertEqual(service.cc_switch_db_path, self.cc_switch_db)
 
     # ─── Provider 接口签名存在测试 ───
 
@@ -553,11 +550,11 @@ class TestStatsService(unittest.TestCase):
 
         self.assertEqual(len(result["upstreams"]), 2)
         upstreams = result["upstreams"]
-        # 按 estimated_cost_usd 降序
-        self.assertEqual(upstreams[0]["upstream_id"], "https://api.anthropic.com")
-        self.assertEqual(upstreams[0]["output_tokens"], 500)
-        self.assertEqual(upstreams[1]["upstream_id"], "https://api.openai.com")
-        self.assertEqual(upstreams[1]["output_tokens"], 200)
+        # 按 estimated_cost_usd 降序（qwen3.6-plus 有种子数据定价，claude-sonnet-4 没有）
+        self.assertEqual(upstreams[0]["upstream_id"], "https://api.openai.com")
+        self.assertEqual(upstreams[0]["output_tokens"], 200)
+        self.assertEqual(upstreams[1]["upstream_id"], "https://api.anthropic.com")
+        self.assertEqual(upstreams[1]["output_tokens"], 500)
         # 验证返回格式包含所有必需字段
         for up in upstreams:
             self.assertIn("upstream_id", up)
@@ -620,432 +617,247 @@ class TestStatsService(unittest.TestCase):
             self.assertEqual(result_month[key], result_30d[key], f"Mismatch on {key}")
 
 class TestCostCalculator(unittest.TestCase):
-
-    """_CostCalculator 测试。"""
-
-
+    """_CostCalculator 测试（通过 PricingDB + config.db）。"""
 
     def setUp(self):
-
-        """创建临时目录。"""
-
+        """创建临时目录及 PricingDB 实例。"""
         self.tmpdir = tempfile.mkdtemp()
-
-        self.cc_switch_db_path = Path(self.tmpdir) / "cc-switch.db"
-
-
+        self.config_db_path = Path(self.tmpdir) / "config.db"
+        from proxy.pricing_manager import PricingDB
+        db = PricingDB(self.config_db_path)  # 建表 + 种子数据
+        # 添加自定义测试模型（避免与种子数据冲突）
+        db.add_pricing({
+            "model_id": "test-usd-model",
+            "display_name": "Test USD",
+            "input_cost_per_million": "2.5",
+            "output_cost_per_million": "10.0",
+            "cache_read_cost_per_million": "0.5",
+            "cache_creation_cost_per_million": "2.0",
+            "currency": "USD",
+        })
 
     def tearDown(self):
-
         """清理临时文件。"""
-
         import shutil
-
-
-
         if os.path.exists(self.tmpdir):
-
             shutil.rmtree(self.tmpdir)
 
-
-
-    def _setup_pricing_db(self):
-
-        """创建 cc-switch.db 并填充 model_pricing 数据。"""
-
-        conn = sqlite3.connect(str(self.cc_switch_db_path))
-
-        conn.execute(
-
-            """
-
-            CREATE TABLE IF NOT EXISTS model_pricing (
-
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-                model_id TEXT NOT NULL,
-
-                input_cost_per_million REAL NOT NULL DEFAULT 0,
-
-                output_cost_per_million REAL NOT NULL DEFAULT 0,
-
-                cache_read_cost_per_million REAL NOT NULL DEFAULT 0,
-
-                cache_creation_cost_per_million REAL NOT NULL DEFAULT 0
-
-            )
-
-            """
-
-        )
-
-        conn.execute(
-
-            "INSERT INTO model_pricing (model_id, input_cost_per_million, "
-
-            "output_cost_per_million, cache_read_cost_per_million, cache_creation_cost_per_million) "
-
-            "VALUES (?, ?, ?, ?, ?)",
-
-            ("qwen3.6-plus", 2.5, 10.0, 0.5, 2.0),
-
-        )
-
-        conn.execute(
-
-            "INSERT INTO model_pricing (model_id, input_cost_per_million, "
-
-            "output_cost_per_million, cache_read_cost_per_million, cache_creation_cost_per_million) "
-
-            "VALUES (?, ?, ?, ?, ?)",
-
-            ("claude-sonnet-4", 3.0, 15.0, 0.75, 3.5),
-
-        )
-
-        conn.commit()
-
-        conn.close()
-
-
-
     def _create_calculator(self):
-
         """创建 _CostCalculator 实例。"""
-
         from stats_service import _CostCalculator
-
-
-
-        return _CostCalculator(self.cc_switch_db_path)
-
-
+        return _CostCalculator(self.config_db_path)
 
     def test_calculate_known_model(self):
-
-        """已知模型返回正确成本。"""
-
-        self._setup_pricing_db()
-
+        """已知模型返回正确成本（USD 自动 × 7 转为人民币）。"""
         calc = self._create_calculator()
-
-
-
-        cost = calc.calculate("qwen3.6-plus", 1000, 2000, 500, 300)
-
-
-
+        cost = calc.calculate("test-usd-model", 1000, 2000, 500, 300)
+        # USD 定价 × 7：input=17.5, output=70.0, cache_read=3.5, cache_write=14.0 (RMB)
         expected = (
-
-            1000 / 1_000_000 * 2.5
-
-            + 2000 / 1_000_000 * 10.0
-
-            + 500 / 1_000_000 * 0.5
-
-            + 300 / 1_000_000 * 2.0
-
+            1000 / 1_000_000 * 2.5 * 7
+            + 2000 / 1_000_000 * 10.0 * 7
+            + 500 / 1_000_000 * 0.5 * 7
+            + 300 / 1_000_000 * 2.0 * 7
         )
-
         self.assertAlmostEqual(cost, expected, places=10)
 
-
-
     def test_calculate_unknown_model(self):
-
         """未知模型返回 0。"""
-
-        self._setup_pricing_db()
-
         calc = self._create_calculator()
-
-
-
-        cost = calc.calculate("unknown-model", 1000, 2000, 0, 0)
-
+        cost = calc.calculate("nonexistent-model", 1000, 2000, 0, 0)
         self.assertEqual(cost, 0)
 
-
-
-    def test_calculate_db_not_exists(self):
-
-        """cc-switch.db 不存在返回 0。"""
-
+    def test_calculate_rmb_model(self):
+        """RMB 定价直接使用不换算。"""
+        from proxy.pricing_manager import PricingDB
+        db = PricingDB(self.config_db_path)
+        db.add_pricing({
+            "model_id": "test-rmb-model",
+            "display_name": "Test RMB",
+            "input_cost_per_million": "10",
+            "output_cost_per_million": "50",
+            "currency": "RMB",
+        })
         calc = self._create_calculator()
-
-
-
-        cost = calc.calculate("qwen3.6-plus", 1000, 2000, 0, 0)
-
-        self.assertEqual(cost, 0)
-
-
-
-    def test_get_pricing(self):
-
-        """get_pricing 返回正确的定价字典。"""
-
-        self._setup_pricing_db()
-
-        calc = self._create_calculator()
-
-
-
-        pricing = calc.get_pricing()
-
-
-
-        self.assertIn("qwen3.6-plus", pricing)
-
-        self.assertEqual(pricing["qwen3.6-plus"]["input_cost"], 2.5)
-
-        self.assertEqual(pricing["qwen3.6-plus"]["output_cost"], 10.0)
-
-        self.assertEqual(pricing["qwen3.6-plus"]["cache_read_cost"], 0.5)
-
-        self.assertEqual(pricing["qwen3.6-plus"]["cache_creation_cost"], 2.0)
-
-
-
-    def test_get_pricing_cache_ttl(self):
-
-        """定价缓存 TTL 生效。"""
-        import time
-
-
-        self._setup_pricing_db()
-
-        calc = self._create_calculator()
-
-
-
-        pricing1 = calc.get_pricing()
-
-
-
-        calc._pricing_cache_time = time.time() - 301
-
-        calc._pricing_cache = {}
-
-
-
-        pricing2 = calc.get_pricing()
-
-        self.assertEqual(pricing1, pricing2)
-
-
+        cost = calc.calculate("test-rmb-model", 1_000_000, 500_000, 0, 0)
+        expected = 10 + 50 * 0.5  # 10 input + 25 output = 35 RMB
+        self.assertAlmostEqual(cost, expected, places=6)
 
     def test_calculate_zero_tokens(self):
-
         """零 tokens 返回 0。"""
-
-        self._setup_pricing_db()
-
         calc = self._create_calculator()
-
-
-
-        cost = calc.calculate("qwen3.6-plus", 0, 0, 0, 0)
-
+        cost = calc.calculate("claude-sonnet-4-6-20260217", 0, 0, 0, 0)
         self.assertEqual(cost, 0)
-
-
 
     def test_calculate_none_tokens(self):
-
         """None tokens 返回 0。"""
-
-        self._setup_pricing_db()
-
         calc = self._create_calculator()
-
-
-
-        cost = calc.calculate("qwen3.6-plus", None, None, None, None)
-
+        cost = calc.calculate("claude-sonnet-4-6-20260217", None, None, None, None)
         self.assertEqual(cost, 0)
+
+    def test_get_pricing(self):
+        """get_pricing 返回正确的定价字典（人民币值）。"""
+        calc = self._create_calculator()
+        pricing = calc.get_pricing()
+        self.assertIn("test-usd-model", pricing)
+        # 2.5 USD × 7 = 17.5 RMB
+        self.assertAlmostEqual(pricing["test-usd-model"]["input_cost"], 2.5 * 7, places=6)
+        self.assertAlmostEqual(pricing["test-usd-model"]["output_cost"], 10.0 * 7, places=6)
+
+    def test_get_pricing_cache_ttl(self):
+        """定价缓存 TTL 生效。"""
+        import time
+        calc = self._create_calculator()
+        pricing1 = calc.get_pricing()
+        calc._pricing_cache_time = time.time() - 301
+        calc._pricing_cache = {}
+        pricing2 = calc.get_pricing()
+        self.assertEqual(pricing1, pricing2)
 
 
 
 
 
 class TestStatsServiceCostCalculation(unittest.TestCase):
-
-    """StatsService.calculate_cost 和 get_pricing 委托测试。"""
-
-
+    """StatsService.calculate_cost 和 get_pricing 委托测试（通过 PricingDB）。"""
 
     def setUp(self):
-
         """创建临时目录和空 access_log.db。"""
-
         self.tmpdir = tempfile.mkdtemp()
-
         self.access_log_db = Path(self.tmpdir) / "access_log.db"
-
         self.config_db = Path(self.tmpdir) / "config.db"
-
         self.state_db = Path(self.tmpdir) / "state.db"
 
-        self.cc_switch_db = Path(self.tmpdir) / "cc-switch.db"
-
-
-
         conn = sqlite3.connect(str(self.access_log_db))
-
         conn.execute("CREATE TABLE IF NOT EXISTS token_stats (id INTEGER PRIMARY KEY)")
-
         conn.commit()
-
         conn.close()
-
-
 
     def tearDown(self):
-
         """清理临时文件。"""
-
         import shutil
-
-
-
         if os.path.exists(self.tmpdir):
-
             shutil.rmtree(self.tmpdir)
 
-
-
     def _create_service(self):
-
         """创建 StatsService 实例。"""
-
         from stats_service import StatsService
-
-
-
         return StatsService(
-
             access_log_db_path=str(self.access_log_db),
-
             config_db_path=str(self.config_db),
-
             state_db_path=str(self.state_db),
-
-            cc_switch_db_path=str(self.cc_switch_db),
-
         )
-
-
 
     def _setup_pricing_db(self):
-
-        """创建 cc-switch.db 并填充定价数据。"""
-
-        conn = sqlite3.connect(str(self.cc_switch_db))
-
-        conn.execute(
-
-            "CREATE TABLE IF NOT EXISTS model_pricing ("
-
-            "id INTEGER PRIMARY KEY, model_id TEXT, "
-
-            "input_cost_per_million REAL, output_cost_per_million REAL, "
-
-            "cache_read_cost_per_million REAL, cache_creation_cost_per_million REAL)"
-
-        )
-
-        conn.execute(
-
-            "INSERT INTO model_pricing (model_id, input_cost_per_million, "
-
-            "output_cost_per_million, cache_read_cost_per_million, cache_creation_cost_per_million) "
-
-            "VALUES (?, ?, ?, ?, ?)",
-
-            ("qwen3.6-plus", 2.5, 10.0, 0.5, 2.0),
-
-        )
-
-        conn.commit()
-
-        conn.close()
-
-
+        """通过 PricingDB 填充测试定价数据（USD 自定义值）。"""
+        from proxy.pricing_manager import PricingDB
+        db = PricingDB(self.config_db)
+        # 用自定义模型避免与种子数据冲突
+        db.add_pricing({
+            "model_id": "test-calc-model",
+            "display_name": "Test Calc",
+            "input_cost_per_million": "2.5",
+            "output_cost_per_million": "10.0",
+            "cache_read_cost_per_million": "0.5",
+            "cache_creation_cost_per_million": "2.0",
+            "currency": "USD",
+        })
 
     def test_service_calculate_cost_known_model(self):
-
-        """StatsService.calculate_cost 委托正确。"""
-
+        """StatsService.calculate_cost 委托正确（USD × 7 = RMB）。"""
         self._setup_pricing_db()
-
         service = self._create_service()
 
-
-
-        cost = service.calculate_cost("qwen3.6-plus", 1000, 2000, 500, 300)
-
+        cost = service.calculate_cost("test-calc-model", 1000, 2000, 500, 300)
+        # 2.5/10/0.5/2.0 USD → ×7 → 17.5/70/3.5/14.0 RMB
         expected = (
-
-            1000 / 1_000_000 * 2.5
-
-            + 2000 / 1_000_000 * 10.0
-
-            + 500 / 1_000_000 * 0.5
-
-            + 300 / 1_000_000 * 2.0
-
+            1000 / 1_000_000 * 2.5 * 7
+            + 2000 / 1_000_000 * 10.0 * 7
+            + 500 / 1_000_000 * 0.5 * 7
+            + 300 / 1_000_000 * 2.0 * 7
         )
-
         self.assertAlmostEqual(cost, expected, places=10)
 
-
-
     def test_service_calculate_cost_unknown_model(self):
-
         """未知模型返回 0。"""
-
         self._setup_pricing_db()
-
         service = self._create_service()
-
-
-
-        cost = service.calculate_cost("unknown-model", 1000, 2000, 0, 0)
-
+        cost = service.calculate_cost("nonexistent-model", 1000, 2000, 0, 0)
         self.assertEqual(cost, 0)
-
-
 
     def test_service_get_pricing(self):
-
-        """StatsService.get_pricing 委托正确。"""
-
+        """StatsService.get_pricing 委托正确（返回人民币值）。"""
         self._setup_pricing_db()
-
         service = self._create_service()
-
-
-
         pricing = service.get_pricing()
-
-        self.assertIn("qwen3.6-plus", pricing)
-
-        self.assertEqual(pricing["qwen3.6-plus"]["input_cost"], 2.5)
-
+        self.assertIn("test-calc-model", pricing)
+        # 2.5 USD × 7 = 17.5 RMB
+        self.assertAlmostEqual(pricing["test-calc-model"]["input_cost"], 2.5 * 7, places=6)
 
 
-    def test_service_calculate_cost_no_db(self):
+class TestCostCalculatorCNY(unittest.TestCase):
+    """_CostCalculator 币种换算和缓存失效测试。"""
 
-        """cc-switch.db 不存在时返回 0。"""
+    def setUp(self):
+        self.tmpdir = TemporaryDirectory()
+        self.db_path = Path(self.tmpdir.name) / "config.db"
+        from proxy.pricing_manager import PricingDB
+        PricingDB(self.db_path)  # 建表 + 种子数据
 
-        service = self._create_service()
+    def tearDown(self):
+        self.tmpdir.cleanup()
 
+    def test_usd_pricing_converted_to_cny(self):
+        """USD 定价应自动 × 7 换算为人民币。"""
+        from stats_service import _CostCalculator
+        calc = _CostCalculator(self.db_path)
+        pricing = calc.get_pricing()
+        # claude-sonnet-4-6: input=3 USD → 应返回 3*7=21 RMB
+        self.assertIn("claude-sonnet-4-6-20260217", pricing)
+        self.assertAlmostEqual(pricing["claude-sonnet-4-6-20260217"]["input_cost"], 21.0)
 
+    def test_calculate_returns_cny(self):
+        """calculate() 返回人民币金额。"""
+        from stats_service import _CostCalculator
+        calc = _CostCalculator(self.db_path)
+        # 1M input tokens × $3/1M = $3 → ¥21
+        cost = calc.calculate("claude-sonnet-4-6-20260217", 1_000_000, 0, 0, 0)
+        self.assertAlmostEqual(cost, 21.0)
 
-        cost = service.calculate_cost("qwen3.6-plus", 1000, 2000, 0, 0)
-
+    def test_unknown_model_returns_zero(self):
+        """未知模型返回 0。"""
+        from stats_service import _CostCalculator
+        calc = _CostCalculator(self.db_path)
+        cost = calc.calculate("nonexistent-model", 1000, 1000, 0, 0)
         self.assertEqual(cost, 0)
+
+    def test_invalidate_cache(self):
+        """invalidate_cache 后下次 get_pricing 重新加载。"""
+        from stats_service import _CostCalculator
+        calc = _CostCalculator(self.db_path)
+        pricing1 = calc.get_pricing()
+        calc.invalidate_cache()
+        # 验证缓存已清空
+        self.assertEqual(calc._pricing_cache, {})
+        self.assertEqual(calc._pricing_cache_time, 0.0)
+        # 再次获取应重新加载
+        pricing2 = calc.get_pricing()
+        self.assertEqual(len(pricing1), len(pricing2))
+
+    def test_invalidate_pricing_cache_on_stats_service(self):
+        """StatsService.invalidate_pricing_cache() 委托到 _CostCalculator。"""
+        from stats_service import StatsService
+        service = StatsService(
+            access_log_db_path=str(Path(self.tmpdir.name) / "access_log.db"),
+            config_db_path=str(self.db_path),
+            state_db_path=str(Path(self.tmpdir.name) / "state.db"),
+        )
+        # 先触发 calculator 懒加载
+        calc = service._get_calculator()
+        calc.get_pricing()
+        self.assertGreater(calc._pricing_cache_time, 0)
+        # 失效
+        service.invalidate_pricing_cache()
+        self.assertEqual(calc._pricing_cache_time, 0.0)
 
 
 class TestUpstreamResolver(unittest.TestCase):
@@ -1213,7 +1025,6 @@ class TestUpstreamResolver(unittest.TestCase):
             access_log_db_path=str(access_log_db),
             config_db_path=str(self.config_db),
             state_db_path=str(state_db),
-            cc_switch_db_path=str(cc_switch_db),
         )
 
         # 验证 resolver 已初始化
@@ -1573,7 +1384,6 @@ class TestFetchRequestsMerged(unittest.TestCase):
             access_log_db_path=str(self.access_log_db),
             config_db_path=str(self.config_db),
             state_db_path=str(self.state_db),
-            cc_switch_db_path=str(self.cc_switch_db),
         )
 
     def _insert_token_stat(self, **kwargs):
@@ -1866,7 +1676,6 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
             access_log_db_path=str(self.access_log_db),
             config_db_path=str(self.config_db),
             state_db_path=str(self.state_db),
-            cc_switch_db_path=str(self.cc_switch_db),
         )
 
     def _insert_token_stat(self, **kwargs):
@@ -2073,7 +1882,6 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         self.access_log_db = Path(self.tmpdir) / "access_log.db"
         self.config_db = Path(self.tmpdir) / "config.db"
         self.state_db = Path(self.tmpdir) / "state.db"
-        self.cc_switch_db = Path(self.tmpdir) / "cc-switch.db"
 
         # 创建 token_stats 表
         conn = sqlite3.connect(str(self.access_log_db))
@@ -2127,7 +1935,6 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
             access_log_db_path=str(self.access_log_db),
             config_db_path=str(self.config_db),
             state_db_path=str(self.state_db),
-            cc_switch_db_path=str(self.cc_switch_db),
         )
 
     def _setup_config_db(self):
@@ -2372,43 +2179,29 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         self.assertEqual(unknown[0]["request_count"], 1)
         self.assertIsNone(unknown[0]["base_url"])
 
+    def _setup_pricing_db(self):
+        """通过 PricingDB 创建定价数据。"""
+        from proxy.pricing_manager import PricingDB
+        db = PricingDB(self.config_db)
+        db.add_pricing({
+            "model_id": "claude-sonnet-4",
+            "display_name": "Claude Sonnet 4",
+            "input_cost_per_million": "10.0",
+            "output_cost_per_million": "20.0",
+            "currency": "USD",
+        })
+
     def test_sorted_by_estimated_cost_usd_desc(self):
         """结果按 estimated_cost_usd 降序排列。"""
-        # 创建定价数据，使不同 upstream 有不同的 cost
-        conn = sqlite3.connect(str(self.cc_switch_db))
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS model_pricing (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                model_id TEXT NOT NULL,
-                input_cost_per_million REAL NOT NULL DEFAULT 0,
-                output_cost_per_million REAL NOT NULL DEFAULT 0,
-                cache_read_cost_per_million REAL NOT NULL DEFAULT 0,
-                cache_creation_cost_per_million REAL NOT NULL DEFAULT 0
-            )
-        """)
-        conn.execute(
-            "INSERT INTO model_pricing (model_id, input_cost_per_million, "
-            "output_cost_per_million, cache_read_cost_per_million, cache_creation_cost_per_million) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("qwen3.6-plus", 1.0, 2.0, 0.0, 0.0),
-        )
-        conn.execute(
-            "INSERT INTO model_pricing (model_id, input_cost_per_million, "
-            "output_cost_per_million, cache_read_cost_per_million, cache_creation_cost_per_million) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("claude-sonnet-4", 10.0, 20.0, 0.0, 0.0),
-        )
-        conn.commit()
-        conn.close()
-
+        self._setup_pricing_db()
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
-        # openai: small tokens
+        # openai: small tokens (qwen3.6-plus 种子定价: 0.325/1.95 USD)
         self._insert_token_stat(
             request_id="proxy-1", target_model="qwen3.6-plus",
             request_ts=ts, input_tokens=1000, output_tokens=2000
         )
-        # anthropic: large tokens
+        # anthropic: large tokens (自定义定价: 10.0/20.0 USD)
         self._insert_session(
             model="claude-sonnet-4", started_at=ts, input_tokens=1000, output_tokens=2000
         )
@@ -2472,27 +2265,10 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         self.assertEqual(result, {"upstreams": []})
 
     def test_cost_calculation_non_zero(self):
-        """有定价数据时成本计算非零。"""
-        # 创建定价数据库
-        conn = sqlite3.connect(str(self.cc_switch_db))
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS model_pricing (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                model_id TEXT NOT NULL,
-                input_cost_per_million REAL NOT NULL DEFAULT 0,
-                output_cost_per_million REAL NOT NULL DEFAULT 0,
-                cache_read_cost_per_million REAL NOT NULL DEFAULT 0,
-                cache_creation_cost_per_million REAL NOT NULL DEFAULT 0
-            )
-        """)
-        conn.execute(
-            "INSERT INTO model_pricing (model_id, input_cost_per_million, "
-            "output_cost_per_million, cache_read_cost_per_million, cache_creation_cost_per_million) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("qwen3.6-plus", 2.5, 10.0, 0.5, 2.0),
-        )
-        conn.commit()
-        conn.close()
+        """有定价数据时成本计算非零（USD × 7 = RMB）。"""
+        from proxy.pricing_manager import PricingDB
+        PricingDB(self.config_db)  # 建表 + 种子数据
+        # 种子数据中 qwen3.6-plus: 0.325/1.95 USD → ×7 → 2.275/13.65 RMB
 
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -2508,8 +2284,8 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         self.assertEqual(len(result["upstreams"]), 1)
         up = result["upstreams"][0]
         self.assertGreater(up["estimated_cost_usd"], 0)
-        # 验证计算: (1000/1M * 2.5) + (2000/1M * 10.0) = 0.0025 + 0.02 = 0.0225
-        expected = 1000 / 1_000_000 * 2.5 + 2000 / 1_000_000 * 10.0
+        # 验证计算（RMB）：(1000/1M * 0.325*7) + (2000/1M * 1.95*7) = 0.002275 + 0.0273 = 0.029575
+        expected = (1000 / 1_000_000 * 0.325 * 7) + (2000 / 1_000_000 * 1.95 * 7)
         self.assertAlmostEqual(up["estimated_cost_usd"], expected, places=6)
 
     def test_output_uses_cache_not_cached_prefix(self):
@@ -2768,7 +2544,6 @@ class TestFetchSummaryMerged(unittest.TestCase):
             access_log_db_path=str(self.access_log_db),
             config_db_path=str(self.config_db),
             state_db_path=str(self.state_db),
-            cc_switch_db_path=str(self.cc_switch_db),
         )
 
     def test_fetch_summary_merges_both_sources(self):

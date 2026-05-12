@@ -24,6 +24,7 @@
 import sqlite3
 import time
 from pathlib import Path
+from proxy.pricing_manager import PricingDB
 
 class _TokenStatsDao:
     """Token 统计数据访问对象。
@@ -446,17 +447,19 @@ class _UpstreamResolver:
 
 
 class _CostCalculator:
-    """成本计算器 — 从 cc-switch.db 加载 model_pricing 表，内置 TTL 缓存。
+    """成本计算器 — 从 config.db 加载 model_pricing 表（通过 PricingDB），内置 TTL 缓存。
 
-    构造时不立即加载，首次 get_pricing() 时懒加载。每次 get_pricing() 检查缓存
-    是否过期（300s），过期自动刷新。cc-switch.db 不存在时返回空定价，不抛异常。
+    USD 价格自动 × 7 转为人民币，RMB 价格原样使用。
+    calculate() 统一返回人民币金额。
 
     Args:
-        cc_switch_db_path: cc-switch.db 路径
+        config_db_path: config.db 路径
     """
 
-    def __init__(self, cc_switch_db_path: str | Path) -> None:
-        self.cc_switch_db_path = Path(cc_switch_db_path)
+    EXCHANGE_RATE = 7  # USD → RMB
+
+    def __init__(self, config_db_path: str | Path) -> None:
+        self._pricing_db = PricingDB(Path(config_db_path))
         self._cache_ttl = 300  # 缓存 5 分钟
         self._pricing_cache: dict = {}
         self._pricing_cache_time: float = 0.0
@@ -464,40 +467,37 @@ class _CostCalculator:
     # ─── 定价加载 ───
 
     def get_pricing(self) -> dict:
-        """从 cc-switch.db 加载 model_pricing 表（带缓存）。
+        """从 config.db 加载 model_pricing 表（带缓存），自动换算为人民币。
 
         Returns:
             {model_id: {input_cost, output_cost, cache_read_cost, cache_creation_cost}}
-            cc-switch.db 不存在或表不存在时返回空 dict。
+            价格单位：RMB / 1M tokens
         """
-        # 缓存检查
         if time.time() - self._pricing_cache_time < self._cache_ttl and self._pricing_cache:
             return self._pricing_cache
 
-        if not self.cc_switch_db_path.exists():
-            return {}
-
         try:
-            conn = sqlite3.connect(str(self.cc_switch_db_path))
-            conn.row_factory = sqlite3.Row
-            try:
-                rows = conn.execute("SELECT * FROM model_pricing").fetchall()
-                pricing = {}
-                for r in rows:
-                    pricing[r["model_id"]] = {
-                        "input_cost": float(r["input_cost_per_million"]),
-                        "output_cost": float(r["output_cost_per_million"]),
-                        "cache_read_cost": float(r["cache_read_cost_per_million"]),
-                        "cache_creation_cost": float(r["cache_creation_cost_per_million"]),
-                    }
-                self._pricing_cache = pricing
-                self._pricing_cache_time = time.time()
-                return pricing
-            finally:
-                conn.close()
+            rows = self._pricing_db.list_pricings()
+            pricing = {}
+            for r in rows:
+                rate = 1 if r["currency"] == "RMB" else self.EXCHANGE_RATE
+                pricing[r["model_id"]] = {
+                    "input_cost": float(r["input_cost_per_million"]) * rate,
+                    "output_cost": float(r["output_cost_per_million"]) * rate,
+                    "cache_read_cost": float(r["cache_read_cost_per_million"]) * rate,
+                    "cache_creation_cost": float(r["cache_creation_cost_per_million"]) * rate,
+                }
+            self._pricing_cache = pricing
+            self._pricing_cache_time = time.time()
+            return pricing
         except Exception as e:
             print(f"Error reading model pricing: {e}")
             return {}
+
+    def invalidate_cache(self):
+        """主动失效缓存，供定价修改后调用。"""
+        self._pricing_cache = {}
+        self._pricing_cache_time = 0.0
 
     # ─── 成本计算 ───
 
@@ -509,17 +509,10 @@ class _CostCalculator:
         cache_read_tokens: int | float | None,
         cache_write_tokens: int | float | None,
     ) -> float:
-        """根据模型计费规则计算成本。
-
-        Args:
-            model: 模型名称
-            input_tokens: 输入 token 数
-            output_tokens: 输出 token 数
-            cache_read_tokens: 缓存读取 token 数
-            cache_write_tokens: 缓存写入 token 数
+        """根据模型计费规则计算成本（人民币）。
 
         Returns:
-            总成本（float）。模型无定价时返回 0。
+            总成本（人民币，float）。模型无定价时返回 0。
         """
         pricing = self.get_pricing()
 
@@ -973,9 +966,8 @@ class StatsService:
 
     Args:
         access_log_db_path: access_log.db 路径（token_stats 表所在）
-        config_db_path: config.db 路径（模型路由配置）
+        config_db_path: config.db 路径（模型路由配置 + 定价数据）
         state_db_path: state.db 路径（运行时状态）
-        cc_switch_db_path: cc-switch.db 路径（功能开关）
     """
 
     def __init__(
@@ -983,12 +975,10 @@ class StatsService:
         access_log_db_path: str,
         config_db_path: str,
         state_db_path: str,
-        cc_switch_db_path: str,
     ) -> None:
         self.access_log_db_path = Path(access_log_db_path)
         self.config_db_path = Path(config_db_path)
         self.state_db_path = Path(state_db_path)
-        self.cc_switch_db_path = Path(cc_switch_db_path)
 
         # 初始化上游解析器
         self._upstream_resolver = _UpstreamResolver(self.config_db_path)
@@ -1368,8 +1358,13 @@ class StatsService:
     def _get_calculator(self) -> _CostCalculator:
         """懒加载获取 _CostCalculator 单例。"""
         if not hasattr(self, "_cost_calculator"):
-            self._cost_calculator = _CostCalculator(self.cc_switch_db_path)
+            self._cost_calculator = _CostCalculator(self.config_db_path)
         return self._cost_calculator
+
+    def invalidate_pricing_cache(self):
+        """失效定价缓存，供 API 层定价修改后调用。"""
+        if hasattr(self, "_cost_calculator"):
+            self._cost_calculator.invalidate_cache()
 
     def get_pricing(self) -> dict:
         """获取模型计费规则（委托 _CostCalculator）。
