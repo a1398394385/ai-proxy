@@ -309,10 +309,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     log_data = resp_body.decode("utf-8", errors="replace")[:5000]
                     logger.log_upstream_response(
                         request_id, resp.status, log_data, duration_ms,
+                        model_name, target,
                         request_type=request_type,
                     )
-
-                # 阶段 4：记录"透传"标记
                 if logger:
                     logger.log_converted_response(
                         request_id, model_name, target,
@@ -406,12 +405,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.send_header("Content-Length", str(len(error_body)))
                     self.end_headers()
                     self.wfile.write(error_body)
-                    logger = get_logger()
                     if logger:
                         logger.log_upstream_response(
                             request_id, upstream_status,
                             error_body.decode("utf-8", errors="replace")[:5000],
-                            0, request_type=request_type,
+                            0, model_name, target,
+                            request_type=request_type,
                         )
                     return
 
@@ -482,6 +481,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 if logger:
                     logger.log_upstream_response(
                         request_id, upstream_status, full_sse, duration_ms,
+                        model_name, target,
                         request_type=request_type,
                     )
 
@@ -517,6 +517,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         request_id, 0,
                         json.dumps({"error": str(e)}),
                         int((time.time() - start) * 1000),
+                        model_name, target,
                         request_type=request_type,
                     )
                 if not headers_sent:
@@ -538,6 +539,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         request_id, upstream_status or 0,
                         json.dumps({"error": str(e)}),
                         int((time.time() - start) * 1000),
+                        model_name, target,
                         request_type=request_type,
                     )
                 if not headers_sent:
@@ -706,7 +708,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         logger.log_upstream_response(
                             request_id, resp.status,
                             resp_body.decode("utf-8", errors="replace"),
-                            duration_ms, request_type=request_type,
+                            duration_ms, model, target,
+                            request_type=request_type,
                         )
                     self.send_response(resp.status)
                     self.send_header("Content-Type", "application/json")
@@ -724,6 +727,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 if logger:
                     logger.log_upstream_response(
                         request_id, resp.status, chat_response, duration_ms,
+                        model, target,
                         request_type=request_type,
                     )
 
@@ -873,7 +877,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         logger.log_upstream_response(
                             request_id, resp.status,
                             resp.read().decode("utf-8", errors="replace"),
-                            0, request_type=request_type,
+                            0, model, target,
+                            request_type=request_type,
                         )
                     return
 
@@ -920,7 +925,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         logger.log_upstream_response(
                             request_id, upstream_status,
                             resp.read().decode("utf-8", errors="replace"),
-                            0, request_type=request_type,
+                            0, model, target,
+                            request_type=request_type,
                         )
                     return
 
@@ -992,6 +998,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         request_id, upstream_status,
                         json.dumps({"error": {"type": "server_error", "message": str(e)}}),
                         int((time.time() - start) * 1000),
+                        model, target,
                         request_type=request_type,
                     )
 
@@ -1007,6 +1014,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             if logger:
                 logger.log_upstream_response(
                     request_id, upstream_status, full_sse, duration_ms,
+                    model, target,
                     request_type=request_type,
                 )
                 logger.log_converted_response(

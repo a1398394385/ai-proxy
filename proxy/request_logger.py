@@ -139,7 +139,8 @@ class RequestLogger:
         except Exception as e:
             logging.warning(f"日志写入失败 (converted_request): {e}")
 
-    def log_upstream_response(self, request_id: str, status_code: int, body: str | dict, duration_ms: int, request_type: str = None):
+    def log_upstream_response(self, request_id: str, status_code: int, body: str | dict, duration_ms: int,
+                              model: str = None, target: str = None, request_type: str = None):
         """阶段 3：记录上游原始响应。"""
         try:
             conn = self._get_conn()
@@ -147,9 +148,9 @@ class RequestLogger:
                 data = body if isinstance(body, str) else json.dumps(body)
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn.execute(
-                    "INSERT INTO debug_log (request_id, stage, status_code, request_type, data, created_at) "
-                    "VALUES (?, 'upstream_response', ?, ?, ?, ?)",
-                    (request_id, status_code, request_type, data, now),
+                    "INSERT INTO debug_log (request_id, stage, model, target_model, status_code, request_type, data, created_at) "
+                    "VALUES (?, 'upstream_response', ?, ?, ?, ?, ?, ?)",
+                    (request_id, model, target, status_code, request_type, data, now),
                 )
                 conn.commit()
             finally:

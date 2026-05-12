@@ -264,6 +264,22 @@ class TestLogUpstreamResponse(unittest.TestCase):
         self.assertEqual(rows[0]["status_code"], 500)
         self.assertEqual(rows[0]["data"], "Internal Server Error")
 
+    def test_log_upstream_response_with_model_target(self):
+        """带 model/target_model 参数时，应正确写入。"""
+        rid = _generate_request_id()
+        self.logger.log_upstream_response(rid, 200, "ok", 100, "gpt-4", "up-a")
+        rows = _query_debug_log(self.db_path, rid)
+        self.assertEqual(rows[0]["model"], "gpt-4")
+        self.assertEqual(rows[0]["target_model"], "up-a")
+
+    def test_log_upstream_response_model_defaults_to_none(self):
+        """不传 model/target 时，应为 None。"""
+        rid = _generate_request_id()
+        self.logger.log_upstream_response(rid, 200, "ok", 100)
+        rows = _query_debug_log(self.db_path, rid)
+        self.assertIsNone(rows[0]["model"])
+        self.assertIsNone(rows[0]["target_model"])
+
 
 class TestLogConvertedResponse(unittest.TestCase):
     """log_converted_response 写入验证。"""
