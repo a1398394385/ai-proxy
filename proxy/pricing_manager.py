@@ -245,3 +245,98 @@ class PricingDB:
             return dict(row) if row else None
         finally:
             conn.close()
+
+    # ─── 写入方法 ───
+
+    def add_pricing(self, data: dict) -> str:
+        """新增定价记录。返回 model_id。"""
+        model_id = data.get("model_id", "").strip()
+        if not model_id:
+            raise ValueError("model_id 不能为空")
+
+        currency = data.get("currency", "USD")
+        if currency not in ("USD", "RMB"):
+            raise ValueError(f"currency 必须为 USD 或 RMB，收到: {currency}")
+
+        for field in ("input_cost_per_million", "output_cost_per_million"):
+            val = data.get(field, "")
+            try:
+                float(val)
+            except (ValueError, TypeError):
+                raise ValueError(f"{field} 必须为合法数字，收到: {val}")
+
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT INTO model_pricing (model_id, display_name, "
+                "input_cost_per_million, output_cost_per_million, "
+                "cache_read_cost_per_million, cache_creation_cost_per_million, currency) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    model_id,
+                    data["display_name"],
+                    data["input_cost_per_million"],
+                    data["output_cost_per_million"],
+                    data.get("cache_read_cost_per_million", "0"),
+                    data.get("cache_creation_cost_per_million", "0"),
+                    currency,
+                ),
+            )
+            conn.commit()
+            return model_id
+        finally:
+            conn.close()
+
+    def update_pricing(self, model_id: str, data: dict) -> bool:
+        """更新定价记录。只修改 data 中提供的字段。返回是否成功。"""
+        existing = self.get_pricing(model_id)
+        if not existing:
+            return False
+
+        if "currency" in data and data["currency"] not in ("USD", "RMB"):
+            raise ValueError(f"currency 必须为 USD 或 RMB，收到: {data['currency']}")
+
+        for field in ("input_cost_per_million", "output_cost_per_million",
+                      "cache_read_cost_per_million", "cache_creation_cost_per_million"):
+            if field in data:
+                try:
+                    float(data[field])
+                except (ValueError, TypeError):
+                    raise ValueError(f"{field} 必须为合法数字，收到: {data[field]}")
+
+        updatable = [
+            "display_name", "input_cost_per_million", "output_cost_per_million",
+            "cache_read_cost_per_million", "cache_creation_cost_per_million", "currency",
+        ]
+        sets = []
+        vals = []
+        for field in updatable:
+            if field in data:
+                sets.append(f"{field} = ?")
+                vals.append(data[field])
+        if not sets:
+            return True
+
+        vals.append(model_id)
+        conn = self._connect()
+        try:
+            conn.execute(
+                f"UPDATE model_pricing SET {', '.join(sets)} WHERE model_id = ?",
+                vals,
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def delete_pricing(self, model_id: str) -> bool:
+        """删除定价记录。返回是否成功。"""
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "DELETE FROM model_pricing WHERE model_id = ?", (model_id,)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()

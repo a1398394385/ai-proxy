@@ -101,3 +101,111 @@ class TestPricingDBListAndGet(unittest.TestCase):
     def test_get_pricing_nonexistent(self):
         result = self.db.get_pricing("nonexistent_model")
         self.assertIsNone(result)
+
+
+class TestPricingDBCRUD(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = TemporaryDirectory()
+        self.db_path = Path(self.tmpdir.name) / "config.db"
+        from proxy.pricing_manager import PricingDB
+        self.db = PricingDB(self.db_path)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_add_pricing(self):
+        model_id = self.db.add_pricing({
+            "model_id": "test-model-v1",
+            "display_name": "Test Model V1",
+            "input_cost_per_million": "1.5",
+            "output_cost_per_million": "6",
+            "cache_read_cost_per_million": "0.15",
+            "cache_creation_cost_per_million": "1.5",
+            "currency": "RMB",
+        })
+        self.assertEqual(model_id, "test-model-v1")
+        result = self.db.get_pricing("test-model-v1")
+        self.assertEqual(result["currency"], "RMB")
+        self.assertEqual(result["input_cost_per_million"], "1.5")
+
+    def test_add_pricing_default_currency(self):
+        model_id = self.db.add_pricing({
+            "model_id": "test-usd-model",
+            "display_name": "Test USD",
+            "input_cost_per_million": "2",
+            "output_cost_per_million": "8",
+        })
+        result = self.db.get_pricing(model_id)
+        self.assertEqual(result["currency"], "USD")
+
+    def test_add_pricing_duplicate_fails(self):
+        self.db.add_pricing({
+            "model_id": "dup-model",
+            "display_name": "Dup",
+            "input_cost_per_million": "1",
+            "output_cost_per_million": "2",
+        })
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.add_pricing({
+                "model_id": "dup-model",
+                "display_name": "Dup Again",
+                "input_cost_per_million": "3",
+                "output_cost_per_million": "4",
+            })
+
+    def test_add_pricing_invalid_currency(self):
+        with self.assertRaises(ValueError):
+            self.db.add_pricing({
+                "model_id": "bad-currency",
+                "display_name": "Bad",
+                "input_cost_per_million": "1",
+                "output_cost_per_million": "2",
+                "currency": "EUR",
+            })
+
+    def test_add_pricing_invalid_price(self):
+        with self.assertRaises(ValueError):
+            self.db.add_pricing({
+                "model_id": "bad-price",
+                "display_name": "Bad",
+                "input_cost_per_million": "abc",
+                "output_cost_per_million": "2",
+            })
+
+    def test_update_pricing(self):
+        self.db.add_pricing({
+            "model_id": "update-test",
+            "display_name": "Before",
+            "input_cost_per_million": "1",
+            "output_cost_per_million": "2",
+        })
+        ok = self.db.update_pricing("update-test", {
+            "display_name": "After",
+            "input_cost_per_million": "5",
+            "currency": "RMB",
+        })
+        self.assertTrue(ok)
+        result = self.db.get_pricing("update-test")
+        self.assertEqual(result["display_name"], "After")
+        self.assertEqual(result["input_cost_per_million"], "5")
+        self.assertEqual(result["currency"], "RMB")
+        self.assertEqual(result["output_cost_per_million"], "2")  # 未修改的保留
+
+    def test_update_pricing_nonexistent(self):
+        ok = self.db.update_pricing("nonexistent", {"display_name": "X"})
+        self.assertFalse(ok)
+
+    def test_delete_pricing(self):
+        self.db.add_pricing({
+            "model_id": "delete-test",
+            "display_name": "To Delete",
+            "input_cost_per_million": "1",
+            "output_cost_per_million": "2",
+        })
+        ok = self.db.delete_pricing("delete-test")
+        self.assertTrue(ok)
+        self.assertIsNone(self.db.get_pricing("delete-test"))
+
+    def test_delete_pricing_nonexistent(self):
+        ok = self.db.delete_pricing("nonexistent")
+        self.assertFalse(ok)
