@@ -1006,16 +1006,22 @@ class StatsService:
     # ─── Provider 接口 ───
 
     def fetch_by_model(self, period: str) -> list:
-        """按模型维度获取统计数据。
-
-        Args:
-            period: 时间周期，如 "24h", "7d", "30d"
-
-        Returns:
-            模型统计列表
-        """
+        """按模型维度获取统计数据，合并 proxy + sessions 双源。"""
         dao = self._get_dao()
-        return dao.aggregate_by_model(period)
+        session_dao = self._get_session_dao()
+        proxy_models = dao.aggregate_by_model(period)
+        session_models = session_dao.aggregate_by_model(period)
+        merged = _Merger.merge_model_lists(proxy_models, session_models)
+        calculator = self._get_calculator()
+        for m in merged:
+            m["estimated_cost_usd"] = round(calculator.calculate(
+                model=m["model"], input_tokens=m["input_tokens"],
+                output_tokens=m["output_tokens"],
+                cache_read_tokens=m["cache_read_tokens"],
+                cache_write_tokens=m["cache_write_tokens"],
+            ), 6)
+        merged.sort(key=lambda x: x.get("total_tokens", 0), reverse=True)
+        return merged
 
     def fetch_requests(
         self,
@@ -1226,28 +1232,44 @@ class StatsService:
         return {"upstreams": result}
 
     def fetch_trend(self, period: str) -> list:
-        """获取时间趋势数据。
-
-        Args:
-            period: 时间周期
-
-        Returns:
-            趋势数据点列表
-        """
+        """获取时间趋势数据，合并 proxy + sessions 双源。"""
         dao = self._get_dao()
-        return dao.aggregate_trend(period)
+        session_dao = self._get_session_dao()
+        proxy_trend = dao.aggregate_trend(period)
+        session_trend = session_dao.aggregate_trend(period)
+        merged = _Merger.merge_trend_lists(proxy_trend, session_trend)
+        merged.sort(key=lambda x: x.get("date", ""))
+        return merged
 
     def fetch_summary(self, period: str) -> dict:
-        """获取汇总统计数据。
-
-        Args:
-            period: 时间周期
-
-        Returns:
-            汇总统计 dict
-        """
+        """获取汇总统计数据，合并 proxy + sessions 双源。成本按模型逐个计算后求和。"""
         dao = self._get_dao()
-        return dao.aggregate_summary(period)
+        session_dao = self._get_session_dao()
+        proxy = dao.aggregate_summary(period)
+        session = session_dao.aggregate_summary(period)
+        result = _Merger.merge_summary(proxy, session)
+        # 成本按模型逐个计算再求和
+        proxy_models = dao.aggregate_by_model(period)
+        session_models = session_dao.aggregate_by_model(period)
+        merged_models = _Merger.merge_model_lists(proxy_models, session_models)
+        calculator = self._get_calculator()
+        total_cost = 0
+        for m in merged_models:
+            total_cost += calculator.calculate(
+                model=m["model"], input_tokens=m["input_tokens"],
+                output_tokens=m["output_tokens"],
+                cache_read_tokens=m["cache_read_tokens"],
+                cache_write_tokens=m["cache_write_tokens"],
+            )
+        result["estimated_cost_usd"] = round(total_cost, 4)
+        return result
+
+    def fetch_all_summaries(self) -> dict:
+        """获取 day/week/month 三个周期的汇总数据。"""
+        result = {}
+        for period in ("day", "week", "month"):
+            result[period] = self.fetch_summary(period)
+        return result
 
     def fetch_by_model_requests(
         self,

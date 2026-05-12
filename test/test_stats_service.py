@@ -46,6 +46,22 @@ class TestStatsService(unittest.TestCase):
         conn.commit()
         conn.close()
 
+        # 创建 sessions 表
+        self.state_db = Path(self.tmpdir) / "state.db"
+        state_conn = sqlite3.connect(str(self.state_db))
+        state_conn.execute("""CREATE TABLE sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            model TEXT,
+            started_at REAL NOT NULL,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            cache_read_tokens INTEGER DEFAULT 0,
+            cache_write_tokens INTEGER DEFAULT 0,
+            message_count INTEGER DEFAULT 0
+        )""")
+        state_conn.commit()
+        state_conn.close()
+
     def tearDown(self):
         """清理临时文件。"""
         for db_path in [self.access_log_db, self.config_db, self.state_db, self.cc_switch_db]:
@@ -264,8 +280,8 @@ class TestStatsService(unittest.TestCase):
         self.assertEqual(result["request_count"], 2)
         self.assertEqual(result["input_tokens"], 400)
         self.assertEqual(result["output_tokens"], 600)
-        self.assertEqual(result["cached_read_tokens"], 30)
-        self.assertEqual(result["cached_write_tokens"], 20)
+        self.assertEqual(result["cache_read_tokens"], 30)
+        self.assertEqual(result["cache_write_tokens"], 20)
         self.assertEqual(result["total_tokens"], 1050)
 
     def test_fetch_summary_period_filter(self):
@@ -579,7 +595,7 @@ class TestStatsService(unittest.TestCase):
         result_day = service.fetch_summary("day")
         result_24h = service.fetch_summary("24h")
         data_keys = ["request_count", "input_tokens", "output_tokens", "total_tokens",
-                     "cached_read_tokens", "cached_write_tokens", "avg_duration_ms"]
+                     "cache_read_tokens", "cache_write_tokens", "avg_duration_ms"]
         for key in data_keys:
             self.assertEqual(result_day[key], result_24h[key], f"Mismatch on {key}")
 
@@ -589,7 +605,7 @@ class TestStatsService(unittest.TestCase):
         result_week = service.fetch_summary("week")
         result_7d = service.fetch_summary("7d")
         data_keys = ["request_count", "input_tokens", "output_tokens", "total_tokens",
-                     "cached_read_tokens", "cached_write_tokens", "avg_duration_ms"]
+                     "cache_read_tokens", "cache_write_tokens", "avg_duration_ms"]
         for key in data_keys:
             self.assertEqual(result_week[key], result_7d[key], f"Mismatch on {key}")
 
@@ -599,7 +615,7 @@ class TestStatsService(unittest.TestCase):
         result_month = service.fetch_summary("month")
         result_30d = service.fetch_summary("30d")
         data_keys = ["request_count", "input_tokens", "output_tokens", "total_tokens",
-                     "cached_read_tokens", "cached_write_tokens", "avg_duration_ms"]
+                     "cache_read_tokens", "cache_write_tokens", "avg_duration_ms"]
         for key in data_keys:
             self.assertEqual(result_month[key], result_30d[key], f"Mismatch on {key}")
 
@@ -2672,4 +2688,91 @@ class TestMerger(unittest.TestCase):
         result = _Merger.merge_trend_lists(proxy, [])
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["cache_read_tokens"], 20)
+
+
+class TestFetchSummaryMerged(unittest.TestCase):
+    """fetch_summary 双源合并测试。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.access_log_db = Path(self.tmpdir) / "access_log.db"
+        self.state_db = Path(self.tmpdir) / "state.db"
+        self.config_db = Path(self.tmpdir) / "config.db"
+        self.cc_switch_db = Path(self.tmpdir) / "cc-switch.db"
+        self._create_access_log_db()
+        self._create_state_db()
+
+    def _create_access_log_db(self):
+        conn = sqlite3.connect(str(self.access_log_db))
+        conn.execute("""CREATE TABLE IF NOT EXISTS token_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id TEXT NOT NULL, request_type TEXT NOT NULL,
+            model TEXT NOT NULL, target_model TEXT NOT NULL,
+            request_ts TEXT NOT NULL, duration_ms INTEGER,
+            input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0,
+            cached_read_tokens INTEGER DEFAULT 0, cached_write_tokens INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'completed', created_at TEXT NOT NULL)""")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("INSERT INTO token_stats VALUES (1,'r1','chat','m1','m1',?,100,100,50,20,10,'completed',?)",
+                     (now, now))
+        conn.commit()
+        conn.close()
+
+    def _create_state_db(self):
+        import time as _time
+        conn = sqlite3.connect(str(self.state_db))
+        conn.execute("""CREATE TABLE sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT,
+            started_at REAL NOT NULL, input_tokens INTEGER,
+            output_tokens INTEGER,
+            cache_read_tokens INTEGER DEFAULT 0,
+            cache_write_tokens INTEGER DEFAULT 0)""")
+        conn.execute("INSERT INTO sessions VALUES (1,'m1',?,80,40,15,5)", (_time.time(),))
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        import shutil
+        if os.path.exists(self.tmpdir):
+            shutil.rmtree(self.tmpdir)
+
+    def _create_service(self):
+        from stats_service import StatsService
+        return StatsService(
+            access_log_db_path=str(self.access_log_db),
+            config_db_path=str(self.config_db),
+            state_db_path=str(self.state_db),
+            cc_switch_db_path=str(self.cc_switch_db),
+        )
+
+    def test_fetch_summary_merges_both_sources(self):
+        svc = self._create_service()
+        result = svc.fetch_summary("week")
+        self.assertEqual(result["request_count"], 2)  # 1 proxy + 1 session
+        self.assertEqual(result["input_tokens"], 180)  # 100 + 80
+        self.assertEqual(result["output_tokens"], 90)   # 50 + 40
+        self.assertIn("cache_read_tokens", result)
+        self.assertNotIn("cached_read_tokens", result)
+        self.assertEqual(result["cache_read_tokens"], 35)  # 20 + 15
+        self.assertEqual(result["cache_write_tokens"], 15)  # 10 + 5
+        self.assertIn("estimated_cost_usd", result)
+
+    def test_fetch_summary_proxy_only(self):
+        conn = sqlite3.connect(str(self.state_db))
+        conn.execute("DELETE FROM sessions")
+        conn.commit()
+        conn.close()
+        svc = self._create_service()
+        result = svc.fetch_summary("week")
+        self.assertEqual(result["request_count"], 1)
+        self.assertEqual(result["input_tokens"], 100)
+
+    def test_fetch_all_summaries(self):
+        svc = self._create_service()
+        result = svc.fetch_all_summaries()
+        self.assertIn("day", result)
+        self.assertIn("week", result)
+        self.assertIn("month", result)
+        self.assertIn("cache_read_tokens", result["week"])
+        self.assertIn("estimated_cost_usd", result["week"])
 
