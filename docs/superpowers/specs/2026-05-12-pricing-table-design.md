@@ -146,3 +146,12 @@ class _CostCalculator:
 
 - `app.js` 页面加载器新增 `pricing` → `pages/pricing.js` 映射
 - `index.html` 新增 `<link>` 引用 `pricing.css`，新增 Tab 按钮，新增 `#page-pricing` 容器
+
+## Token 统计页适配
+
+`estimated_cost_usd` → `estimated_cost_cny` 变更影响现有 tokens.js 页面，需同步修改：
+
+- `tokens.js` 中所有 `estimated_cost_usd` 替换为 `estimated_cost_cny`
+- 所有 `$` 前缀替换为 `¥`
+- `toFixed(4)` 替换为 `toFixed(6)`（6 位小数精度）
+- tooltip/图例中"成本"标签的 `$` 前缀改为 `¥`
