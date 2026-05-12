@@ -8,7 +8,7 @@
 
 @media (max-width: 1200px) {
   .kpi-grid { grid-template-columns: 1fr 1fr; }
-  .kpi-grid > .kpi-card-merged { grid-column: 1 / -1; }
+  .kpi-grid > .kpi-card-merged { grid-column: 1 / -1; order: 2; }
 }
 
 @media (max-width: 640px) {
@@ -86,80 +86,6 @@
   color: hsl(var(--muted-foreground));
 }
 
-/* KPI Breakdown - Token 汇总卡片 */
-.kpi-breakdown {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-top: 12px;
-  border-top: 1px solid hsl(var(--border));
-}
-
-.kpi-breakdown-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-}
-
-.kpi-breakdown-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.kpi-breakdown-dot.blue { background: hsl(var(--blue)); }
-.kpi-breakdown-dot.green { background: hsl(var(--green)); }
-
-.kpi-breakdown-label {
-  color: hsl(var(--muted-foreground));
-  min-width: 45px;
-}
-
-.kpi-breakdown-value {
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  margin-left: auto;
-}
-
-.kpi-breakdown-value.blue { color: hsl(var(--blue)); }
-.kpi-breakdown-value.green { color: hsl(var(--green)); }
-
-/* KPI Cache - Cache 汇总卡片 */
-.kpi-cache-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-top: 8px;
-}
-
-.kpi-cache-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-  background: hsl(var(--secondary));
-  border-radius: 8px;
-  border: 1px solid hsl(var(--border));
-}
-
-.kpi-cache-label {
-  font-size: 12px;
-  font-weight: 500;
-  color: hsl(var(--muted-foreground));
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.kpi-cache-value {
-  font-size: 16px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.kpi-cache-value.orange { color: hsl(var(--orange)); }
-.kpi-cache-value.purple { color: hsl(var(--purple)); }
 
 /* ─── 合并卡片（总Tokens + Cache） ─── */
 .kpi-card-merged {
@@ -593,13 +519,6 @@
   font-size: 13px;
 }
 
-/* 空状态 */
-#model-table tbody .empty-state {
-  text-align: center;
-  color: hsl(var(--muted-foreground));
-  padding: 40px;
-  font-size: 14px;
-}
 /* 空状态 */
 #model-table tbody .empty-state {
   text-align: center;
