@@ -31,6 +31,12 @@ async function loadTokenStats() {
   renderModelTable(allModels);
 }
 
+function formatTokenDisplay(value) {
+  if (value >= 1_000_000_000) return (value / 1_000_000_000).toFixed(2) + 'B';
+  if (value >= 1_000_000) return (value / 1_000_000).toFixed(2) + 'M';
+  return value.toLocaleString();
+}
+
 function renderKPI(stats) {
   document.getElementById('kpi-container').innerHTML = `
     <div class="kpi-card">
@@ -41,44 +47,45 @@ function renderKPI(stats) {
       <div class="kpi-value">${(stats.request_count || 0).toLocaleString()}</div>
       <div class="kpi-sub">模型调用次数</div>
     </div>
-    
-    <div class="kpi-card">
+
+    <div class="kpi-card kpi-card-merged">
       <div class="kpi-header">
         <span class="kpi-label">总 Tokens</span>
         <div class="kpi-icon" style="background:hsl(var(--primary)/0.15);color:hsl(var(--primary))">Σ</div>
       </div>
-      <div class="kpi-value" style="font-size: 32px; margin-bottom: 8px;">${(stats.total_tokens || 0).toLocaleString()}</div>
-      <div class="kpi-breakdown">
-        <div class="kpi-breakdown-item">
-          <span class="kpi-breakdown-dot blue"></span>
-          <span class="kpi-breakdown-label">Input</span>
-          <span class="kpi-breakdown-value blue">${formatNumber(stats.input_tokens)}</span>
+      <div class="kpi-value kpi-value-total">${formatTokenDisplay(stats.total_tokens || 0)}</div>
+      <div class="kpi-merged-grid">
+        <div class="kpi-merged-item">
+          <span class="kpi-merged-label">
+            <span class="kpi-dot" style="background:hsl(var(--blue))"></span>
+            Input
+          </span>
+          <span class="kpi-merged-value blue">${formatNumber(stats.input_tokens)}</span>
         </div>
-        <div class="kpi-breakdown-item">
-          <span class="kpi-breakdown-dot green"></span>
-          <span class="kpi-breakdown-label">Output</span>
-          <span class="kpi-breakdown-value green">${formatNumber(stats.output_tokens)}</span>
+        <div class="kpi-merged-item">
+          <span class="kpi-merged-label">
+            <span class="kpi-dot" style="background:hsl(160 60% 45%)"></span>
+            Output
+          </span>
+          <span class="kpi-merged-value green">${formatNumber(stats.output_tokens)}</span>
+        </div>
+        <div class="kpi-merged-item">
+          <span class="kpi-merged-label">
+            <span class="kpi-dot" style="background:hsl(var(--purple))"></span>
+            Cache Read
+          </span>
+          <span class="kpi-merged-value purple">${formatNumber(stats.cache_read_tokens)}</span>
+        </div>
+        <div class="kpi-merged-item">
+          <span class="kpi-merged-label">
+            <span class="kpi-dot" style="background:hsl(var(--orange))"></span>
+            Cache Create
+          </span>
+          <span class="kpi-merged-value orange">${formatNumber(stats.cache_write_tokens)}</span>
         </div>
       </div>
     </div>
-    
-    <div class="kpi-card">
-      <div class="kpi-header">
-        <span class="kpi-label">Cache</span>
-        <div class="kpi-icon orange">⚡</div>
-      </div>
-      <div class="kpi-cache-list">
-        <div class="kpi-cache-item">
-          <span class="kpi-cache-label">Read</span>
-          <span class="kpi-cache-value orange">${formatNumber(stats.cache_read_tokens)}</span>
-        </div>
-        <div class="kpi-cache-item">
-          <span class="kpi-cache-label">Create</span>
-          <span class="kpi-cache-value purple">${formatNumber(stats.cache_write_tokens)}</span>
-        </div>
-      </div>
-    </div>
-    
+
     <div class="kpi-card">
       <div class="kpi-header">
         <span class="kpi-label">估算成本</span>
@@ -443,6 +450,7 @@ function renderModelTable(models) {
     const pct = ((m.total_tokens / totalTokens) * 100).toFixed(1);
     const dotColor = dotColors[idx % dotColors.length];
 
+    const modelLabel = m.display_name || m.model;
     const inputPct = (m.input_tokens / totalTokens * 100);
     const outputPct = (m.output_tokens / totalTokens * 100);
     const cacheReadPct = (m.cache_read_tokens / totalTokens * 100);
@@ -453,7 +461,7 @@ function renderModelTable(models) {
         <div class="model-name-cell">
           <span class="model-rank ${rankClass}">${rank}</span>
           <span class="model-dot" style="background:${dotColor}"></span>
-          <span class="model-name-text">${escHtml(m.model)}</span>
+          <span class="model-name-text">${escHtml(modelLabel)}</span>
         </div>
       </td>
       <td class="cell-requests">${(m.request_count || 0).toLocaleString()}</td>
@@ -595,6 +603,9 @@ function initSubTabs() {
         const el = document.getElementById(`subtab-${name}`);
         if (el) el.style.display = name === subtabName ? '' : 'none';
       });
+
+      const searchBox = document.getElementById('model-search-box');
+      if (searchBox) searchBox.style.display = subtabName === 'models' ? '' : 'none';
 
       if (subtabName === 'requests') {
         requestFilters.period = window.currentPeriod || 'week';
