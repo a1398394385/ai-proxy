@@ -520,6 +520,25 @@ class TestStatsService(unittest.TestCase):
         # 同一小时内聚合为一组
         self.assertGreaterEqual(len(result), 1)
 
+    def test_fetch_trend_includes_estimated_cost_cny(self):
+        """趋势数据应包含 estimated_cost_cny 字段。"""
+        from proxy.pricing_manager import PricingDB
+        PricingDB(self.config_db)  # 建表 + 种子数据
+
+        now = datetime.now()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        self._insert_test_data([
+            {"request_id": "req-1", "target_model": "claude-sonnet-4-6-20260217",
+             "request_ts": ts, "input_tokens": 1000, "output_tokens": 2000},
+        ])
+
+        service = self._create_service()
+        result = service.fetch_trend("day")
+        self.assertGreater(len(result), 0)
+        for point in result:
+            self.assertIn("estimated_cost_cny", point)
+            self.assertIsInstance(point["estimated_cost_cny"], (int, float))
+
     # ─── fetch_by_upstream 测试 ───
 
     def test_fetch_by_upstream_with_config(self):

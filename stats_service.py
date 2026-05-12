@@ -1224,13 +1224,25 @@ class StatsService:
         return {"upstreams": result}
 
     def fetch_trend(self, period: str) -> list:
-        """获取时间趋势数据，合并 proxy + sessions 双源。"""
+        """获取时间趋势数据，合并 proxy + sessions 双源。逐点计算成本。"""
         dao = self._get_dao()
         session_dao = self._get_session_dao()
         proxy_trend = dao.aggregate_trend(period)
         session_trend = session_dao.aggregate_trend(period)
         merged = _Merger.merge_trend_lists(proxy_trend, session_trend)
         merged.sort(key=lambda x: x.get("date", ""))
+
+        # 逐点计算成本
+        calculator = self._get_calculator()
+        for point in merged:
+            point["estimated_cost_cny"] = calculator.calculate(
+                model=point.get("model", ""),
+                input_tokens=point.get("input_tokens", 0),
+                output_tokens=point.get("output_tokens", 0),
+                cache_read_tokens=point.get("cache_read_tokens", 0),
+                cache_write_tokens=point.get("cache_write_tokens", 0),
+            )
+
         return merged
 
     def fetch_summary(self, period: str) -> dict:
