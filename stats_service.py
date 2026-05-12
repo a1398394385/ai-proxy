@@ -862,6 +862,251 @@ class _SessionDao:
             conn.close()
 
 
+class _OpenCodeDao:
+    """OpenCode 数据访问对象 — 从 opencode.db 读取 session/message token 数据。
+
+    按 message 级别聚合（每条 assistant message 的 tokens 计入其 modelID），
+    reasoning tokens 合并入 output_tokens。数据库不存在时返回空结果，不抛异常。
+
+    Args:
+        db_path: opencode.db 路径
+    """
+
+    def __init__(self, db_path: Path) -> None:
+        self.db_path = db_path
+
+    # ─── 工具方法 ───
+
+    @staticmethod
+    def _period_to_condition(period: str) -> str:
+        """将 period 转换为 Unix 毫秒时间戳条件。"""
+        mapping = {
+            "day": "86400000",
+            "24h": "86400000",
+            "week": "604800000",
+            "7d": "604800000",
+            "month": "2592000000",
+            "30d": "2592000000",
+        }
+        delta_ms = mapping.get(period, "604800000")
+        return f"m.time_created >= (strftime('%s', 'now') * 1000 - {delta_ms})"
+
+    @staticmethod
+    def _row_to_record(row: sqlite3.Row) -> dict:
+        """将 message 行包装为统一格式记录。"""
+        return {
+            "request_id": f"oc-msg-{row['message_id']}",
+            "request_type": "session",
+            "model": row["model_id"] or "",
+            "target_model": row["model_id"] or "",
+            "request_ts": row["request_ts"],
+            "duration_ms": row["duration_ms"],
+            "input_tokens": row["input_tokens"] or 0,
+            "output_tokens": row["output_tokens"] or 0,
+            "cached_read_tokens": row["cache_read_tokens"] or 0,
+            "cached_write_tokens": row["cache_write_tokens"] or 0,
+            "status": "completed",
+            "_source": "opencode",
+        }
+
+    def _get_conn(self) -> sqlite3.Connection | None:
+        """创建数据库连接，opencode.db 不存在时返回 None。"""
+        if not self.db_path.exists():
+            return None
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    # ─── 查询方法 ───
+
+    def aggregate_by_model(self, period: str) -> list:
+        """按 modelID 分组聚合 token 统计数据。"""
+        conn = self._get_conn()
+        if conn is None:
+            return []
+        try:
+            time_condition = self._period_to_condition(period)
+            rows = conn.execute(f"""
+                SELECT
+                    json_extract(m.data, '$.modelID') as model,
+                    COUNT(*) as request_count,
+                    SUM(CAST(json_extract(m.data, '$.tokens.input') AS INTEGER)) as total_input,
+                    SUM(CAST(json_extract(m.data, '$.tokens.output') AS INTEGER)
+                        + CAST(json_extract(m.data, '$.tokens.reasoning') AS INTEGER)) as total_output,
+                    SUM(CAST(json_extract(m.data, '$.tokens.cache.read') AS INTEGER)) as total_cache_read,
+                    SUM(CAST(json_extract(m.data, '$.tokens.cache.write') AS INTEGER)) as total_cache_write
+                FROM message m
+                WHERE {time_condition}
+                  AND json_extract(m.data, '$.tokens.input') IS NOT NULL
+                GROUP BY json_extract(m.data, '$.modelID')
+                ORDER BY total_output DESC
+            """).fetchall()
+
+            return [
+                {
+                    "model": row["model"] or "",
+                    "request_count": row["request_count"],
+                    "input_tokens": row["total_input"] or 0,
+                    "output_tokens": row["total_output"] or 0,
+                    "cached_read_tokens": row["total_cache_read"] or 0,
+                    "cached_write_tokens": row["total_cache_write"] or 0,
+                    "total_tokens": (row["total_input"] or 0)
+                    + (row["total_output"] or 0)
+                    + (row["total_cache_read"] or 0)
+                    + (row["total_cache_write"] or 0),
+                }
+                for row in rows
+            ]
+        finally:
+            conn.close()
+
+    def aggregate_summary(self, period: str) -> dict:
+        """汇总 opencode 数据，返回与 _TokenStatsDao.aggregate_summary 相同结构的 dict。"""
+        conn = self._get_conn()
+        if conn is None:
+            return {"period": period, "request_count": 0, "input_tokens": 0,
+                    "output_tokens": 0, "cached_read_tokens": 0,
+                    "cached_write_tokens": 0, "total_tokens": 0, "avg_duration_ms": 0}
+        try:
+            time_condition = self._period_to_condition(period)
+            row = conn.execute(f"""
+                SELECT COUNT(*) as request_count,
+                       COALESCE(SUM(CAST(json_extract(m.data, '$.tokens.input') AS INTEGER)), 0) as total_input,
+                       COALESCE(SUM(CAST(json_extract(m.data, '$.tokens.output') AS INTEGER)
+                           + CAST(json_extract(m.data, '$.tokens.reasoning') AS INTEGER)), 0) as total_output,
+                       COALESCE(SUM(CAST(json_extract(m.data, '$.tokens.cache.read') AS INTEGER)), 0) as total_cache_read,
+                       COALESCE(SUM(CAST(json_extract(m.data, '$.tokens.cache.write') AS INTEGER)), 0) as total_cache_write,
+                       AVG(json_extract(m.data, '$.time.completed')
+                           - json_extract(m.data, '$.time.created')) as avg_duration
+                FROM message m
+                WHERE {time_condition}
+                  AND json_extract(m.data, '$.tokens.input') IS NOT NULL
+            """).fetchone()
+            total_input = row["total_input"]
+            total_output = row["total_output"]
+            total_cache_read = row["total_cache_read"]
+            total_cache_write = row["total_cache_write"]
+            return {
+                "period": period,
+                "request_count": row["request_count"] or 0,
+                "input_tokens": total_input,
+                "output_tokens": total_output,
+                "cached_read_tokens": total_cache_read,
+                "cached_write_tokens": total_cache_write,
+                "total_tokens": total_input + total_output + total_cache_read + total_cache_write,
+                "avg_duration_ms": round(row["avg_duration"], 2) if row["avg_duration"] else 0,
+            }
+        finally:
+            conn.close()
+
+    def aggregate_trend(self, period: str) -> list:
+        """按时间粒度聚合 opencode 数据，返回 time key。"""
+        conn = self._get_conn()
+        if conn is None:
+            return []
+        try:
+            time_condition = self._period_to_condition(period)
+            if period in ("day", "24h"):
+                group_expr = "strftime('%Y-%m-%d %H:00', datetime(m.time_created / 1000, 'unixepoch', 'localtime'))"
+            else:
+                group_expr = "date(datetime(m.time_created / 1000, 'unixepoch', 'localtime'))"
+
+            rows = conn.execute(f"""
+                SELECT {group_expr} as time_bucket,
+                       COUNT(*) as request_count,
+                       SUM(CAST(json_extract(m.data, '$.tokens.input') AS INTEGER)) as total_input,
+                       SUM(CAST(json_extract(m.data, '$.tokens.output') AS INTEGER)
+                           + CAST(json_extract(m.data, '$.tokens.reasoning') AS INTEGER)) as total_output,
+                       SUM(CAST(json_extract(m.data, '$.tokens.cache.read') AS INTEGER)) as total_cache_read,
+                       SUM(CAST(json_extract(m.data, '$.tokens.cache.write') AS INTEGER)) as total_cache_write
+                FROM message m
+                WHERE {time_condition}
+                  AND json_extract(m.data, '$.tokens.input') IS NOT NULL
+                GROUP BY time_bucket
+                ORDER BY time_bucket ASC
+            """).fetchall()
+
+            return [
+                {
+                    "time": row["time_bucket"],
+                    "request_count": row["request_count"],
+                    "input_tokens": row["total_input"] or 0,
+                    "output_tokens": row["total_output"] or 0,
+                    "cached_read_tokens": row["total_cache_read"] or 0,
+                    "cached_write_tokens": row["total_cache_write"] or 0,
+                    "total_tokens": (row["total_input"] or 0)
+                    + (row["total_output"] or 0)
+                    + (row["total_cache_read"] or 0)
+                    + (row["total_cache_write"] or 0),
+                }
+                for row in rows
+            ]
+        finally:
+            conn.close()
+
+    def query_messages_paged(self, period: str, model: str | None = None,
+                             request_type: str | None = None,
+                             limit: int = 50, offset: int = 0) -> tuple:
+        """分页查询 opencode messages（请求日志）。
+
+        Args:
+            period: 时间周期
+            model: 可选，按 modelID 过滤
+            request_type: 可选，仅 "session" 时返回数据，其余返回空
+            limit: 每页数量
+            offset: 偏移量
+
+        Returns:
+            (records_list, total_count) 元组
+        """
+        if request_type and request_type != "session":
+            return ([], 0)
+
+        conn = self._get_conn()
+        if conn is None:
+            return ([], 0)
+        try:
+            time_condition = self._period_to_condition(period)
+            conditions = [time_condition, "json_extract(m.data, '$.tokens.input') IS NOT NULL"]
+            params_count: list = []
+            params_data: list = []
+
+            if model:
+                conditions.append("json_extract(m.data, '$.modelID') = ?")
+                params_count.append(model)
+                params_data.append(model)
+
+            where_clause = " AND ".join(conditions)
+
+            total_row = conn.execute(
+                f"SELECT COUNT(*) as cnt FROM message m "
+                f"WHERE {where_clause}", params_count).fetchone()
+            total_count = total_row["cnt"]
+
+            rows = conn.execute(f"""
+                SELECT m.id as message_id,
+                       json_extract(m.data, '$.modelID') as model_id,
+                       datetime(m.time_created / 1000, 'unixepoch') as request_ts,
+                       CAST(json_extract(m.data, '$.tokens.input') AS INTEGER) as input_tokens,
+                       CAST(json_extract(m.data, '$.tokens.output') AS INTEGER)
+                           + CAST(json_extract(m.data, '$.tokens.reasoning') AS INTEGER) as output_tokens,
+                       CAST(json_extract(m.data, '$.tokens.cache.read') AS INTEGER) as cache_read_tokens,
+                       CAST(json_extract(m.data, '$.tokens.cache.write') AS INTEGER) as cache_write_tokens,
+                       CAST(json_extract(m.data, '$.time.completed') AS INTEGER)
+                           - CAST(json_extract(m.data, '$.time.created') AS INTEGER) as duration_ms
+                FROM message m
+                WHERE {where_clause}
+                ORDER BY m.time_created DESC
+                LIMIT ? OFFSET ?
+            """, params_data + [limit, offset]).fetchall()
+
+            return ([self._row_to_record(r) for r in rows], total_count)
+        except Exception:
+            return ([], 0)
+        finally:
+            conn.close()
+
+
 class _Merger:
     """双数据源合并：按规范化模型名求和，字段名统一为 cache_*，趋势 key 统一为 date"""
 
