@@ -1,50 +1,377 @@
-/* 计费表页面样式 */
-.pricing-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 20px;
-    border-bottom: 1px solid hsl(var(--border));
+/* ===== 计费表页面 — 金融终端风格 ===== */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+/* ─── 动画 ─── */
+@keyframes pricingSlideUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
 }
-.pricing-toolbar .search-box {
-    flex: 0 1 320px;
+
+/* ─── 统计卡片网格 ─── */
+#pricing-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
 }
-.pricing-count {
-    color: hsl(var(--muted));
-    font-size: 13px;
-    white-space: nowrap;
+
+.pricing-stat-card {
+  position: relative;
+  padding: 20px 24px;
+  border-radius: 12px;
+  border: 1px solid hsl(var(--border));
+  background: linear-gradient(135deg, hsl(var(--card)), hsl(var(--secondary)));
+  overflow: hidden;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  animation: pricingSlideUp 0.5s ease backwards;
 }
+
+.pricing-stat-card::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, hsl(var(--primary) / 0.35), transparent);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.pricing-stat-card:hover::after { opacity: 1; }
+
+.pricing-stat-card:hover {
+  transform: translateY(-2px);
+  border-color: hsl(var(--primary) / 0.2);
+  box-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.4);
+}
+
+.pricing-stat-card:nth-child(1) { animation-delay: 0.03s; }
+.pricing-stat-card:nth-child(2) { animation-delay: 0.06s; }
+.pricing-stat-card:nth-child(3) { animation-delay: 0.09s; }
+.pricing-stat-card:nth-child(4) { animation-delay: 0.12s; }
+
+.pricing-stat-icon {
+  width: 34px; height: 34px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center; justify-content: center;
+  font-size: 15px;
+  margin-bottom: 12px;
+  background: hsl(var(--primary) / 0.08);
+  border: 1px solid hsl(var(--primary) / 0.12);
+}
+
+.pricing-stat-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  margin-bottom: 6px;
+}
+
+.pricing-stat-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 26px;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+  line-height: 1.1;
+}
+
+.pricing-stat-sub {
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  margin-top: 4px;
+}
+
+.pricing-stat-split {
+  display: flex;
+  gap: 14px;
+  margin-top: 8px;
+}
+
+.split-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+
+.split-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.split-dot.rmb { background: hsl(160 60% 45%); }
+.split-dot.usd { background: hsl(40 80% 55%); }
+
+/* ─── 主卡片（表格容器） ─── */
+.pricing-card {
+  border-radius: 12px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  overflow: hidden;
+  animation: pricingSlideUp 0.5s ease 0.08s backwards;
+}
+
+.pricing-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 24px;
+  gap: 12px;
+  border-bottom: 1px solid hsl(var(--border));
+  flex-wrap: wrap;
+  background: hsl(var(--secondary) / 0.3);
+}
+
+.pricing-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pricing-header-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.pricing-header-count {
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--muted));
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-feature-settings: 'tnum';
+}
+
+.pricing-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+/* ─── 表格 ─── */
+.pricing-table-wrap {
+  overflow-x: auto;
+}
+
 #pricing-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
 }
+
+#pricing-table thead { position: sticky; top: 0; z-index: 5; }
+
 #pricing-table th {
-    padding: 10px 12px;
-    text-align: left;
-    font-weight: 600;
-    color: hsl(var(--muted));
-    border-bottom: 2px solid hsl(var(--border));
-    white-space: nowrap;
+  padding: 10px 16px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: hsl(var(--muted-foreground));
+  background: hsla(var(--card) / 0.92);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-bottom: 1px solid hsl(var(--border));
+  white-space: nowrap;
+  user-select: none;
 }
+
 #pricing-table td {
-    padding: 8px 12px;
-    border-bottom: 1px solid hsl(var(--border));
-    vertical-align: middle;
+  padding: 11px 16px;
+  vertical-align: middle;
+  border-bottom: 1px solid hsl(var(--border));
+  transition: background 0.2s ease;
 }
+
+#pricing-table tbody tr {
+  transition: background 0.15s ease;
+  animation: pricingSlideUp 0.3s ease backwards;
+}
+
 #pricing-table tbody tr:hover {
-    background: hsl(var(--accent) / 0.05);
+  background: hsl(var(--primary) / 0.035);
 }
+
+#pricing-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* ─── 模型列 ─── */
+.cell-model { min-width: 180px; }
+
+.model-id {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: hsl(var(--foreground));
+  display: block;
+  line-height: 1.4;
+}
+
+.model-name {
+  font-size: 11.5px;
+  color: hsl(var(--muted-foreground));
+  display: block;
+  margin-top: 1px;
+}
+
+/* ─── 价格列（含可视化条形图） ─── */
 .cell-price {
-    font-family: monospace;
-    text-align: right;
-    white-space: nowrap;
+  font-family: 'JetBrains Mono', monospace;
+  text-align: right;
+  white-space: nowrap;
+  position: relative;
+  min-width: 120px;
 }
-.badge-usd {
-    background: hsl(220 70% 55% / 0.15);
-    color: hsl(220 70% 60%);
+
+.cell-price .price-value {
+  position: relative;
+  z-index: 1;
+  font-size: 12.5px;
+  font-weight: 500;
 }
+
+.price-bar-bg {
+  position: absolute;
+  left: 0; top: 3px; bottom: 3px;
+  border-radius: 2px;
+  pointer-events: none;
+  opacity: 0.08;
+  transition: opacity 0.2s ease;
+}
+
+tr:hover .price-bar-bg { opacity: 0.16; }
+
+/* ─── 币种徽章 ─── */
+.badge-currency {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  min-width: 46px;
+}
+
 .badge-rmb {
-    background: hsl(150 60% 40% / 0.15);
-    color: hsl(150 60% 45%);
+  background: hsl(160 60% 45% / 0.12);
+  color: hsl(160 55% 50%);
+  border: 1px solid hsl(160 60% 45% / 0.2);
+}
+
+.badge-usd {
+  background: hsl(40 80% 55% / 0.12);
+  color: hsl(40 75% 55%);
+  border: 1px solid hsl(40 80% 55% / 0.2);
+}
+
+/* ─── 操作按钮 ─── */
+.cell-actions {
+  white-space: nowrap;
+  text-align: center;
+}
+.cell-actions .btn-icon + .btn-icon {
+  margin-left: 6px;
+}
+
+.btn-icon {
+  width: 30px; height: 30px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center; justify-content: center;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-icon:hover {
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+  transform: translateY(-1px);
+}
+
+.btn-icon.btn-edit:hover {
+  border-color: hsl(var(--blue) / 0.4);
+  color: hsl(var(--blue));
+  box-shadow: 0 2px 8px hsl(var(--blue) / 0.1);
+}
+
+.btn-icon.btn-delete:hover {
+  border-color: hsl(var(--red) / 0.4);
+  color: hsl(var(--red));
+  box-shadow: 0 2px 8px hsl(var(--red) / 0.1);
+}
+
+/* ─── 空状态 ─── */
+.pricing-empty {
+  text-align: center;
+  padding: 48px 20px;
+  color: hsl(var(--muted-foreground));
+}
+
+.pricing-empty-icon {
+  font-size: 36px;
+  margin-bottom: 10px;
+  opacity: 0.35;
+}
+
+.pricing-empty-text {
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
+.pricing-empty-sub {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+/* ─── 模态框增强 ─── */
+.pricing-modal-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.pricing-modal-grid .form-group.full {
+  grid-column: 1 / -1;
+}
+
+.pricing-modal-section {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: hsl(var(--muted-foreground));
+  padding: 12px 0 4px;
+  margin-top: 4px;
+  border-top: 1px solid hsl(var(--border));
+}
+
+.pricing-modal-section:first-of-type {
+  border-top: none;
+  padding-top: 0;
+  margin-top: 0;
+}
+
+.pricing-modal-section::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: hsl(var(--border));
 }
