@@ -769,6 +769,89 @@ class _SessionDao:
         finally:
             conn.close()
 
+    def aggregate_summary(self, period: str) -> dict:
+        """汇总 sessions 数据，返回与 _TokenStatsDao.aggregate_summary 相同结构的 dict。"""
+        conn = self._get_conn()
+        if conn is None:
+            return {"period": period, "request_count": 0, "input_tokens": 0,
+                    "output_tokens": 0, "cached_read_tokens": 0,
+                    "cached_write_tokens": 0, "total_tokens": 0, "avg_duration_ms": 0}
+        try:
+            time_condition = self._period_to_condition(period)
+            row = conn.execute(
+                f"""SELECT COUNT(*) as session_count,
+                           COALESCE(SUM(input_tokens), 0) as total_input,
+                           COALESCE(SUM(output_tokens), 0) as total_output,
+                           COALESCE(SUM(cache_read_tokens), 0) as total_cache_read,
+                           COALESCE(SUM(cache_write_tokens), 0) as total_cache_write
+                    FROM sessions
+                    WHERE {time_condition} AND input_tokens IS NOT NULL""",
+            ).fetchone()
+            total_input = row["total_input"]
+            total_output = row["total_output"]
+            total_cache_read = row["total_cache_read"]
+            total_cache_write = row["total_cache_write"]
+            return {
+                "period": period,
+                "request_count": row["session_count"] or 0,
+                "input_tokens": total_input,
+                "output_tokens": total_output,
+                "cached_read_tokens": total_cache_read,
+                "cached_write_tokens": total_cache_write,
+                "total_tokens": total_input + total_output + total_cache_read + total_cache_write,
+                "avg_duration_ms": 0,
+            }
+        except Exception:
+            return {"period": period, "request_count": 0, "input_tokens": 0,
+                    "output_tokens": 0, "cached_read_tokens": 0,
+                    "cached_write_tokens": 0, "total_tokens": 0, "avg_duration_ms": 0}
+        finally:
+            conn.close()
+
+    def aggregate_trend(self, period: str) -> list:
+        """按时间粒度聚合 sessions 数据，返回与 _TokenStatsDao.aggregate_trend 相同结构的 list。
+        started_at 是 Unix 时间戳，分组时需用 datetime(started_at, 'unixepoch', 'localtime')。"""
+        conn = self._get_conn()
+        if conn is None:
+            return []
+        try:
+            time_condition = self._period_to_condition(period)
+            if period in ("day", "24h"):
+                group_expr = "strftime('%Y-%m-%d %H:00', datetime(started_at, 'unixepoch', 'localtime'))"
+            else:
+                group_expr = "date(datetime(started_at, 'unixepoch', 'localtime'))"
+
+            rows = conn.execute(
+                f"""SELECT {group_expr} as time_bucket,
+                           COUNT(*) as session_count,
+                           SUM(input_tokens) as total_input,
+                           SUM(output_tokens) as total_output,
+                           SUM(cache_read_tokens) as total_cache_read,
+                           SUM(cache_write_tokens) as total_cache_write
+                    FROM sessions
+                    WHERE {time_condition} AND input_tokens IS NOT NULL
+                    GROUP BY time_bucket
+                    ORDER BY time_bucket ASC""",
+            ).fetchall()
+
+            return [
+                {
+                    "time": row["time_bucket"],
+                    "request_count": row["session_count"],
+                    "input_tokens": row["total_input"],
+                    "output_tokens": row["total_output"],
+                    "cached_read_tokens": row["total_cache_read"],
+                    "cached_write_tokens": row["total_cache_write"],
+                    "total_tokens": (row["total_input"] + row["total_output"]
+                                     + row["total_cache_read"] + row["total_cache_write"]),
+                }
+                for row in rows
+            ]
+        except Exception:
+            return []
+        finally:
+            conn.close()
+
 
 class _Merger:
     """双数据源合并：按规范化模型名求和，字段名统一为 cache_*，趋势 key 统一为 date"""

@@ -1444,6 +1444,55 @@ class TestSessionDao(unittest.TestCase):
         self.assertEqual(result[0]["model"], "big-model")
         self.assertEqual(result[1]["model"], "small-model")
 
+    # ─── aggregate_summary 测试 ───
+
+    def test_aggregate_summary_basic(self):
+        import time as _time
+        now_ts = _time.time()
+        self._insert_session(model="model-a", started_at=now_ts - 3600,
+                             input_tokens=100, output_tokens=50,
+                             cache_read_tokens=20, cache_write_tokens=10)
+        self._insert_session(model="model-b", started_at=now_ts - 1800,
+                             input_tokens=200, output_tokens=100,
+                             cache_read_tokens=40, cache_write_tokens=20)
+        dao = self._create_dao()
+        result = dao.aggregate_summary("week")
+        self.assertEqual(result["request_count"], 2)
+        self.assertEqual(result["input_tokens"], 300)
+        self.assertEqual(result["output_tokens"], 150)
+        self.assertEqual(result["cached_read_tokens"], 60)
+        self.assertEqual(result["cached_write_tokens"], 30)
+
+    def test_aggregate_summary_db_not_exists(self):
+        from stats_service import _SessionDao
+        dao = _SessionDao(Path("/nonexistent/state.db"))
+        result = dao.aggregate_summary("week")
+        self.assertEqual(result["request_count"], 0)
+        self.assertEqual(result["input_tokens"], 0)
+
+    # ─── aggregate_trend 测试 ───
+
+    def test_aggregate_trend_basic(self):
+        import time as _time
+        now_ts = _time.time()
+        self._insert_session(model="model-a", started_at=now_ts - 3600,
+                             input_tokens=100, output_tokens=50,
+                             cache_read_tokens=20, cache_write_tokens=10)
+        dao = self._create_dao()
+        result = dao.aggregate_trend("week")
+        self.assertIsInstance(result, list)
+        self.assertGreaterEqual(len(result), 1)
+        point = result[0]
+        self.assertIn("time", point)
+        self.assertIn("input_tokens", point)
+        self.assertIn("cached_read_tokens", point)
+
+    def test_aggregate_trend_db_not_exists(self):
+        from stats_service import _SessionDao
+        dao = _SessionDao(Path("/nonexistent/state.db"))
+        result = dao.aggregate_trend("week")
+        self.assertEqual(result, [])
+
 
 
 
