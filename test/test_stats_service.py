@@ -8,6 +8,7 @@ import unittest
 import sqlite3
 import tempfile
 import os
+import time
 from pathlib import Path
 from datetime import datetime, timedelta
 from tempfile import TemporaryDirectory
@@ -2956,3 +2957,202 @@ class TestFetchSummaryMerged(unittest.TestCase):
         self.assertIn("month", result)
         self.assertIn("cache_read_tokens", result["week"])
         self.assertIn("estimated_cost_cny", result["week"])
+
+
+class TestOpenCodeDao(unittest.TestCase):
+    """_OpenCodeDao 测试 — 用临时 SQLite 文件模拟 opencode.db 结构。"""
+
+    def setUp(self):
+        """创建临时目录和模拟 opencode.db。"""
+        import json
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = Path(self.tmpdir) / "opencode.db"
+
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute("""
+            CREATE TABLE session (
+                id TEXT PRIMARY KEY,
+                model TEXT,
+                time_created INTEGER
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                time_created INTEGER NOT NULL,
+                data TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES session(id)
+            )
+        """)
+
+        # 插入测试数据：2 个 session，3 条 message
+        # 时间戳设计：msg-001/msg-002 在 2-4 天前（week 范围，不在 day 范围），
+        # msg-003 在 30 天前（超出 week 范围，自动被排除）
+        now_ms = int(time.time() * 1000)
+        # session 1: model = mimo-v2.5-pro, 2 messages (2 days and 4 days ago)
+        conn.execute(
+            "INSERT INTO session (id, model, time_created) VALUES (?, ?, ?)",
+            ("ses-001", '{"id":"mimo-v2.5-pro","providerID":"XiaoMi"}', now_ms - 172800000),
+        )
+        msg1_data = json.dumps({
+            "role": "assistant",
+            "modelID": "mimo-v2.5-pro",
+            "tokens": {"input": 100, "output": 50, "reasoning": 10, "cache": {"read": 20, "write": 0}},
+            "time": {"created": now_ms - 172800000, "completed": now_ms - 171800000},
+        })
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)",
+            ("msg-001", "ses-001", now_ms - 172800000, msg1_data),
+        )
+        msg2_data = json.dumps({
+            "role": "assistant",
+            "modelID": "mimo-v2.5-pro",
+            "tokens": {"input": 200, "output": 80, "reasoning": 0, "cache": {"read": 0, "write": 10}},
+            "time": {"created": now_ms - 345600000, "completed": now_ms - 344600000},
+        })
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)",
+            ("msg-002", "ses-001", now_ms - 345600000, msg2_data),
+        )
+        # session 2: model = glm-4.7, 1 message (30 days ago → outside week range)
+        conn.execute(
+            "INSERT INTO session (id, model, time_created) VALUES (?, ?, ?)",
+            ("ses-002", '{"id":"glm-4.7","providerID":"ZhiPu"}', now_ms - 2592000000),
+        )
+        msg3_data = json.dumps({
+            "role": "user",
+            "modelID": "glm-4.7",
+            "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+            "time": {"created": now_ms - 2592000000},
+        })
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)",
+            ("msg-003", "ses-002", now_ms - 2592000000, msg3_data),
+        )
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        """清理临时文件。"""
+        import shutil
+        if os.path.exists(self.tmpdir):
+            shutil.rmtree(self.tmpdir)
+
+    def _create_dao(self):
+        """创建 _OpenCodeDao 实例。"""
+        from stats_service import _OpenCodeDao
+        return _OpenCodeDao(self.db_path)
+
+    # ─── aggregate_by_model 测试 ───
+
+    def test_aggregate_by_model_week(self):
+        """按模型聚合：week 周期返回 mimo-v2.5-pro 的 2 条记录（input=300, output=60+10）。"""
+        dao = self._create_dao()
+        result = dao.aggregate_by_model("week")
+        self.assertEqual(len(result), 1)  # glm-4.7 无 tokens 被过滤
+        self.assertEqual(result[0]["model"], "mimo-v2.5-pro")
+        self.assertEqual(result[0]["request_count"], 2)
+        self.assertEqual(result[0]["input_tokens"], 300)   # 100 + 200
+        self.assertEqual(result[0]["output_tokens"], 140)   # (50+10) + (80+0)
+        self.assertEqual(result[0]["cached_read_tokens"], 20)  # 20 + 0
+        self.assertEqual(result[0]["cached_write_tokens"], 10) # 0 + 10
+
+    def test_aggregate_by_model_day_no_data(self):
+        """day 周期无数据 → 返回空列表。"""
+        dao = self._create_dao()
+        result = dao.aggregate_by_model("day")
+        self.assertEqual(result, [])
+
+    # ─── aggregate_summary 测试 ───
+
+    def test_aggregate_summary_week(self):
+        """汇总统计：request_count=2, tokens 求和正确。"""
+        dao = self._create_dao()
+        result = dao.aggregate_summary("week")
+        self.assertEqual(result["request_count"], 2)
+        self.assertEqual(result["input_tokens"], 300)
+        self.assertEqual(result["output_tokens"], 140)
+        self.assertEqual(result["total_tokens"], 470)  # 300 + 140 + 20 + 10
+        self.assertGreater(result["avg_duration_ms"], 0)  # duration 有值
+
+    def test_aggregate_summary_day_empty(self):
+        """day 周期无数据 → 返回零值 dict。"""
+        dao = self._create_dao()
+        result = dao.aggregate_summary("day")
+        self.assertEqual(result["request_count"], 0)
+        self.assertEqual(result["input_tokens"], 0)
+
+    # ─── aggregate_trend 测试 ───
+
+    def test_aggregate_trend_week(self):
+        """趋势数据：返回 time key，按天分组。"""
+        dao = self._create_dao()
+        result = dao.aggregate_trend("week")
+        self.assertGreater(len(result), 0)
+        for point in result:
+            self.assertIn("time", point)
+            self.assertIn("input_tokens", point)
+            self.assertIn("output_tokens", point)
+
+    def test_aggregate_trend_day_period(self):
+        """day 周期按小时分组，返回 time key。"""
+        dao = self._create_dao()
+        result = dao.aggregate_trend("day")
+        self.assertEqual(result, [])
+
+    # ─── query_messages_paged 测试 ───
+
+    def test_query_messages_paged_basic(self):
+        """分页查询：返回 2 条有效 message。"""
+        dao = self._create_dao()
+        records, total = dao.query_messages_paged("week")
+        self.assertEqual(total, 2)
+        self.assertEqual(len(records), 2)
+
+    def test_query_messages_paged_model_filter(self):
+        """按模型过滤：mimo-v2.5-pro → 2 条，glm-4.7 → 0 条。"""
+        dao = self._create_dao()
+        _, total = dao.query_messages_paged("week", model="mimo-v2.5-pro")
+        self.assertEqual(total, 2)
+        _, total_none = dao.query_messages_paged("week", model="glm-4.7")
+        self.assertEqual(total_none, 0)
+
+    def test_query_messages_paged_request_type_filter(self):
+        """request_type 过滤：session → 2 条，proxy → 0 条。"""
+        dao = self._create_dao()
+        _, total_session = dao.query_messages_paged("week", request_type="session")
+        self.assertEqual(total_session, 2)
+        _, total_proxy = dao.query_messages_paged("week", request_type="proxy")
+        self.assertEqual(total_proxy, 0)
+
+    def test_query_messages_paged_record_format(self):
+        """记录格式：request_id 以 oc-msg- 开头，request_type 为 session，_source 为 opencode。"""
+        dao = self._create_dao()
+        records, _ = dao.query_messages_paged("week")
+        self.assertEqual(len(records), 2)
+        for r in records:
+            self.assertTrue(r["request_id"].startswith("oc-msg-"))
+            self.assertEqual(r["request_type"], "session")
+            self.assertEqual(r["_source"], "opencode")
+            self.assertEqual(r["status"], "completed")
+
+    def test_query_messages_paged_pagination(self):
+        """分页：limit=1, offset=0 → 1 条，total=2。"""
+        dao = self._create_dao()
+        records, total = dao.query_messages_paged("week", limit=1, offset=0)
+        self.assertEqual(total, 2)
+        self.assertEqual(len(records), 1)
+
+    # ─── db 不存在测试 ───
+
+    def test_db_not_exists(self):
+        """opencode.db 不存在 → 各方法返回空结果，不抛异常。"""
+        from stats_service import _OpenCodeDao
+        dao = _OpenCodeDao(Path("/nonexistent/opencode.db"))
+
+        self.assertEqual(dao.aggregate_by_model("week"), [])
+        summary = dao.aggregate_summary("week")
+        self.assertEqual(summary["request_count"], 0)
+        self.assertEqual(dao.aggregate_trend("week"), [])
+        self.assertEqual(dao.query_messages_paged("week"), ([], 0))
