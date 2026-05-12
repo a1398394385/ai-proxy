@@ -16,7 +16,6 @@
         access_log_db_path="data/access_log.db",
         config_db_path="~/.hermes/config.db",
         state_db_path="~/.hermes/state.db",
-        cc_switch_db_path="~/.cc-switch/cc-switch.db",
     )
     summary = service.fetch_summary(period="24h")
 """
@@ -1229,16 +1228,20 @@ class StatsService:
         merged = _Merger.merge_trend_lists(proxy_trend, session_trend)
         merged.sort(key=lambda x: x.get("date", ""))
 
-        # 逐点计算成本
-        calculator = self._get_calculator()
+        # 加权均摊：从 per-model 汇总数据计算总成本，按 token 比例均摊到每个时间桶
+        by_model = self.fetch_by_model(period)
+        total_cost = sum(m.get("estimated_cost_cny", 0) for m in by_model)
+        total_tokens = sum(m.get("total_tokens", 0) or 0 for m in by_model)
+
         for point in merged:
-            point["estimated_cost_cny"] = calculator.calculate(
-                model=point.get("model", ""),
-                input_tokens=point.get("input_tokens", 0),
-                output_tokens=point.get("output_tokens", 0),
-                cache_read_tokens=point.get("cache_read_tokens", 0),
-                cache_write_tokens=point.get("cache_write_tokens", 0),
+            point_tokens = point.get("total_tokens", 0) or (
+                point.get("input_tokens", 0) + point.get("output_tokens", 0)
+                + point.get("cache_read_tokens", 0) + point.get("cache_write_tokens", 0)
             )
+            if total_tokens > 0:
+                point["estimated_cost_cny"] = total_cost * point_tokens / total_tokens
+            else:
+                point["estimated_cost_cny"] = 0.0
 
         return merged
 

@@ -538,6 +538,9 @@ class TestStatsService(unittest.TestCase):
         for point in result:
             self.assertIn("estimated_cost_cny", point)
             self.assertIsInstance(point["estimated_cost_cny"], (int, float))
+        # 有趋势数据时成本应为正值（claude-sonnet-4-6 有种子定价）
+        if result:
+            self.assertGreater(result[0]["estimated_cost_cny"], 0)
 
     # ─── fetch_by_upstream 测试 ───
 
@@ -1013,7 +1016,6 @@ class TestUpstreamResolver(unittest.TestCase):
 
         access_log_db = Path(self.tmpdir) / "access_log.db"
         state_db = Path(self.tmpdir) / "state.db"
-        cc_switch_db = Path(self.tmpdir) / "cc-switch.db"
 
         # 创建空 access_log.db
         conn = sqlite3.connect(str(access_log_db))
@@ -1350,7 +1352,6 @@ class TestFetchRequestsMerged(unittest.TestCase):
         self.access_log_db = Path(self.tmpdir) / "access_log.db"
         self.config_db = Path(self.tmpdir) / "config.db"
         self.state_db = Path(self.tmpdir) / "state.db"
-        self.cc_switch_db = Path(self.tmpdir) / "cc-switch.db"
 
         # 创建 token_stats 表
         conn = sqlite3.connect(str(self.access_log_db))
@@ -1640,7 +1641,6 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
         self.access_log_db = Path(self.tmpdir) / "access_log.db"
         self.config_db = Path(self.tmpdir) / "config.db"
         self.state_db = Path(self.tmpdir) / "state.db"
-        self.cc_switch_db = Path(self.tmpdir) / "cc-switch.db"
 
         # 创建 token_stats 表
         conn = sqlite3.connect(str(self.access_log_db))
@@ -2518,7 +2518,6 @@ class TestFetchSummaryMerged(unittest.TestCase):
         self.access_log_db = Path(self.tmpdir) / "access_log.db"
         self.state_db = Path(self.tmpdir) / "state.db"
         self.config_db = Path(self.tmpdir) / "config.db"
-        self.cc_switch_db = Path(self.tmpdir) / "cc-switch.db"
         self._create_access_log_db()
         self._create_state_db()
 
