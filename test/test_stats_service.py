@@ -1217,13 +1217,13 @@ class TestSessionDao(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.state_db = Path(self.tmpdir) / "state.db"
 
-        # 创建 sessions 表
+        # 创建 sessions 表（started_at 为 Unix 时间戳 REAL）
         conn = sqlite3.connect(str(self.state_db))
         conn.execute("""
             CREATE TABLE sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 model TEXT,
-                started_at TEXT NOT NULL,
+                started_at REAL NOT NULL,
                 input_tokens INTEGER,
                 output_tokens INTEGER,
                 cache_read_tokens INTEGER DEFAULT 0,
@@ -1247,9 +1247,10 @@ class TestSessionDao(unittest.TestCase):
 
     def _insert_session(self, **kwargs):
         """插入一条 session 测试数据。"""
+        import time as _time
         defaults = {
             "model": "qwen3.6-plus",
-            "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "started_at": _time.time(),
             "input_tokens": 100,
             "output_tokens": 200,
             "cache_read_tokens": 0,
@@ -1309,10 +1310,10 @@ class TestSessionDao(unittest.TestCase):
 
     def test_query_sessions_period_filter(self):
         """Period 过滤只返回时间范围内数据。"""
-        now = datetime.now()
-        old_ts = (now - timedelta(days=10)).strftime("%Y-%m-%d %H:%M:%S")
-        self._insert_session(model="qwen3.6-plus", started_at=now.strftime("%Y-%m-%d %H:%M:%S"))
-        self._insert_session(model="claude-sonnet-4", started_at=old_ts, input_tokens=999)
+        import time as _time
+        now_ts = _time.time()
+        self._insert_session(model="qwen3.6-plus", started_at=now_ts)
+        self._insert_session(model="claude-sonnet-4", started_at=now_ts - 10 * 86400, input_tokens=999)
         dao = self._create_dao()
         result = dao.query_sessions("day")
 
@@ -1325,6 +1326,26 @@ class TestSessionDao(unittest.TestCase):
         dao = self._create_dao()
         result = dao.query_sessions("day")
         self.assertEqual(len(result), 0)
+
+    def test_period_filter_works_with_unix_timestamp(self):
+        """验证 _period_to_condition 对 Unix 时间戳的 started_at 正确过滤。"""
+        import time as _time
+        now_ts = _time.time()
+        self._insert_session(model="recent", started_at=now_ts - 3600,
+                             input_tokens=100, output_tokens=50,
+                             cache_read_tokens=0, cache_write_tokens=0)
+        self._insert_session(model="old", started_at=now_ts - 8 * 86400,
+                             input_tokens=200, output_tokens=100,
+                             cache_read_tokens=0, cache_write_tokens=0)
+        dao = self._create_dao()
+        week_sessions = dao.query_sessions("week")
+        week_models = [s["model"] for s in week_sessions]
+        self.assertIn("recent", week_models)
+        self.assertNotIn("old", week_models)
+        month_sessions = dao.query_sessions("month")
+        month_models = [s["model"] for s in month_sessions]
+        self.assertIn("recent", month_models)
+        self.assertIn("old", month_models)
 
     # ─── normalize_model_name 测试 ───
 

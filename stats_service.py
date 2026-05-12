@@ -554,16 +554,16 @@ class _SessionDao:
 
     @staticmethod
     def _period_to_condition(period: str) -> str:
-        """将 period 转换为 SQLite 时间条件。"""
+        """将 period 转换为 SQLite 时间条件（Unix 时间戳比较）。"""
         mapping = {
-            "day": "datetime('now', '-1 day')",
-            "24h": "datetime('now', '-1 day')",
-            "week": "datetime('now', '-7 days')",
-            "7d": "datetime('now', '-7 days')",
-            "month": "datetime('now', '-30 days')",
-            "30d": "datetime('now', '-30 days')",
+            "day": "strftime('%s', 'now', '-1 day')",
+            "24h": "strftime('%s', 'now', '-1 day')",
+            "week": "strftime('%s', 'now', '-7 days')",
+            "7d": "strftime('%s', 'now', '-7 days')",
+            "month": "strftime('%s', 'now', '-30 days')",
+            "30d": "strftime('%s', 'now', '-30 days')",
         }
-        threshold = mapping.get(period, "datetime('now', '-7 days')")
+        threshold = mapping.get(period, "strftime('%s', 'now', '-7 days')")
         return f"started_at >= {threshold}"
 
     @staticmethod
