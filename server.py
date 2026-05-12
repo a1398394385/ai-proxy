@@ -912,15 +912,15 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 return json_response(
                     self,
                     {
-                        "error": "上游有活跃路由引用，无法禁用",
+                        "error": "该上游有路由正在使用，请先在路由管理中解绑",
                         "referenced_routes": active_routes,
                     },
                     409,
                 )
-            db.disable_upstream(uid)
+            db.delete_upstream_with_models(uid)
             db.close()
             _reload_proxies()
-            return json_response(self, {"message": "Disabled"})
+            return json_response(self, {"message": "Deleted"})
 
         m = re.match(r"/api/models/(\d+)$", path)
         if m:
