@@ -2026,5 +2026,123 @@ class TestToolBlockState(unittest.TestCase):
         self.assertEqual(b.output_index, 2)
 
 
+class TestFixToolMessageOrder(unittest.TestCase):
+    """验证 _fix_tool_message_order：assistant 纯文本消息不能夹在 tool_call/tool 对之间。"""
+
+    def test_text_between_tool_pairs_deferred(self):
+        from proxy.transform_responses import _fix_tool_message_order
+        # 模拟问题场景：assistant+tool_calls → tool → assistant(纯文本) → assistant+tool_calls → tool
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "call_00", "type": "function"}]},
+            {"role": "tool", "tool_call_id": "call_00"},
+            {"role": "assistant", "content": "让我先核实设计"},  # 违规消息
+            {"role": "assistant", "tool_calls": [{"id": "call_01", "type": "function"}]},
+            {"role": "tool", "tool_call_id": "call_01"},
+        ]
+        result = _fix_tool_message_order(messages)
+        roles = [(m["role"], bool(m.get("tool_calls"))) for m in result]
+        # assistant(纯文本) 应该被推迟到最后
+        expected_roles = [
+            ("assistant", True),
+            ("tool", False),
+            ("assistant", True),
+            ("tool", False),
+            ("assistant", False),  # 推迟到最后
+        ]
+        self.assertEqual(roles, expected_roles)
+
+    def test_no_tool_calls_unchanged(self):
+        from proxy.transform_responses import _fix_tool_message_order
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        result = _fix_tool_message_order(messages)
+        self.assertEqual(result, messages)
+
+    def test_proper_order_unchanged(self):
+        from proxy.transform_responses import _fix_tool_message_order
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "call_0", "type": "function"}]},
+            {"role": "tool", "tool_call_id": "call_0"},
+            {"role": "assistant", "content": "done"},
+        ]
+        result = _fix_tool_message_order(messages)
+        self.assertEqual(result, messages)
+
+    def test_real_scenario(self):
+        """复现 e3d3e3fb52a94d5c 的消息序列。"""
+        from proxy.transform_responses import _fix_tool_message_order
+        messages = [
+            {"role": "system", "content": "..."},
+            {"role": "system", "content": "..."},
+            {"role": "user", "content": "..."},
+            {"role": "user", "content": "..."},
+            {"role": "assistant", "tool_calls": [{"id": "call_00_7aXx", "type": "function"}]},
+            {"role": "tool", "tool_call_id": "call_00_7aXx"},
+            {"role": "assistant", "content": "让我先核实设计中的现有代码"},  # 违规
+            {"role": "assistant", "tool_calls": [{"id": "call_00_nqkw", "type": "function"}]},
+            {"role": "assistant", "tool_calls": [{"id": "call_01_dvAq", "type": "function"}]},
+            {"role": "assistant", "tool_calls": [{"id": "call_02_Qvae", "type": "function"}]},
+            {"role": "tool", "tool_call_id": "call_00_nqkw"},
+            {"role": "tool", "tool_call_id": "call_01_dvAq"},
+            {"role": "tool", "tool_call_id": "call_02_Qvae"},
+        ]
+        result = _fix_tool_message_order(messages)
+
+        # 验证：所有 tool_call 都有对应的 tool 响应，且纯文本消息在最后
+        all_tc_ids = set()
+        all_tool_call_ids = set()
+        for m in result:
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                for tc in m["tool_calls"]:
+                    all_tc_ids.add(tc["id"])
+            if m.get("role") == "tool":
+                all_tool_call_ids.add(m.get("tool_call_id"))
+        self.assertEqual(all_tc_ids, all_tool_call_ids)
+
+        # 验证连续的 assistant+tool_calls 被合并为单条
+        merged_tool_call_msgs = [m for m in result if m.get("role") == "assistant" and m.get("tool_calls")]
+        self.assertEqual(len(merged_tool_call_msgs), 2)  # 第一个单独的 + 合并后的
+        self.assertEqual(len(merged_tool_call_msgs[1]["tool_calls"]), 3)  # 3个合并为1条
+
+        # 验证文本消息被推迟到最后
+        text_msg = [m for m in result if m.get("content") == "让我先核实设计中的现有代码"]
+        self.assertEqual(len(text_msg), 1)
+        text_idx = result.index(text_msg[0])
+        last_tool_idx = max(i for i, m in enumerate(result) if m.get("role") == "tool")
+        self.assertTrue(text_idx > last_tool_idx)
+
+    def test_consecutive_tool_calls_merged(self):
+        """复现 d71205a904704afc 场景：连续多条 assistant+tool_calls 合并为单条。"""
+        from proxy.transform_responses import _fix_tool_message_order
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "call_00_u8Yt", "type": "function"}]},
+            {"role": "tool", "tool_call_id": "call_00_u8Yt"},
+            {"role": "assistant", "tool_calls": [{"id": "call_00_ZxNe", "type": "function"}]},
+            {"role": "tool", "tool_call_id": "call_00_ZxNe"},
+            {"role": "assistant", "tool_calls": [{"id": "call_00_vggd", "type": "function"}]},
+            {"role": "assistant", "tool_calls": [{"id": "call_01_0mOn", "type": "function"}]},
+            {"role": "assistant", "tool_calls": [{"id": "call_02_iEjm", "type": "function"}]},
+            {"role": "tool", "tool_call_id": "call_00_vggd"},
+            {"role": "tool", "tool_call_id": "call_01_0mOn"},
+            {"role": "tool", "tool_call_id": "call_02_iEjm"},
+        ]
+        result = _fix_tool_message_order(messages)
+
+        # 验证：连续的 3 条 assistant+tool_calls 合并为 1 条
+        tool_call_msgs = [m for m in result if m.get("role") == "assistant" and m.get("tool_calls")]
+        self.assertEqual(len(tool_call_msgs), 3)  # 3组：单+单+合并3
+        self.assertEqual(len(tool_call_msgs[2]["tool_calls"]), 3)  # 3条合并为1条
+
+        # 验证所有 call_id 都在
+        all_tc = []
+        for m in tool_call_msgs:
+            all_tc.extend(tc["id"] for tc in m["tool_calls"])
+        self.assertEqual(sorted(all_tc), sorted([
+            "call_00_u8Yt", "call_00_ZxNe", "call_00_vggd", "call_01_0mOn", "call_02_iEjm"
+        ]))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -66,6 +66,10 @@ def responses_to_chat(body: dict, model_cfg: dict) -> dict:
                         pending_reasoning = None  # 仅在实际注入后消费
             messages.extend(msg)
 
+    # 修复：Responses API 允许 assistant 文本消息出现在 tool_call/tool 对之间，
+    # 但 Chat Completions 不允许。将中间的 assistant 纯文本消息推迟到 tool 序列结束后。
+    messages = _fix_tool_message_order(messages)
+
     # 基础字段映射
     chat = {
         "model": model_cfg["target"],
@@ -207,6 +211,83 @@ def _map_computer_call_output(item: dict) -> dict:
         "tool_call_id": item.get("call_id") or item.get("tool_call_id", ""),
         "content": item.get("output", ""),
     }
+
+
+def _fix_tool_message_order(messages: list) -> list:
+    """修复 Chat Completions 消息顺序。
+
+    Responses API 允许：
+    (a) assistant 纯文本消息出现在 tool_call/tool 对之间
+    (b) 多条 assistant+tool_calls 消息连续出现
+
+    但 Chat Completions 要求：
+    (a) assistant+tool_calls 必须紧跟对应的 tool 消息，中间不能有其他消息
+    (b) 多条连续的 assistant+tool_calls 必须合并为单条消息
+
+    策略：
+    1. 将夹在 tool_call ↔ tool 之间的 assistant 纯文本消息推迟到所有 tool 消息之后
+    2. 将连续的 assistant+tool_calls 合并为单条消息
+    """
+    result = []
+    deferred = []
+
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        role = msg.get("role")
+        has_tool_calls = msg.get("tool_calls")
+
+        if role == "assistant" and has_tool_calls:
+            # 合并连续的所有 assistant+tool_calls 为单条消息
+            all_tool_calls = []
+            merged_reasoning = None
+            while i < len(messages):
+                m = messages[i]
+                if m.get("role") == "assistant" and m.get("tool_calls"):
+                    all_tool_calls.extend(m["tool_calls"])
+                    # 保留 reasoning_content（如果有的话）
+                    if "reasoning_content" in m and merged_reasoning is None:
+                        merged_reasoning = m["reasoning_content"]
+                    i += 1
+                else:
+                    break
+
+            merged = {
+                "role": "assistant",
+                "tool_calls": all_tool_calls,
+            }
+            if merged_reasoning:
+                merged["reasoning_content"] = merged_reasoning
+
+            # 收集对应的 tool 消息
+            tool_call_ids = {tc.get("id") for tc in all_tool_calls}
+            tool_msgs = []
+            while i < len(messages):
+                m = messages[i]
+                if m.get("role") == "tool" and m.get("tool_call_id") in tool_call_ids:
+                    tool_msgs.append(m)
+                    tool_call_ids.discard(m.get("tool_call_id"))
+                    i += 1
+                else:
+                    break
+
+            # 中间夹着的 assistant 纯文本消息推迟
+            while i < len(messages):
+                m = messages[i]
+                if m.get("role") == "assistant" and not m.get("tool_calls"):
+                    deferred.append(m)
+                    i += 1
+                else:
+                    break
+
+            result.append(merged)
+            result.extend(tool_msgs)
+        else:
+            result.append(msg)
+            i += 1
+
+    result.extend(deferred)
+    return result
 
 
 def _map_tools(tools: list) -> list:

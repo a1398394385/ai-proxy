@@ -13,14 +13,15 @@ from proxy.common import CONFIG, load_config
 from proxy.request_logger import init_logger as init_request_logger
 from proxy.handler import ProxyHandler
 
-
 # ─── ThreadedHTTPServer ────────────────────────────────────────────
+
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
 # ─── 日志轮转 ──────────────────────────────────────────────────────
+
 
 def rotate_log_if_needed():
     """启动时检查 proxy.log 大小，超过 101 MB 则轮转。
@@ -52,9 +53,11 @@ def rotate_log_if_needed():
 
 # ─── 主入口 ────────────────────────────────────────────────────────
 
+
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Codex Proxy")
+
+    parser = argparse.ArgumentParser(description="AI Proxy")
     parser.add_argument("-c", "--config", default=None, help="配置文件路径")
     args = parser.parse_args()
 
@@ -73,12 +76,13 @@ def main():
 
     server = ThreadedHTTPServer((host, port), ProxyHandler)
     from proxy.response_store import ResponseStore as _ResponseStore
+
     _store_cfg = CONFIG.get("response_store", {})
     server.response_store = _ResponseStore(
         max_entries=_store_cfg.get("max_entries", 1000),
         ttl_seconds=_store_cfg.get("ttl_seconds", 3600),
     )
-    logging.info(f"Codex Proxy 启动: http://{host}:{port}")
+    logging.info(f"AI Proxy 启动: http://{host}:{port}")
 
     # PID 文件
     pid_file = Path(__file__).parent / ".proxy.pid"

@@ -2,6 +2,7 @@
 """Hermes Data Browser — 本地浏览 Hermes 内部数据的 Web 工具
 支持：Fact Store 浏览 + Token 使用统计
 """
+
 import json
 import os
 import sqlite3
@@ -99,6 +100,7 @@ def _test_upstream_connectivity(upstream: dict) -> dict:
 
 # ─── 自动检测上游模型 ───
 
+
 def _call_upstream_models(upstream: dict) -> dict:
     """调用上游 /v1/models 获取可用模型列表。"""
     parsed = urlparse(upstream["base_url"])
@@ -126,7 +128,9 @@ def _call_upstream_models(upstream: dict) -> dict:
     for request_path in candidate_paths:
         try:
             if scheme == "https":
-                conn = http.client.HTTPSConnection(host, port, timeout=15, context=ssl_context)
+                conn = http.client.HTTPSConnection(
+                    host, port, timeout=15, context=ssl_context
+                )
             else:
                 conn = http.client.HTTPConnection(host, port, timeout=15)
 
@@ -171,6 +175,8 @@ def _call_upstream_models(upstream: dict) -> dict:
     result["error"] = "所有候选路径均返回 404/405"
 
     return result
+
+
 STATE_DB_PATH = os.path.expanduser("~/.hermes/state.db")
 CC_SWITCH_DB_PATH = os.path.expanduser("~/.cc-switch/cc-switch.db")
 load_config(CONFIG_PATH)
@@ -185,6 +191,7 @@ def _get_stats_service():
     global _stats_service_instance
     if _stats_service_instance is None:
         from stats_service import StatsService
+
         _stats_service_instance = StatsService(
             access_log_db_path=str(ACCESS_LOG_DB_PATH),
             config_db_path=str(CONFIG_DB_PATH),
@@ -192,11 +199,6 @@ def _get_stats_service():
             cc_switch_db_path=CC_SWITCH_DB_PATH,
         )
     return _stats_service_instance
-
-
-
-
-
 
 
 def get_db():
@@ -215,7 +217,6 @@ def get_access_log_db():
     conn = sqlite3.connect(str(ACCESS_LOG_DB_PATH), timeout=5)
     conn.row_factory = sqlite3.Row
     return conn
-
 
 
 def json_response(handler, data, status=200):
@@ -246,7 +247,8 @@ def get_all_facts():
         entities = conn.execute(
             """SELECT e.name, e.entity_type FROM entities e
                JOIN fact_entities fe ON e.entity_id = fe.entity_id
-               WHERE fe.fact_id = ?""", (f["fact_id"],)
+               WHERE fe.fact_id = ?""",
+            (f["fact_id"],),
         ).fetchall()
         f["entities"] = [dict(e)["name"] for e in entities]
     conn.close()
@@ -259,20 +261,20 @@ def search_facts(query):
         """SELECT f.* FROM facts f
            JOIN facts_fts ON facts_fts.rowid = f.fact_id
            WHERE facts_fts MATCH ?
-           ORDER BY f.fact_id DESC""", (query,)
+           ORDER BY f.fact_id DESC""",
+        (query,),
     ).fetchall()
     facts = [row_to_dict(r) for r in rows]
     for f in facts:
         entities = conn.execute(
             """SELECT e.name FROM entities e
                JOIN fact_entities fe ON e.entity_id = fe.entity_id
-               WHERE fe.fact_id = ?""", (f["fact_id"],)
+               WHERE fe.fact_id = ?""",
+            (f["fact_id"],),
         ).fetchall()
         f["entities"] = [dict(e)["name"] for e in entities]
     conn.close()
     return facts
-
-
 
 
 class HermesDataHandler(SimpleHTTPRequestHandler):
@@ -282,7 +284,9 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        self.send_header(
+            "Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS"
+        )
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
@@ -353,10 +357,13 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 conn.close()
             except Exception:
                 pass
-            return json_response(self, {
-                "proxy_reachable": proxy_reachable,
-                "config_db": counts,
-            })
+            return json_response(
+                self,
+                {
+                    "proxy_reachable": proxy_reachable,
+                    "config_db": counts,
+                },
+            )
 
         # ===== Fact Store API =====
         if path == "/api/facts":
@@ -377,7 +384,9 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             except ValueError:
                 return json_response(self, {"error": "Invalid ID"}, 400)
             conn = get_db()
-            row = conn.execute("SELECT * FROM facts WHERE fact_id = ?", (fact_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM facts WHERE fact_id = ?", (fact_id,)
+            ).fetchone()
             if not row:
                 conn.close()
                 return json_response(self, {"error": "Not found"}, 404)
@@ -385,7 +394,8 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             entities = conn.execute(
                 """SELECT e.name FROM entities e
                    JOIN fact_entities fe ON e.entity_id = fe.entity_id
-                   WHERE fe.fact_id = ?""", (fact_id,)
+                   WHERE fe.fact_id = ?""",
+                (fact_id,),
             ).fetchall()
             fact["entities"] = [dict(e)["name"] for e in entities]
             conn.close()
@@ -412,9 +422,18 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                    JOIN fact_entities fe ON e.entity_id = fe.entity_id
                    GROUP BY e.name ORDER BY cnt DESC LIMIT 20"""
             ).fetchall()
-            top_entities = [{"name": r["name"], "count": r["cnt"]} for r in top_entities]
+            top_entities = [
+                {"name": r["name"], "count": r["cnt"]} for r in top_entities
+            ]
             conn.close()
-            return json_response(self, {"total": total, "categories": categories, "top_entities": top_entities})
+            return json_response(
+                self,
+                {
+                    "total": total,
+                    "categories": categories,
+                    "top_entities": top_entities,
+                },
+            )
 
         # ===== Token 统计 API =====
         if path == "/api/token_stats":
@@ -455,9 +474,15 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             except (ValueError, TypeError):
                 return json_response(self, {"error": "Invalid limit/offset"}, 400)
             if limit > 200:
-                return json_response(self, {"error": "Limit exceeds maximum (200)"}, 400)
+                return json_response(
+                    self, {"error": "Limit exceeds maximum (200)"}, 400
+                )
             result = stats_service.fetch_requests(
-                period=period, model=model, request_type=request_type, limit=limit, offset=offset
+                period=period,
+                model=model,
+                request_type=request_type,
+                limit=limit,
+                offset=offset,
             )
             return json_response(self, result)
 
@@ -484,12 +509,13 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             except (ValueError, TypeError):
                 return json_response(self, {"error": "Invalid limit/offset"}, 400)
             if limit > 200:
-                return json_response(self, {"error": "Limit exceeds maximum (200)"}, 400)
+                return json_response(
+                    self, {"error": "Limit exceeds maximum (200)"}, 400
+                )
             result = stats_service.fetch_by_model_requests(
                 model=model, period=period, limit=limit, offset=offset
             )
             return json_response(self, result)
-
 
         # 静态文件
         static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -503,7 +529,11 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             return
         if os.path.isfile(file_path):
-            ext_map = {".html": "text/html", ".css": "text/css", ".js": "application/javascript"}
+            ext_map = {
+                ".html": "text/html",
+                ".css": "text/css",
+                ".js": "application/javascript",
+            }
             ext = os.path.splitext(file_path)[1]
             mime = ext_map.get(ext, "application/octet-stream")
             with open(file_path, "rb") as f:
@@ -563,7 +593,6 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             if not u:
                 return json_response(self, {"error": "Not found"}, 404)
 
-
             # 校验上游处于启用状态
             if not u.get("is_active"):
                 return json_response(self, {"error": "上游已禁用"}, 400)
@@ -580,12 +609,15 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             all_ids = detect_result.get("model_ids", [])
             discovered = [mid for mid in all_ids if mid not in existing_models]
 
-            return json_response(self, {
-                "reachable": detect_result["reachable"],
-                "discovered": discovered,
-                "existing": [mid for mid in all_ids if mid in existing_models],
-                "error": detect_result.get("error")
-            })
+            return json_response(
+                self,
+                {
+                    "reachable": detect_result["reachable"],
+                    "discovered": discovered,
+                    "existing": [mid for mid in all_ids if mid in existing_models],
+                    "error": detect_result.get("error"),
+                },
+            )
 
         bulk_m = re.match(r"/api/upstreams/([^/]+)/models/bulk$", path)
         if bulk_m:
@@ -631,9 +663,13 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             # 校验 request_type
             request_type = data.get("request_type", "responses")
             if request_type not in ("responses", "messages", "chat_completions"):
-                return json_response(self, {
-                    "error": "request_type must be one of: responses, messages, chat_completions"
-                }, 400)
+                return json_response(
+                    self,
+                    {
+                        "error": "request_type must be one of: responses, messages, chat_completions"
+                    },
+                    400,
+                )
             db = get_config_db()
             model = db.get_model(data["target_model_id"])
             if not model:
@@ -653,7 +689,7 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/config/reload":
             result = {}
-            # Reload codex proxy
+            # Reload AI Proxy
             try:
                 proxy_port = get_port("codex_proxy", 48743)
                 conn = http.client.HTTPConnection("127.0.0.1", proxy_port, timeout=5)
@@ -685,7 +721,9 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             for match in table_pattern.finditer(sql):
                 table_name = match.group(1)
                 if table_name not in ("debug_log", "token_stats"):
-                    return json_response(self, {"error": f"禁止访问表: {table_name}"}, 403)
+                    return json_response(
+                        self, {"error": f"禁止访问表: {table_name}"}, 403
+                    )
 
             # LIMIT 处理
             limit_pattern = re.compile(r"LIMIT\s+(\d+)", re.IGNORECASE)
@@ -722,8 +760,12 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 cursor = conn.execute(
                     """INSERT INTO facts (content, category, tags, trust_score)
                        VALUES (?, ?, ?, ?)""",
-                    (data.get("content", ""), data.get("category", "general"),
-                     data.get("tags", ""), data.get("trust_score", 0.5)),
+                    (
+                        data.get("content", ""),
+                        data.get("category", "general"),
+                        data.get("tags", ""),
+                        data.get("trust_score", 0.5),
+                    ),
                 )
                 conn.commit()
                 fact_id = cursor.lastrowid
@@ -733,7 +775,9 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                             "SELECT entity_id FROM entities WHERE name = ?", (ename,)
                         ).fetchone()
                         if not entity:
-                            ec = conn.execute("INSERT INTO entities (name) VALUES (?)", (ename,))
+                            ec = conn.execute(
+                                "INSERT INTO entities (name) VALUES (?)", (ename,)
+                            )
                             eid = ec.lastrowid
                         else:
                             eid = dict(entity)["entity_id"]
@@ -743,7 +787,9 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                         )
                     conn.commit()
                 conn.close()
-                return json_response(self, {"fact_id": fact_id, "message": "Created"}, 201)
+                return json_response(
+                    self, {"fact_id": fact_id, "message": "Created"}, 201
+                )
             except sqlite3.IntegrityError as e:
                 conn.close()
                 return json_response(self, {"error": str(e)}, 409)
@@ -826,18 +872,22 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             except json.JSONDecodeError:
                 return json_response(self, {"error": "Invalid JSON"}, 400)
             conn = get_db()
-            existing = conn.execute("SELECT * FROM facts WHERE fact_id = ?", (fact_id,)).fetchone()
+            existing = conn.execute(
+                "SELECT * FROM facts WHERE fact_id = ?", (fact_id,)
+            ).fetchone()
             if not existing:
                 conn.close()
                 return json_response(self, {"error": "Not found"}, 404)
             conn.execute(
                 """UPDATE facts SET content = ?, category = ?, tags = ?, trust_score = ?
                    WHERE fact_id = ?""",
-                (data.get("content", existing["content"]),
-                 data.get("category", existing["category"]),
-                 data.get("tags", existing["tags"]),
-                 data.get("trust_score", existing["trust_score"]),
-                 fact_id),
+                (
+                    data.get("content", existing["content"]),
+                    data.get("category", existing["category"]),
+                    data.get("tags", existing["tags"]),
+                    data.get("trust_score", existing["trust_score"]),
+                    fact_id,
+                ),
             )
             conn.commit()
             conn.close()
@@ -859,10 +909,14 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
             active_routes = db.upstream_active_routes(uid)
             if active_routes:
                 db.close()
-                return json_response(self, {
-                    "error": "上游有活跃路由引用，无法禁用",
-                    "referenced_routes": active_routes,
-                }, 409)
+                return json_response(
+                    self,
+                    {
+                        "error": "上游有活跃路由引用，无法禁用",
+                        "referenced_routes": active_routes,
+                    },
+                    409,
+                )
             db.disable_upstream(uid)
             db.close()
             _reload_proxies()
@@ -892,9 +946,13 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
                 star_count = sum(1 for r in routes if r["source"] == "*")
                 if star_count <= 1:
                     db.close()
-                    return json_response(self, {
-                        "error": "不能删除最后一条 * fallback 路由",
-                    }, 409)
+                    return json_response(
+                        self,
+                        {
+                            "error": "不能删除最后一条 * fallback 路由",
+                        },
+                        409,
+                    )
             try:
                 db.delete_route(rid)
                 db.close()
@@ -909,7 +967,9 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
         if m:
             fact_id = int(m.group(1))
             conn = get_db()
-            existing = conn.execute("SELECT fact_id FROM facts WHERE fact_id = ?", (fact_id,)).fetchone()
+            existing = conn.execute(
+                "SELECT fact_id FROM facts WHERE fact_id = ?", (fact_id,)
+            ).fetchone()
             if not existing:
                 conn.close()
                 return json_response(self, {"error": "Not found"}, 404)
@@ -927,7 +987,7 @@ def main():
     if not os.path.exists(STATE_DB_PATH):
         print(f"Warning: State database not found: {STATE_DB_PATH}")
         print("Token statistics will not be available.")
-    
+
     server = HTTPServer((HOST, PORT), HermesDataHandler)
     print(f"=" * 50)
     print(f"Hermes Data Browser")

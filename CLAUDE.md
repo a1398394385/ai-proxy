@@ -9,7 +9,7 @@
 | 服务 | 入口文件 | 端口 | 用途 |
 |------|----------|------|------|
 | Hermes Data Browser | `server.py` | 18742 | Web UI — Fact Store / Token 统计 / 模型路由 CRUD / SQL 查询 |
-| Codex Proxy | `proxy.py` | 48743 | 统一代理 — 协议转换 + 透传（OpenAI Responses / Anthropic Messages → Chat Completions）|
+| AI Proxy | `proxy.py` | 48743 | 统一代理 — 协议转换 + 透传（OpenAI Responses / Anthropic Messages → Chat Completions）|
 
 > **注意**：`pass_through.py` 已删除，其功能合并到 `proxy/handler.py` 的 `_handle_passthrough()` 中。不再有独立的 48744 端口服务。
 
@@ -22,7 +22,7 @@
 ├── proxy_config.yaml           # 全局配置（端口/上游/日志/模型映射）
 ├── quick_test.py               # Token 统计快速冒烟
 │
-├── proxy/                      # ★ Codex Proxy 核心包 (11 文件)
+├── proxy/                      # ★ AI Proxy 核心包 (11 文件)
 │   ├── __init__.py             # 公共 API re-export
 │   ├── handler.py              # 统一 ProxyHandler — 路由/透传/转换 (1057行)
 │   ├── common.py               # 共享模块 — 配置/模型解析/上游连接
@@ -86,7 +86,7 @@
 
 ```bash
 # 服务管理
-./server.sh start     # 启动 Data Browser + Codex Proxy
+./server.sh start     # 启动 Data Browser + AI Proxy
 ./server.sh stop      # 停止两个服务
 ./server.sh status    # 查看状态
 ./server.sh restart   # 重启（修改代码后必须执行，无热重载）
