@@ -25,19 +25,19 @@ class TestConfigIntegration(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_config_cache_resolve(self):
-        cache = ConfigCache(self.db_path, ttl=5)
+        cache = ConfigCache(self.db_path)
         cfg = cache.resolve("gpt-4")
         self.assertEqual(cfg["target_name"], "qwen")
         self.assertEqual(cfg["upstream"]["base_url"], "http://a:4000")
 
     def test_config_cache_fallback(self):
-        cache = ConfigCache(self.db_path, ttl=5)
+        cache = ConfigCache(self.db_path)
         cfg = cache.resolve("unknown-model")
         self.assertEqual(cfg["target_name"], "claude")
 
     def test_disable_upstream_affects_resolve(self):
         self.db.disable_upstream("up-a")
-        cache = ConfigCache(self.db_path, ttl=0)
+        cache = ConfigCache(self.db_path)
         cfg = cache.resolve("gpt-4")
         self.assertEqual(cfg["target_name"], "claude")
 
@@ -61,7 +61,7 @@ class TestConfigIntegration(unittest.TestCase):
         self.assertEqual(counts["routes"], 3)
 
     def test_cache_reload(self):
-        cache = ConfigCache(self.db_path, ttl=99)
+        cache = ConfigCache(self.db_path)
         cfg1 = cache.resolve("gpt-4")
         rid = self.db.get_route_by_source("gpt-4")["id"]
         self.db.update_route(rid, {"target_model_id": self.m2})
@@ -70,7 +70,7 @@ class TestConfigIntegration(unittest.TestCase):
         self.assertEqual(cfg2["target_name"], "claude")
 
     def test_cache_get_all(self):
-        cache = ConfigCache(self.db_path, ttl=5)
+        cache = ConfigCache(self.db_path)
         all_routes = cache.get_all()
         self.assertIn("gpt-4", all_routes)
         self.assertIn("codex-mini", all_routes)

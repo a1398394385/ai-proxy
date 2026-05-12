@@ -461,14 +461,17 @@ class _CostCalculator:
     def __init__(self, config_db_path: str | Path) -> None:
         self._pricing_db = PricingDB(Path(config_db_path))
         self._pricing_cache: dict = {}
+        self._display_name_cache: dict = {}  # lowercase model_id → display_name
 
     # ─── 定价加载 ───
 
     def get_pricing(self) -> dict:
         """从 config.db 加载 model_pricing 表（带缓存），自动换算为人民币。
 
+        model_id 统一小写存入缓存，实现大小写不敏感匹配。
+
         Returns:
-            {model_id: {input_cost, output_cost, cache_read_cost, cache_creation_cost}}
+            {model_id_lower: {input_cost, output_cost, cache_read_cost, cache_creation_cost}}
             价格单位：RMB / 1M tokens
         """
         if self._pricing_cache:
@@ -477,15 +480,19 @@ class _CostCalculator:
         try:
             rows = self._pricing_db.list_pricings()
             pricing = {}
+            display_names = {}
             for r in rows:
                 rate = 1 if r["currency"] == "RMB" else self.EXCHANGE_RATE
-                pricing[r["model_id"]] = {
+                key = r["model_id"].lower()
+                pricing[key] = {
                     "input_cost": float(r["input_cost_per_million"]) * rate,
                     "output_cost": float(r["output_cost_per_million"]) * rate,
                     "cache_read_cost": float(r["cache_read_cost_per_million"]) * rate,
                     "cache_creation_cost": float(r["cache_creation_cost_per_million"]) * rate,
                 }
+                display_names[key] = r["display_name"]
             self._pricing_cache = pricing
+            self._display_name_cache = display_names
             return pricing
         except Exception as e:
             print(f"Error reading model pricing: {e}")
@@ -494,6 +501,14 @@ class _CostCalculator:
     def invalidate_cache(self):
         """主动失效缓存，供定价修改后调用。"""
         self._pricing_cache = {}
+        self._display_name_cache = {}
+
+    def get_display_name(self, model: str) -> str:
+        """获取模型显示名，不存在则返回模型原名。"""
+        if not model:
+            return model
+        self.get_pricing()  # 确保缓存已加载
+        return self._display_name_cache.get(model.lower(), model)
 
     # ─── 成本计算 ───
 
@@ -512,10 +527,14 @@ class _CostCalculator:
         """
         pricing = self.get_pricing()
 
-        if not pricing or model not in pricing:
+        if not pricing:
             return 0
 
-        p = pricing[model]
+        key = model.lower() if model else ""
+        if key not in pricing:
+            return 0
+
+        p = pricing[key]
 
         input_cost = (input_tokens or 0) / 1_000_000 * p["input_cost"]
         output_cost = (output_tokens or 0) / 1_000_000 * p["output_cost"]
@@ -1006,6 +1025,7 @@ class StatsService:
                 cache_read_tokens=m["cache_read_tokens"],
                 cache_write_tokens=m["cache_write_tokens"],
             ), 6)
+            m["display_name"] = calculator.get_display_name(m["model"])
         merged.sort(key=lambda x: x.get("total_tokens", 0), reverse=True)
         return merged
 

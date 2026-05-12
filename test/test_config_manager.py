@@ -430,13 +430,13 @@ class TestConfigCache(unittest.TestCase):
 
     def test_cache_resolve_returns_config(self):
         from proxy.config_manager import ConfigCache
-        cache = ConfigCache(self.db_path, ttl=5)
+        cache = ConfigCache(self.db_path)
         cfg = cache.resolve("unknown")
         self.assertEqual(cfg["target_name"], "qwen")
 
     def test_cache_hit_avoids_db_read(self):
         from proxy.config_manager import ConfigCache
-        cache = ConfigCache(self.db_path, ttl=99)
+        cache = ConfigCache(self.db_path)
         cfg1 = cache.resolve("*")
         m2 = self.db.add_model({"name": "claude", "upstream_id": "up-a"})
         star_rid = self.db.get_route_by_source("*")["id"]
@@ -446,7 +446,7 @@ class TestConfigCache(unittest.TestCase):
 
     def test_reload_refreshes_cache(self):
         from proxy.config_manager import ConfigCache
-        cache = ConfigCache(self.db_path, ttl=99)
+        cache = ConfigCache(self.db_path)
         cfg1 = cache.resolve("*")
         m2 = self.db.add_model({"name": "claude", "upstream_id": "up-a"})
         star_rid = self.db.get_route_by_source("*")["id"]
@@ -457,19 +457,9 @@ class TestConfigCache(unittest.TestCase):
 
     def test_get_all(self):
         from proxy.config_manager import ConfigCache
-        cache = ConfigCache(self.db_path, ttl=5)
+        cache = ConfigCache(self.db_path)
         all_routes = cache.get_all()
         self.assertIn("*", all_routes)
-
-    def test_ttl_expiry_refreshes(self):
-        from proxy.config_manager import ConfigCache
-        cache = ConfigCache(self.db_path, ttl=0)
-        cfg1 = cache.resolve("*")
-        m2 = self.db.add_model({"name": "claude", "upstream_id": "up-a"})
-        star_rid = self.db.get_route_by_source("*")["id"]
-        self.db.update_route(star_rid, {"target_model_id": m2})
-        cfg2 = cache.resolve("*")
-        self.assertEqual(cfg2["target_name"], "claude")
 
 
 class TestRouteProxyType(unittest.TestCase):

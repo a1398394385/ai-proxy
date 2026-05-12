@@ -1052,11 +1052,15 @@ class Migrations:
 
 
 class ConfigCache:
-    """内存缓存，供 proxy.py 使用。"""
+    """内存缓存，供 proxy.py 使用。
 
-    def __init__(self, db_path: Path, ttl: float = 5):
+    不过期，仅在首次访问时加载全部路由。
+    通过 reload() 使缓存失效（由页面更新路由时触发 /admin/reload 调用），
+    下次请求时自动查数据库重建缓存。
+    """
+
+    def __init__(self, db_path: Path):
         self._db_path = db_path
-        self._ttl = ttl
         self._lock = threading.Lock()
         self._routes: dict = {}
         self._loaded_at: float = 0
@@ -1067,7 +1071,7 @@ class ConfigCache:
 
     def resolve(self, source_name: str, request_type: str = "responses") -> Optional[dict]:
         with self._lock:
-            self._refresh_if_stale(request_type)
+            self._refresh_if_stale()
             key = (source_name, request_type)
             if key in self._routes:
                 return self._routes[key]
@@ -1075,7 +1079,7 @@ class ConfigCache:
 
     def get_all(self, request_type: Optional[str] = None) -> dict:
         with self._lock:
-            self._refresh_if_stale(request_type)
+            self._refresh_if_stale()
             result = {}
             for (src, pt), cfg in self._routes.items():
                 if request_type is not None and pt != request_type:
@@ -1083,15 +1087,15 @@ class ConfigCache:
                 result[src] = cfg
             return result
 
-    def _refresh_if_stale(self, request_type: Optional[str] = None):
-        now = time.time()
-        if self._loaded_at > 0 and now - self._loaded_at < self._ttl:
+    def _refresh_if_stale(self):
+        if self._loaded_at > 0:
             return
         try:
             db = ConfigDB(self._db_path)
             try:
                 new_routes = {}
-                all_routes = db.list_routes(request_type)
+                # 加载全部 request_type 的路由，避免不同请求类型间缓存丢失
+                all_routes = db.list_routes(request_type=None)
                 for route in all_routes:
                     source = route["source"]
                     pt = route.get("request_type", "responses")
@@ -1103,9 +1107,7 @@ class ConfigCache:
             finally:
                 db.close()
         except Exception:
-            # 数据库异常时保留旧缓存，不更新 _loaded_at
-            # TTL 机制下次继续尝试，同时记录日志方便排查
-            logging.warning("[ConfigCache] 配置缓存刷新失败，保留旧缓存", exc_info=True)
+            logging.warning("[ConfigCache] 配置缓存加载失败，保留旧缓存", exc_info=True)
 
 
 # ─── YAML 解析（内联，避免依赖 proxy.py）───────────────────────────
