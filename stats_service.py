@@ -1245,6 +1245,74 @@ class _OpenCodeDao:
         finally:
             conn.close()
 
+    def query_raw(
+        self,
+        period: str,
+        model: str | None = None,
+    ) -> list[dict]:
+        """查询原始 opencode message 记录，返回统一格式 dict 列表。
+
+        Args:
+            period: 时间周期
+            model: 可选，按 modelID 过滤
+
+        Returns:
+            统一格式记录列表。opencode.db 不存在时返回空列表。
+        """
+        conn = self._get_conn()
+        if conn is None:
+            return []
+        try:
+            time_condition = self._period_to_condition(period)
+            conditions = [time_condition, "json_extract(m.data, '$.tokens.input') IS NOT NULL"]
+            params: list = []
+
+            if model:
+                conditions.append("json_extract(m.data, '$.modelID') = ?")
+                params.append(model)
+
+            where_clause = " AND ".join(conditions)
+
+            rows = conn.execute(
+                f"""
+                SELECT m.id as message_id,
+                       json_extract(m.data, '$.modelID') as model_id,
+                       datetime(m.time_created / 1000, 'unixepoch', 'localtime') as request_ts,
+                       CAST(json_extract(m.data, '$.tokens.input') AS INTEGER) as input_tokens,
+                       CAST(json_extract(m.data, '$.tokens.output') AS INTEGER)
+                           + CAST(json_extract(m.data, '$.tokens.reasoning') AS INTEGER) as output_tokens,
+                       CAST(json_extract(m.data, '$.tokens.cache.read') AS INTEGER) as cache_read_tokens,
+                       CAST(json_extract(m.data, '$.tokens.cache.write') AS INTEGER) as cache_write_tokens,
+                       CAST(json_extract(m.data, '$.time.completed') AS INTEGER)
+                           - CAST(json_extract(m.data, '$.time.created') AS INTEGER) as duration_ms
+                FROM message m
+                WHERE {where_clause}
+                ORDER BY m.time_created DESC
+                """,
+                params,
+            ).fetchall()
+
+            return [
+                {
+                    "request_id": f"oc-msg-{row['message_id']}",
+                    "model": row["model_id"] or "",
+                    "request_type": "session",
+                    "request_ts": row["request_ts"],
+                    "duration_ms": row["duration_ms"],
+                    "status": "completed",
+                    "input_tokens": row["input_tokens"] or 0,
+                    "output_tokens": row["output_tokens"] or 0,
+                    "cache_read_tokens": row["cache_read_tokens"] or 0,
+                    "cache_write_tokens": row["cache_write_tokens"] or 0,
+                    "upstream_id": "opencode",
+                }
+                for row in rows
+            ]
+        except Exception:
+            return []
+        finally:
+            conn.close()
+
     def query_messages_paged(self, period: str, model: str | None = None,
                              request_type: str | None = None,
                              limit: int = 50, offset: int = 0) -> tuple:

@@ -3502,6 +3502,23 @@ class TestOpenCodeDao(unittest.TestCase):
         self.assertEqual(dao.aggregate_trend("week"), [])
         self.assertEqual(dao.query_messages_paged("week"), ([], 0))
 
+    def test_query_raw_returns_unified_schema(self):
+        """query_raw 返回统一格式，upstream_id 固定为 'opencode'。"""
+        from stats_service import _OpenCodeDao
+        dao = _OpenCodeDao(self.db_path)
+        records = dao.query_raw("week")
+
+        self.assertGreater(len(records), 0)
+        r = records[0]
+        self.assertEqual(r["upstream_id"], "opencode")
+        self.assertEqual(r["request_type"], "session")
+        self.assertIn("input_tokens", r)
+        self.assertIn("output_tokens", r)
+        self.assertIn("cache_read_tokens", r)
+        self.assertIn("cache_write_tokens", r)
+        self.assertNotIn("_source", r)
+        self.assertNotIn("target_model", r)
+
     # ─── _Merger 三源合并测试 ───
 
     def test_merger_three_source_summary(self):
