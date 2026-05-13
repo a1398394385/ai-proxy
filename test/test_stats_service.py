@@ -1710,6 +1710,37 @@ class TestSessionDao(unittest.TestCase):
         result = dao.aggregate_trend("week")
         self.assertEqual(result, [])
 
+    def test_query_raw_returns_unified_schema(self):
+        """query_raw 返回统一格式，upstream_id 固定为 'hermes'。"""
+        import time as _time
+        from stats_service import _SessionDao
+
+        conn = sqlite3.connect(str(self.state_db))
+        now_ts = _time.time()
+        conn.execute(
+            "INSERT INTO sessions (model, started_at, input_tokens, output_tokens, "
+            "cache_read_tokens, cache_write_tokens) VALUES (?, ?, ?, ?, ?, ?)",
+            ("claude-sonnet-4-6[1m]", now_ts, 1000, 500, 100, 50),
+        )
+        conn.commit()
+        conn.close()
+
+        dao = _SessionDao(self.state_db)
+        records = dao.query_raw("week")
+
+        self.assertEqual(len(records), 1)
+        r = records[0]
+        self.assertEqual(r["upstream_id"], "hermes")
+        self.assertEqual(r["model"], "claude-sonnet-4-6")  # 去掉了 [1m] 后缀
+        self.assertEqual(r["request_type"], "session")
+        self.assertEqual(r["input_tokens"], 1000)
+        self.assertEqual(r["output_tokens"], 500)
+        self.assertEqual(r["cache_read_tokens"], 100)
+        self.assertEqual(r["cache_write_tokens"], 50)
+        self.assertEqual(r["status"], "completed")
+        self.assertNotIn("_source", r)
+        self.assertNotIn("target_model", r)
+
 
 class TestFetchRequestsMerged(unittest.TestCase):
     """fetch_requests 合并 token_stats + sessions 测试。"""

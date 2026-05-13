@@ -751,6 +751,71 @@ class _SessionDao:
 
     # ─── 查询方法 ───
 
+    def query_raw(
+        self,
+        period: str,
+        model: str | None = None,
+    ) -> list[dict]:
+        """查询原始 sessions 记录，返回统一格式 dict 列表。
+
+        Args:
+            period: 时间周期
+            model: 可选，按规范化模型名过滤（匹配 model 或 model[ctx] 前缀）
+
+        Returns:
+            统一格式记录列表。state.db 不存在时返回空列表。
+        """
+        conn = self._get_conn()
+        if conn is None:
+            return []
+        try:
+            time_condition = self._period_to_condition(period)
+            conditions = [time_condition, "input_tokens IS NOT NULL"]
+            params: list = []
+
+            if model:
+                conditions.append("(model = ? OR model LIKE ?)")
+                params.extend([model, f"{model}[%"])
+
+            where_clause = " AND ".join(conditions)
+
+            rows = conn.execute(
+                f"""
+                SELECT id, model, started_at, input_tokens, output_tokens,
+                       cache_read_tokens, cache_write_tokens
+                FROM sessions
+                WHERE {where_clause}
+                ORDER BY started_at DESC
+                """,
+                params,
+            ).fetchall()
+
+            records = []
+            for row in rows:
+                model_name = row["model"] or ""
+                normalized = self._normalize_model_name(model_name)
+                ts = row["started_at"]
+                if isinstance(ts, (int, float)):
+                    ts = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")  # localtime
+                records.append({
+                    "request_id": f"sess-{row['id']}",
+                    "model": normalized,
+                    "request_type": "session",
+                    "request_ts": ts,
+                    "duration_ms": None,
+                    "status": "completed",
+                    "input_tokens": row["input_tokens"] or 0,
+                    "output_tokens": row["output_tokens"] or 0,
+                    "cache_read_tokens": row["cache_read_tokens"] or 0,
+                    "cache_write_tokens": row["cache_write_tokens"] or 0,
+                    "upstream_id": "hermes",
+                })
+            return records
+        except Exception:
+            return []
+        finally:
+            conn.close()
+
     def query_sessions(self, period: str, model: str | None = None) -> list:
         """查询 sessions 记录。
 
