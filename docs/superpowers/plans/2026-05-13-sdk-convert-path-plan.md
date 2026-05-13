@@ -124,14 +124,6 @@ class TestTransformRouter(unittest.TestCase):
         )
         self.assertIsInstance(result, dict)
 
-    def test_stream_converter_has_unified_signature(self):
-        """流式转换器注册表中所有函数接受 (chunks, *, request_messages, response_store)。"""
-        import inspect
-        from proxy.transform_router import TransformRouter
-        for (source, target), func in TransformRouter._stream_converters.items():
-            sig = inspect.signature(func)
-            self.assertIn("request_messages", sig.parameters)
-            self.assertIn("response_store", sig.parameters)
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -214,9 +206,7 @@ class TransformRouter:
 cd /Users/xys/Github/ai-agent-tools-ai-sdk && python3 -m pytest test/test_transform_router.py -v
 ```
 
-Expected: 测试通过（但流式工厂签名检查可能失败——因为工厂还没改造）
-
-如果 Step 4 的 test_stream_converter_has_unified_signature 失败：先注释掉该测试（Task 4 会修复）。
+Expected: 3 tests 全部通过。
 
 - [ ] **Step 5: Commit**
 
@@ -238,7 +228,6 @@ git commit -m "feat: 新增 TransformRouter 协议转换路由"
 ```python
 # test/test_upstream_driver.py
 import unittest
-import httpx
 from unittest.mock import patch, MagicMock
 
 
@@ -255,31 +244,43 @@ class TestUpstreamDriver(unittest.TestCase):
             "format": "chat_completions",
         }
 
-    def test_creates_openai_client_with_ssl_verify(self):
-        """openai 客户端使用 ssl_verify 配置。"""
+    def test_constructor_passes_ssl_verify_to_httpx_client(self):
+        """验证 UpstreamDriver 将 ssl_verify 传给 httpx.Client（mock 方式）。"""
+        import httpx
         from proxy.upstream_driver import UpstreamDriver
-        driver = UpstreamDriver(self.cfg)
-        client = driver.openai
-        self.assertIsNotNone(client)
-        # httpx.Client 的 verify 参数应匹配
-        self.assertEqual(client._client._client.verify, True)
 
-    def test_creates_client_with_ssl_verify_false(self):
-        """ssl_verify=False 时客户端不验证证书。"""
+        with patch("httpx.Client") as mock_client_cls:
+            driver = UpstreamDriver(self.cfg)
+            _ = driver.openai
+        # 验证 httpx.Client 被创建时传入了 verify=True
+        mock_client_cls.assert_called_once()
+        call_kwargs = mock_client_cls.call_args.kwargs
+        self.assertTrue(call_kwargs.get("verify"))
+
+    def test_ssl_verify_false_passed_to_httpx_client(self):
+        """ssl_verify=False 时 httpx.Client.verify=False。"""
+        import httpx
         from proxy.upstream_driver import UpstreamDriver
+
         cfg = {**self.cfg, "ssl_verify": False}
-        driver = UpstreamDriver(cfg)
-        client = driver.openai
-        self.assertEqual(client._client._client.verify, False)
+        with patch("httpx.Client") as mock_client_cls:
+            driver = UpstreamDriver(cfg)
+            _ = driver.openai
+        call_kwargs = mock_client_cls.call_args.kwargs
+        self.assertFalse(call_kwargs.get("verify"))
 
     def test_timeout_separates_connect_and_read(self):
-        """httpx.Timeout 分离连接超时和读取超时。"""
+        """httpx.Timeout 使用 connect_timeout 和 timeout 分别设置。"""
+        import httpx
         from proxy.upstream_driver import UpstreamDriver
-        driver = UpstreamDriver(self.cfg)
-        client = driver.openai
-        timeout = client._client._client.timeout
-        self.assertEqual(timeout.connect, 5.0)
-        self.assertEqual(timeout.read, 30.0)
+
+        with patch("httpx.Timeout") as mock_timeout:
+            driver = UpstreamDriver(self.cfg)
+            _ = driver.openai
+        mock_timeout.assert_called_once()
+        call_kwargs = mock_timeout.call_args.kwargs
+        self.assertEqual(call_kwargs["connect"], 5.0)
+        self.assertEqual(call_kwargs["read"], 30.0)
 
     def test_rejects_unsupported_format(self):
         """不支持的上游格式抛出 ValueError。"""
@@ -291,12 +292,11 @@ class TestUpstreamDriver(unittest.TestCase):
     def test_chat_create_unpacks_dict_to_sdk(self):
         """chat_create 将 dict 解包传给 openai SDK。"""
         from proxy.upstream_driver import UpstreamDriver
-        from unittest.mock import patch
 
         driver = UpstreamDriver(self.cfg)
         mock_create = MagicMock(return_value=MagicMock(model_dump=lambda: {"id": "1"}))
         with patch.object(driver.openai.chat.completions, "create", mock_create):
-            result = driver.chat_create(
+            driver.chat_create(
                 model="gpt-4",
                 messages=[{"role": "user", "content": "hi"}],
                 temperature=0.7,
@@ -307,10 +307,22 @@ class TestUpstreamDriver(unittest.TestCase):
             temperature=0.7,
         )
 
-    def test_chat_stream_removes_duplicate_stream_key(self):
-        """chat_stream 移除可能重复的 stream key。"""
+    def test_chat_stream_copies_kwargs_no_side_effect(self):
+        """chat_stream 不修改调用者传入的 dict（无副作用）。"""
         from proxy.upstream_driver import UpstreamDriver
-        from unittest.mock import patch
+
+        driver = UpstreamDriver(self.cfg)
+        original = {"model": "gpt-4", "stream": True, "messages": []}
+        saved = dict(original)
+        mock_create = MagicMock()
+        with patch.object(driver.openai.chat.completions, "create", mock_create):
+            driver.chat_stream(**original)
+        # original dict 不应被修改
+        self.assertEqual(original, saved)
+
+    def test_chat_stream_removes_duplicate_stream_key(self):
+        """chat_stream 移除可能重复的 stream key 但不抛 TypeError。"""
+        from proxy.upstream_driver import UpstreamDriver
 
         driver = UpstreamDriver(self.cfg)
         mock_create = MagicMock()
@@ -318,9 +330,8 @@ class TestUpstreamDriver(unittest.TestCase):
             driver.chat_stream(
                 model="gpt-4",
                 messages=[{"role": "user", "content": "hi"}],
-                stream=True,  # 来自 chat_body
+                stream=True,
             )
-        # 不应因重复 key 抛 TypeError
         call_kwargs = mock_create.call_args.kwargs
         self.assertTrue(call_kwargs["stream"])
 
@@ -328,7 +339,7 @@ class TestUpstreamDriver(unittest.TestCase):
         """close() 关闭底层客户端。"""
         from proxy.upstream_driver import UpstreamDriver
         driver = UpstreamDriver(self.cfg)
-        _ = driver.openai  # 触发初始化
+        _ = driver.openai
         driver.close()
         self.assertIsNone(driver._openai_client)
 ```
@@ -391,6 +402,7 @@ class UpstreamDriver:
 
     def chat_stream(self, **kwargs):
         """流式 Chat Completions。返回 Stream[ChatCompletionChunk]。"""
+        kwargs = dict(kwargs)  # 拷贝，不修改调用者传入的 dict
         kwargs.pop("stream", None)
         kwargs.setdefault("stream_options", {"include_usage": True})
         return self.openai.chat.completions.create(stream=True, **kwargs)
@@ -489,6 +501,7 @@ def create_codex_sse_stream(chunks_or_response, *, request_messages=None, respon
     if response_store is not None:
         from .response_store import ResponseRecord
         output_list = [item for _, item in converter.output_items]
+        from .transform_responses import output_items_to_messages
         assistant_msgs = output_items_to_messages(output_list)
         messages_for_conv = (request_messages or []) + assistant_msgs
         record = ResponseRecord(
@@ -590,11 +603,24 @@ def create_anthropic_sse_stream(chunks_or_response, *, request_messages=None, re
     yield _format_sse_event("message_stop", {})
 ```
 
-注意：需要删除 `create_anthropic_sse_stream` 末尾的旧 `message_stop` yield（第 405 行附近），避免重复。
+注意：需要删除 `create_anthropic_sse_stream` 末尾的旧 `message_stop` yield（原文件第 405 行），避免重复发送。
 
-- [ ] **Step 3: 取消 Task 2 中被注释的测试**
+> **代码说明**：上述 `create_anthropic_sse_stream` 完整展示了改造后的函数。与原版本（`proxy/transform_anthropic.py:331-405`）的**仅有差异**是输入层——原版调用 `iter_sse_events(upstream_response)` 解析原始 SSE 字节，新版换为 `hasattr` 检测分支 + `model_dump()` 适配 SDK 对象。核心的状态机逻辑（`_process_anthropic_delta`、`_send_message_start`、`_close_open_blocks`）和 state 管理完全不变。
 
-在 `test_transform_router.py` 中取消 `test_stream_converter_has_unified_signature` 的注释。
+- [ ] **Step 3: 增加流式工厂签名一致性测试**
+
+在 `test_transform_router.py` 中增加:
+
+```python
+def test_stream_converter_has_unified_signature(self):
+    """流式转换器注册表中所有函数接受 (chunks, *, request_messages, response_store)。"""
+    import inspect
+    from proxy.transform_router import TransformRouter
+    for (source, target), func in TransformRouter._stream_converters.items():
+        sig = inspect.signature(func)
+        self.assertIn("request_messages", sig.parameters)
+        self.assertIn("response_store", sig.parameters)
+```
 
 - [ ] **Step 4: 运行现有测试确认兼容性**
 
@@ -867,19 +893,17 @@ git commit -m "refactor: SSE 流式工厂兼容适配层——同时支持 file-
                 self.wfile.flush()
                 sse_buffer.append(sse_event)
 
-                # 从 response.completed / message_delta 事件中提取 usage
+                # 用 _parse_sse_event 做结构化解析，不依赖字符串切割
                 if "response.completed" in sse_event or "message_delta" in sse_event:
-                    try:
-                        data_json = sse_event.split("data: ", 1)[1]
-                        data = json.loads(data_json)
+                    parsed = _parse_sse_event(sse_event)
+                    data = parsed.get("data")
+                    if data:
                         usage = (
                             data.get("response", {}).get("usage")
                             or data.get("usage")
                         )
                         if usage:
                             final_usage = usage
-                    except (json.JSONDecodeError, IndexError):
-                        pass
         except (BrokenPipeError, ConnectionResetError):
             logging.warning("客户端断开连接")
         except Exception as e:
@@ -947,38 +971,42 @@ git commit -m "refactor: SSE 流式工厂兼容适配层——同时支持 file-
 
 ```python
     def _handle_sdk_error(self, e: Exception):
-        """统一 SDK 异常 → HTTP 错误映射。"""
+        """统一 SDK 异常 → HTTP 错误映射。
+
+        使用 isinstance 按继承链从具体到通用依次检查，避免遗漏子类。
+        继承链：BadRequestError → RateLimitError → APITimeoutError →
+               APIConnectionError → APIError → Exception
+        """
         import httpx
 
-        _EXCEPTION_MAP = {}
         try:
             from openai import (
                 APIError, APIConnectionError, APITimeoutError,
                 RateLimitError, BadRequestError,
             )
-            _EXCEPTION_MAP = {
-                APITimeoutError:    (504, "timeout_error"),
-                RateLimitError:     (429, "rate_limit_error"),
-                APIConnectionError: (502, "connection_error"),
-                BadRequestError:    (400, "invalid_request_error"),
-                APIError:           (502, "upstream_error"),
-            }
+            # 按继承链从具体到通用
+            if isinstance(e, APITimeoutError):
+                self._send_json(504, {"error": {"type": "timeout_error", "message": str(e)}})
+                return
+            if isinstance(e, RateLimitError):
+                self._send_json(429, {"error": {"type": "rate_limit_error", "message": str(e)}})
+                return
+            if isinstance(e, BadRequestError):
+                self._send_json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
+                return
+            if isinstance(e, APIConnectionError):
+                self._send_json(502, {"error": {"type": "connection_error", "message": str(e)}})
+                return
+            if isinstance(e, APIError):
+                self._send_json(502, {"error": {"type": "upstream_error", "message": str(e)}})
+                return
         except ImportError:
             pass
 
-        if type(e) in _EXCEPTION_MAP:
-            status, error_type = _EXCEPTION_MAP[type(e)]
-            self._send_json(status, {
-                "error": {"type": error_type, "message": str(e)}
-            })
-        elif isinstance(e, httpx.HTTPError):
-            self._send_json(502, {
-                "error": {"type": "connection_error", "message": str(e)}
-            })
+        if isinstance(e, httpx.HTTPError):
+            self._send_json(502, {"error": {"type": "connection_error", "message": str(e)}})
         else:
-            self._send_json(502, {
-                "error": {"type": "upstream_error", "message": str(e)}
-            })
+            self._send_json(502, {"error": {"type": "upstream_error", "message": str(e)}})
 ```
 
 - [ ] **Step 5: 在 handler.py 顶部添加导入**
@@ -1208,28 +1236,20 @@ class TestHandlerConvertSDK(unittest.TestCase):
         cls.mock_server.shutdown()
 
     def setUp(self):
-        import tempfile, os
-        from proxy.paths import DATA_DB
-        self.tmpdir = tempfile.TemporaryDirectory()
-        # 使用 TEMP_DATA_DB 环境变量覆盖数据路径
-        self._old_env = os.environ.get("TEMP_DATA_DB")
-        os.environ["TEMP_DATA_DB"] = f"{self.tmpdir.name}/test_data.db"
-        # 初始化配置缓存（内存模式）
-        from proxy.config_manager import ConfigCache, ConfigDB
-        self._old_cache_data = os.environ.get("USE_MOCK_UPSTREAM")
-        os.environ["USE_MOCK_UPSTREAM"] = f"http://127.0.0.1:{self.mock_port}/v1"
+        """注入 mock 配置：直接写 CONFIG 的 upstream 段 + mock UpstreamDriver。
+
+        _handle_convert 从 CONFIG["upstream"] 取 fallback 上游配置，
+        从 model_cfg["upstream"] 取实际上游配置（由 handler 上层传入）。
+        不需要真实 data db。
+        """
+        from proxy.common import CONFIG
+        self._old_config = dict(CONFIG)
+        CONFIG["upstream"] = {}
 
     def tearDown(self):
-        import os
-        if self._old_env is not None:
-            os.environ["TEMP_DATA_DB"] = self._old_env
-        else:
-            os.environ.pop("TEMP_DATA_DB", None)
-        if self._old_cache_data is not None:
-            os.environ["USE_MOCK_UPSTREAM"] = self._old_cache_data
-        else:
-            os.environ.pop("USE_MOCK_UPSTREAM", None)
-        self.tmpdir.cleanup()
+        from proxy.common import CONFIG
+        CONFIG.clear()
+        CONFIG.update(self._old_config)
 
     def _build_handler(self, upstream_cfg):
         """构建用于测试的 ProxyHandler 实例，注入 mock 上游配置。"""
@@ -1310,10 +1330,36 @@ class TestHandlerConvertSDK(unittest.TestCase):
 
 - [ ] **Step 3: 逐个修复现有失败测试**
 
-每个失败测试：
-1. 确认原因（mock 方式改变，或 SDK 调用未 mock）
-2. 修改测试：用 `unittest.mock.patch("proxy.upstream_driver.UpstreamDriver")` 替代旧的 `http.client` mock
-3. 运行单个测试确认通过
+预期失败的测试及修复策略：
+
+| 测试（预期失败） | 原因 | 修复策略 |
+|---------|------|---------|
+| 使用 `patch("proxy.handler.urllib.parse.urlparse")` 的测试 | 新 convert 路径不再调 urlparse | 改为 `patch("proxy.upstream_driver.OpenAI")` mock SDK 构造函数 |
+| 使用 `patch("proxy.handler._create_upstream_conn")` 的测试 | 新 convert 路径不再调 _create_upstream_conn | 同上——mock SDK 层代替 mock HTTP 层 |
+| 使用 `patch("proxy.handler.http.client.HTTPSConnection")` 的测试 | 新 convert 路径用 SDK 而非 raw HTTP | mock `UpstreamDriver.chat_create` / `chat_stream` 返回 fixture 响应 |
+| 直接测试 `_forward_non_streaming` / `_forward_streaming` 的测试 | 方法仍存在（未删除），但 _handle_convert 不再调用 | 改为调用 `_handle_convert` 通过 TransformRouter/UpstreamDriver mock |
+
+**Mock 策略示例：**
+
+```python
+# 旧 mock 方式（不再有效）：
+with patch("proxy.handler._create_upstream_conn") as mock_conn:
+    mock_conn.return_value = fake_conn
+    handler._handle_convert(...)
+
+# 新 mock 方式：
+with patch("proxy.upstream_driver.OpenAI") as mock_openai_cls:
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_chat_response
+    mock_openai_cls.return_value = mock_client
+    handler._handle_convert(...)
+```
+
+每个测试修复后运行单个测试确认通过：
+
+```bash
+cd /Users/xys/Github/ai-agent-tools-ai-sdk && python3 -m pytest test/test_handler.py::TestName::test_method -v
+```
 
 - [ ] **Step 3: 确认所有 handler 测试通过**
 
@@ -1330,7 +1376,131 @@ git commit -m "test: 修复 handler 测试适配 SDK 驱动"
 
 ---
 
-### Task 9: 全量测试 + 手动冒烟
+### Task 9: 全量测试 + 回归验证 + 手动冒烟
+
+- [ ] **Step 0: 添加 snapshot 回归测试**
+
+在 `test/test_handler.py` 添加：
+
+```python
+class TestConvertOutputConsistency(unittest.TestCase):
+    """验证新旧路径对相同请求产生一致的转换输出。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from test.mock_server import start_mock_server
+        cls.mock_server, cls.mock_port = start_mock_server()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.mock_server.shutdown()
+
+    def _build_handler_sdk(self, upstream_cfg):
+        """构建使用新 SDK 路径的 handler。"""
+        from proxy.handler import ProxyHandler
+        from proxy.common import CONFIG
+        CONFIG["upstream"] = upstream_cfg
+        class MockServer:
+            response_store = None
+        h = ProxyHandler.__new__(ProxyHandler)
+        h.server = MockServer()
+        h.client_address = ("127.0.0.1", 12345)
+        h.headers = {}
+        h.command = "POST"
+        import io
+        h.wfile = io.BytesIO()
+        return h
+
+    def test_non_streaming_output_key_fields(self):
+        """非流式转换输出含 id/model/choices/usage 关键字段。"""
+        upstream_cfg = {
+            "base_url": f"http://127.0.0.1:{self.mock_port}/v1",
+            "api_key": "mock-key",
+            "timeout": 30,
+            "connect_timeout": 5,
+            "ssl_verify": False,
+            "retry": 0,
+            "format": "chat_completions",
+        }
+        h = self._build_handler_sdk(upstream_cfg)
+        h.path = "/v1/messages"
+        body = {
+            "model": "claude-sonnet-4",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+        model_cfg = {
+            "target": "claude-sonnet-4",
+            "multimodal": False,
+            "upstream": upstream_cfg,
+        }
+        from proxy.request_logger import _generate_request_id
+        h._handle_convert(
+            "messages", "claude-sonnet-4", model_cfg, body,
+            _generate_request_id(), "2025-01-01 00:00:00", "claude-sonnet-4"
+        )
+        h.wfile.seek(0)
+        raw = h.wfile.read()
+        # Anthropic 响应格式应含 id/type/role/content/model/stop_reason/usage
+        self.assertIn(b'"id"', raw)
+        self.assertIn(b'"type"', raw)
+        self.assertIn(b'"role"', raw)
+        self.assertIn(b'"content"', raw)
+        self.assertIn(b'"model"', raw)
+        self.assertIn(b'"stop_reason"', raw)
+        self.assertIn(b'"usage"', raw)
+
+    def test_streaming_output_contains_events(self):
+        """流式转换输出含 content_block_start / content_block_delta 事件。"""
+        upstream_cfg = {
+            "base_url": f"http://127.0.0.1:{self.mock_port}/v1",
+            "api_key": "mock-key",
+            "timeout": 30,
+            "connect_timeout": 5,
+            "ssl_verify": False,
+            "retry": 0,
+            "format": "chat_completions",
+        }
+        h = self._build_handler_sdk(upstream_cfg)
+        h.path = "/v1/messages"
+        body = {
+            "model": "claude-sonnet-4",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        }
+        model_cfg = {
+            "target": "claude-sonnet-4",
+            "multimodal": False,
+            "upstream": upstream_cfg,
+        }
+        # 需要 mock request_logger 以避免 logger 未初始化
+        from proxy.request_logger import _generate_request_id, init_logger
+        try:
+            init_logger()
+        except Exception:
+            pass
+        from proxy.request_logger import get_logger
+        if not get_logger():
+            from unittest.mock import patch
+            with patch("proxy.request_logger.get_logger", return_value=None):
+                h._handle_convert(
+                    "messages", "claude-sonnet-4", model_cfg, body,
+                    _generate_request_id(), "2025-01-01 00:00:00", "claude-sonnet-4"
+                )
+        else:
+            h._handle_convert(
+                "messages", "claude-sonnet-4", model_cfg, body,
+                _generate_request_id(), "2025-01-01 00:00:00", "claude-sonnet-4"
+            )
+        h.wfile.seek(0)
+        raw = h.wfile.read().decode("utf-8", errors="replace")
+        # Anthropic 流式关键事件类型
+        self.assertIn("message_start", raw)
+        self.assertIn("content_block_start", raw)
+        self.assertIn("content_block_delta", raw)
+        self.assertIn("message_stop", raw)
+```
 
 - [ ] **Step 1: 运行全量测试**
 
