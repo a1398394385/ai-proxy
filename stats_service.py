@@ -182,13 +182,10 @@ class _TokenStatsDao:
             conn.close()
 
     def aggregate_by_upstream(self, period: str) -> list:
-        """按 upstream_id 维度聚合统计数据（直接 GROUP BY + LEFT JOIN）。
-
-        Args:
-            period: 时间周期
+        """按 upstream_id + model 维度聚合统计数据。
 
         Returns:
-            [{upstream_id, upstream_name, request_count, input_tokens,
+            [{upstream_id, upstream_name, model, request_count, input_tokens,
               output_tokens, cache_read_tokens, cache_write_tokens, total_tokens}]
         """
         time_condition = self._period_to_condition(period)
@@ -201,6 +198,7 @@ class _TokenStatsDao:
                     SELECT ts.upstream_id,
                            COALESCE(u.name, '__unknown__') as upstream_name,
                            u.base_url,
+                           ts.model,
                            COUNT(*) as request_count,
                            COALESCE(SUM(ts.input_tokens), 0) as total_input,
                            COALESCE(SUM(ts.output_tokens), 0) as total_output,
@@ -208,13 +206,12 @@ class _TokenStatsDao:
                            COALESCE(SUM(ts.cached_write_tokens), 0) as total_cache_write
                     FROM token_stats ts
                     LEFT JOIN upstreams u ON ts.upstream_id = u.id
-                    WHERE {time_condition}
-                    GROUP BY ts.upstream_id
+                    WHERE {time_condition} AND ts.upstream_id IS NOT NULL
+                    GROUP BY ts.upstream_id, ts.model
                     ORDER BY total_output DESC
                     """,
                 ).fetchall()
             except sqlite3.OperationalError:
-                # upstreams 表不存在时返回空列表
                 return []
 
             return [
@@ -222,6 +219,7 @@ class _TokenStatsDao:
                     "upstream_id": row["upstream_id"],
                     "upstream_name": row["upstream_name"],
                     "base_url": row["base_url"],
+                    "model": row["model"],
                     "request_count": row["request_count"],
                     "input_tokens": row["total_input"],
                     "output_tokens": row["total_output"],
@@ -578,6 +576,42 @@ class _CostCalculator:
 
         return input_cost + output_cost + cache_read_cost + cache_write_cost
 
+    def calculate_breakdown(
+        self,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_write_tokens: int,
+    ) -> dict:
+        """返回 4 项独立成本（人民币），不求和。
+
+        Returns:
+            {"input_cost_cny": float, "output_cost_cny": float,
+             "cache_read_cost_cny": float, "cache_write_cost_cny": float}
+        """
+        pricing = self.get_pricing()
+        if not pricing:
+            return {"input_cost_cny": 0.0, "output_cost_cny": 0.0,
+                    "cache_read_cost_cny": 0.0, "cache_write_cost_cny": 0.0}
+
+        key = model.lower() if model else ""
+        if key not in pricing:
+            return {"input_cost_cny": 0.0, "output_cost_cny": 0.0,
+                    "cache_read_cost_cny": 0.0, "cache_write_cost_cny": 0.0}
+
+        p = pricing[key]
+        input_cost = (input_tokens or 0) / 1_000_000 * p["input_cost"]
+        output_cost = (output_tokens or 0) / 1_000_000 * p["output_cost"]
+        cache_read_cost = (cache_read_tokens or 0) / 1_000_000 * p["cache_read_cost"]
+        cache_write_cost = (cache_write_tokens or 0) / 1_000_000 * p["cache_creation_cost"]
+
+        return {
+            "input_cost_cny": round(input_cost, 6),
+            "output_cost_cny": round(output_cost, 6),
+            "cache_read_cost_cny": round(cache_read_cost, 6),
+            "cache_write_cost_cny": round(cache_write_cost, 6),
+        }
 
 
 class _SessionDao:
@@ -1435,79 +1469,109 @@ class StatsService:
         opencode_dao = self._get_opencode_dao()
         calculator = self._get_calculator()
 
-        # 1. Proxy 数据 — 直接 GROUP BY upstream_id
-        proxy_data = token_dao.aggregate_by_upstream(period)
+        # 1. Proxy 数据 — 按 upstream_id + model 分组（用于逐模型算成本）
+        proxy_models = token_dao.aggregate_by_upstream(period)
 
-        # 2. Hermes sessions → [Hermes] 桶（汇总 aggregate_by_model）
+        # 4. 合并三源，按上游汇总并逐模型算成本
+        merged: dict = {}
+
+        # 2. Hermes sessions → [Hermes] 桶
         session_models = session_dao.aggregate_by_model(period)
         hermes_bucket = {
-            "upstream_id": "[Hermes]",
-            "upstream_name": "[Hermes]",
-            "base_url": None,
-            "request_count": 0,
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cache_read_tokens": 0,
-            "cache_write_tokens": 0,
-            "total_tokens": 0,
+            "upstream_id": "[Hermes]", "upstream_name": "[Hermes]", "base_url": None,
+            "request_count": 0, "input_tokens": 0, "output_tokens": 0,
+            "cache_read_tokens": 0, "cache_write_tokens": 0, "total_tokens": 0,
         }
-        for m in session_models:
-            hermes_bucket["request_count"] += m.get("request_count", 0)
-            hermes_bucket["input_tokens"] += m.get("input_tokens", 0)
-            hermes_bucket["output_tokens"] += m.get("output_tokens", 0)
-            hermes_bucket["cache_read_tokens"] += m.get("cache_read_tokens", 0)
-            hermes_bucket["cache_write_tokens"] += m.get("cache_write_tokens", 0)
-        hermes_bucket["total_tokens"] = (
-            hermes_bucket["input_tokens"] + hermes_bucket["output_tokens"]
-            + hermes_bucket["cache_read_tokens"] + hermes_bucket["cache_write_tokens"]
-        )
 
         # 3. OpenCode → [OpenCode] 桶
         oc_bucket = {
-            "upstream_id": "[OpenCode]",
-            "upstream_name": "[OpenCode]",
-            "base_url": None,
-            "request_count": 0,
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cache_read_tokens": 0,
-            "cache_write_tokens": 0,
-            "total_tokens": 0,
+            "upstream_id": "[OpenCode]", "upstream_name": "[OpenCode]", "base_url": None,
+            "request_count": 0, "input_tokens": 0, "output_tokens": 0,
+            "cache_read_tokens": 0, "cache_write_tokens": 0, "total_tokens": 0,
         }
+
+        # 4a) Proxy — 逐模型算成本后汇总到上游
+        proxy_upstream: dict = {}
+        for item in proxy_models:
+            uid = item["upstream_id"]
+            if uid not in proxy_upstream:
+                proxy_upstream[uid] = {
+                    "upstream_id": uid,
+                    "upstream_name": item["upstream_name"],
+                    "base_url": item.get("base_url"),
+                    "request_count": 0,
+                    "input_tokens": 0, "output_tokens": 0,
+                    "cache_read_tokens": 0, "cache_write_tokens": 0,
+                    "total_tokens": 0, "total_cost": 0.0,
+                }
+            agg = proxy_upstream[uid]
+            agg["request_count"] += item["request_count"]
+            agg["input_tokens"] += item["input_tokens"]
+            agg["output_tokens"] += item["output_tokens"]
+            agg["cache_read_tokens"] += item["cache_read_tokens"]
+            agg["cache_write_tokens"] += item["cache_write_tokens"]
+            agg["total_tokens"] += item["total_tokens"]
+            # 逐模型算成本
+            agg["total_cost"] += calculator.calculate(
+                model=item["model"],
+                input_tokens=item["input_tokens"],
+                output_tokens=item["output_tokens"],
+                cache_read_tokens=item["cache_read_tokens"],
+                cache_write_tokens=item["cache_write_tokens"],
+            )
+
+        for uid, agg in proxy_upstream.items():
+            merged[uid] = agg
+
+        # 4b) Hermes — 逐模型算成本后汇总
+        if session_models:
+            hermes_cost = 0.0
+            for m in session_models:
+                hermes_bucket["request_count"] += m.get("request_count", 0) or 0
+                hermes_bucket["input_tokens"] += m.get("input_tokens", 0) or 0
+                hermes_bucket["output_tokens"] += m.get("output_tokens", 0) or 0
+                hermes_bucket["cache_read_tokens"] += m.get("cache_read_tokens", 0) or 0
+                hermes_bucket["cache_write_tokens"] += m.get("cache_write_tokens", 0) or 0
+                hermes_cost += calculator.calculate(
+                    model=m.get("model", ""),
+                    input_tokens=m.get("input_tokens", 0) or 0,
+                    output_tokens=m.get("output_tokens", 0) or 0,
+                    cache_read_tokens=0, cache_write_tokens=0,
+                )
+            hermes_bucket["total_tokens"] = (
+                hermes_bucket["input_tokens"] + hermes_bucket["output_tokens"]
+                + hermes_bucket["cache_read_tokens"] + hermes_bucket["cache_write_tokens"]
+            )
+            hermes_bucket["total_cost"] = hermes_cost
+            merged["[Hermes]"] = hermes_bucket
+
+        # 4c) OpenCode — 逐模型算成本后汇总
         if opencode_dao:
             oc_models = opencode_dao.aggregate_by_model(period)
+            oc_cost = 0.0
             for m in oc_models:
-                oc_bucket["request_count"] += m.get("request_count", 0)
-                oc_bucket["input_tokens"] += m.get("input_tokens", 0)
-                oc_bucket["output_tokens"] += m.get("output_tokens", 0)
-                oc_bucket["cache_read_tokens"] += m.get("cache_read_tokens", 0)
-                oc_bucket["cache_write_tokens"] += m.get("cache_write_tokens", 0)
-        oc_bucket["total_tokens"] = (
-            oc_bucket["input_tokens"] + oc_bucket["output_tokens"]
-            + oc_bucket["cache_read_tokens"] + oc_bucket["cache_write_tokens"]
-        )
-
-        # 4. 合并三源（proxy 已按 upstream_id 分组）
-        merged: dict = {}
-        for item in proxy_data:
-            merged[item["upstream_id"]] = item
-
-        if hermes_bucket["request_count"] > 0:
-            merged[hermes_bucket["upstream_id"]] = hermes_bucket
-        if oc_bucket["request_count"] > 0:
-            merged[oc_bucket["upstream_id"]] = oc_bucket
-
-        # 5. 计算成本并格式化
-        result = []
-        for uid, agg in merged.items():
-            cost = calculator.calculate(
-                model=agg.get("upstream_name", ""),
-                input_tokens=agg["input_tokens"],
-                output_tokens=agg["output_tokens"],
-                cache_read_tokens=agg["cache_read_tokens"],
-                cache_write_tokens=agg["cache_write_tokens"],
+                oc_bucket["request_count"] += m.get("request_count", 0) or 0
+                oc_bucket["input_tokens"] += m.get("input_tokens", 0) or 0
+                oc_bucket["output_tokens"] += m.get("output_tokens", 0) or 0
+                oc_bucket["cache_read_tokens"] += m.get("cache_read_tokens", 0) or 0
+                oc_bucket["cache_write_tokens"] += m.get("cache_write_tokens", 0) or 0
+                oc_cost += calculator.calculate(
+                    model=m.get("model", ""),
+                    input_tokens=m.get("input_tokens", 0) or 0,
+                    output_tokens=m.get("output_tokens", 0) or 0,
+                    cache_read_tokens=0, cache_write_tokens=0,
+                )
+            oc_bucket["total_tokens"] = (
+                oc_bucket["input_tokens"] + oc_bucket["output_tokens"]
+                + oc_bucket["cache_read_tokens"] + oc_bucket["cache_write_tokens"]
             )
-            result.append({
+            oc_bucket["total_cost"] = oc_cost
+            if oc_bucket["request_count"] > 0:
+                merged["[OpenCode]"] = oc_bucket
+
+        # 5. 格式化输出
+        result = [
+            {
                 "upstream_id": uid,
                 "base_url": agg.get("base_url"),
                 "upstream_name": agg["upstream_name"],
@@ -1517,10 +1581,10 @@ class StatsService:
                 "cache_read_tokens": agg["cache_read_tokens"],
                 "cache_write_tokens": agg["cache_write_tokens"],
                 "total_tokens": agg["total_tokens"],
-                "estimated_cost_cny": round(cost, 6),
-            })
-
-        # 6. 按 estimated_cost_cny 降序排列
+                "estimated_cost_cny": round(agg["total_cost"], 6),
+            }
+            for uid, agg in merged.items()
+        ]
         result.sort(key=lambda x: x["estimated_cost_cny"], reverse=True)
         return {"upstreams": result}
 

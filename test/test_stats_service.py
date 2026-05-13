@@ -948,6 +948,165 @@ class TestCostCalculatorCNY(unittest.TestCase):
         self.assertEqual(calc._pricing_cache, {})
 
 
+class TestCostCalculatorBreakdown(unittest.TestCase):
+    """_CostCalculator.calculate_breakdown 测试 — 4 项独立成本拆分。"""
+
+    def setUp(self):
+        import os
+        from tempfile import TemporaryDirectory
+        self.tmpdir = TemporaryDirectory()
+        self.db_path = Path(self.tmpdir.name) / "test.db"
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS model_pricing (
+                model_id TEXT PRIMARY KEY,
+                display_name TEXT,
+                input_cost_per_million REAL DEFAULT 0,
+                output_cost_per_million REAL DEFAULT 0,
+                cache_read_cost_per_million REAL DEFAULT 0,
+                cache_creation_cost_per_million REAL DEFAULT 0,
+                currency TEXT DEFAULT 'RMB',
+                multiplier REAL DEFAULT 1.0,
+                created_at TEXT,
+                updated_at TEXT
+            )
+        """)
+        # 种子数据：RMB 定价
+        conn.execute(
+            "INSERT INTO model_pricing (model_id, display_name, input_cost_per_million, "
+            "output_cost_per_million, cache_read_cost_per_million, cache_creation_cost_per_million, "
+            "currency) VALUES (?, ?, ?, ?, ?, ?, 'RMB')",
+            ("test-model", "Test Model", 1.0, 2.0, 0.5, 0.25),
+        )
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_breakdown_all_tokens_positive(self):
+        """所有 token 维度均为正数时返回 4 项非零成本。"""
+        from stats_service import _CostCalculator
+        calc = _CostCalculator(str(self.db_path))
+
+        result = calc.calculate_breakdown(
+            model="test-model",
+            input_tokens=1_000_000,
+            output_tokens=500_000,
+            cache_read_tokens=200_000,
+            cache_write_tokens=100_000,
+        )
+
+        self.assertAlmostEqual(result["input_cost_cny"], 1.0, places=6)
+        self.assertAlmostEqual(result["output_cost_cny"], 1.0, places=6)
+        self.assertAlmostEqual(result["cache_read_cost_cny"], 0.1, places=6)
+        self.assertAlmostEqual(result["cache_write_cost_cny"], 0.025, places=6)
+
+    def test_breakdown_unknown_model_returns_zeros(self):
+        """无定价模型返回 4 项 0.0。"""
+        from stats_service import _CostCalculator
+        calc = _CostCalculator(str(self.db_path))
+
+        result = calc.calculate_breakdown(
+            model="nonexistent-model",
+            input_tokens=1_000_000,
+            output_tokens=500_000,
+            cache_read_tokens=200_000,
+            cache_write_tokens=100_000,
+        )
+
+        self.assertEqual(result["input_cost_cny"], 0.0)
+        self.assertEqual(result["output_cost_cny"], 0.0)
+        self.assertEqual(result["cache_read_cost_cny"], 0.0)
+        self.assertEqual(result["cache_write_cost_cny"], 0.0)
+
+    def test_breakdown_zeros_when_all_tokens_zero(self):
+        """所有 token 为 0 时返回 4 项 0.0。"""
+        from stats_service import _CostCalculator
+        calc = _CostCalculator(str(self.db_path))
+
+        result = calc.calculate_breakdown(
+            model="test-model",
+            input_tokens=0,
+            output_tokens=0,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+        )
+
+        self.assertEqual(result["input_cost_cny"], 0.0)
+        self.assertEqual(result["output_cost_cny"], 0.0)
+        self.assertEqual(result["cache_read_cost_cny"], 0.0)
+        self.assertEqual(result["cache_write_cost_cny"], 0.0)
+
+    def test_breakdown_consistent_with_calculate_total(self):
+        """calculate_breakdown 的 4 项之和应等于 calculate() 的返回值。"""
+        from stats_service import _CostCalculator
+        calc = _CostCalculator(str(self.db_path))
+
+        breakdown = calc.calculate_breakdown(
+            model="test-model",
+            input_tokens=1_500_000,
+            output_tokens=800_000,
+            cache_read_tokens=300_000,
+            cache_write_tokens=150_000,
+        )
+        total_from_breakdown = (
+            breakdown["input_cost_cny"] + breakdown["output_cost_cny"]
+            + breakdown["cache_read_cost_cny"] + breakdown["cache_write_cost_cny"]
+        )
+        total = calc.calculate(
+            model="test-model",
+            input_tokens=1_500_000,
+            output_tokens=800_000,
+            cache_read_tokens=300_000,
+            cache_write_tokens=150_000,
+        )
+        self.assertAlmostEqual(total_from_breakdown, total, places=6)
+
+    def test_breakdown_case_insensitive_model(self):
+        """模型名大小写不敏感匹配。"""
+        from stats_service import _CostCalculator
+        calc = _CostCalculator(str(self.db_path))
+
+        result_lower = calc.calculate_breakdown(
+            model="test-model",
+            input_tokens=1_000_000, output_tokens=0,
+            cache_read_tokens=0, cache_write_tokens=0,
+        )
+        result_upper = calc.calculate_breakdown(
+            model="TEST-MODEL",
+            input_tokens=1_000_000, output_tokens=0,
+            cache_read_tokens=0, cache_write_tokens=0,
+        )
+        self.assertEqual(result_lower["input_cost_cny"], result_upper["input_cost_cny"])
+
+    def test_breakdown_with_multiplier(self):
+        """multiplier 非 1.0 时成本按比例缩放。"""
+        from stats_service import _CostCalculator
+
+        # 插入 multiplier=2.0 的定价
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute("INSERT INTO model_pricing (model_id, display_name, input_cost_per_million, "
+                     "output_cost_per_million, cache_read_cost_per_million, cache_creation_cost_per_million, "
+                     "currency, multiplier) VALUES (?, ?, ?, ?, ?, ?, 'RMB', 2.0)",
+                     ("mult-model", "Multi Model", 1.0, 2.0, 0.5, 0.25))
+        conn.commit()
+        conn.close()
+
+        calc = _CostCalculator(str(self.db_path))
+        result = calc.calculate_breakdown(
+            model="mult-model",
+            input_tokens=1_000_000,
+            output_tokens=500_000,
+            cache_read_tokens=200_000,
+            cache_write_tokens=100_000,
+        )
+        # multiplier=2.0，成本应翻倍
+        self.assertAlmostEqual(result["input_cost_cny"], 2.0, places=6)
+        self.assertAlmostEqual(result["output_cost_cny"], 2.0, places=6)
+
+
 class TestUpstreamResolver(unittest.TestCase):
     """_UpstreamResolver 测试。"""
 
@@ -2431,8 +2590,8 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         self.assertEqual(hermes[0]["output_tokens"], 200)
         self.assertIsNone(hermes[0]["base_url"])
 
-    def test_orphan_token_stats_go_to_unknown(self):
-        """无法解析到 upstream 的 token_stats 也归入 __unknown__。"""
+    def test_orphan_token_stats_excluded(self):
+        """无 upstream_id 的 token_stats 不进入上游统计（避免 __unknown__ 干扰）。"""
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
         self._insert_token_stat(
@@ -2450,9 +2609,7 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         unknown = [
             up for up in result["upstreams"] if up["upstream_name"] == "__unknown__"
         ]
-        self.assertEqual(len(unknown), 1)
-        self.assertEqual(unknown[0]["request_count"], 1)
-        self.assertIsNone(unknown[0]["base_url"])
+        self.assertEqual(len(unknown), 0)
 
     def _setup_pricing_db(self):
         """通过 PricingDB 创建定价数据。"""
@@ -2487,6 +2644,7 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         # anthropic: expensive pricing (10.0/20.0 USD)
         self._insert_token_stat(
             request_id="proxy-2",
+            model="claude-sonnet-4",
             target_model="claude-sonnet-4",
             request_ts=ts,
             input_tokens=1000,
@@ -2494,19 +2652,19 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
             upstream_id=2,
         )
         self._setup_config_db()
-        # Add pricing for upstream names (cost calculator receives upstream_name)
+        # Add pricing for models (cost calculator receives model name)
         PricingDB(self.config_db).add_pricing({
-            "model_id": "Anthropic",
-            "display_name": "Anthropic Summary",
-            "input_cost_per_million": "10.0",
-            "output_cost_per_million": "20.0",
+            "model_id": "gpt-4",
+            "display_name": "GPT-4 Summary",
+            "input_cost_per_million": "0.325",
+            "output_cost_per_million": "1.95",
             "currency": "USD",
         })
         PricingDB(self.config_db).add_pricing({
-            "model_id": "OpenAI",
-            "display_name": "OpenAI Summary",
-            "input_cost_per_million": "0.325",
-            "output_cost_per_million": "1.95",
+            "model_id": "claude-sonnet-4",
+            "display_name": "Claude Summary",
+            "input_cost_per_million": "10.0",
+            "output_cost_per_million": "20.0",
             "currency": "USD",
         })
 
@@ -2592,10 +2750,9 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         from proxy.pricing_manager import PricingDB
 
         PricingDB(self.config_db)  # 建表 + 种子数据
-        # 为 upstream 名称添加定价（fetch_by_upstream 按 upstream_name 计算成本）
         PricingDB(self.config_db).add_pricing({
-            "model_id": "OpenAI",
-            "display_name": "OpenAI Summary",
+            "model_id": "gpt-4",
+            "display_name": "GPT-4 Summary",
             "input_cost_per_million": "0.325",
             "output_cost_per_million": "1.95",
             "currency": "USD",
@@ -2666,10 +2823,7 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         unknown = [
             up for up in result["upstreams"] if up["upstream_name"] == "__unknown__"
         ]
-        self.assertEqual(len(unknown), 1)
-        self.assertEqual(unknown[0]["request_count"], 1)
-        self.assertEqual(unknown[0]["input_tokens"], 50)
-        self.assertEqual(unknown[0]["output_tokens"], 100)
+        self.assertEqual(len(unknown), 0)
 
         hermes = [
             up for up in result["upstreams"] if up["upstream_id"] == "[Hermes]"
