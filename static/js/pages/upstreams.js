@@ -20,7 +20,7 @@ async function refreshConfigStatus() {
 async function loadUpstreamTable() {
   const data = await api('/api/upstreams');
   upstreamDataMap = {};
-  data.upstreams.forEach(u => { upstreamDataMap[u.id] = u; });
+  data.upstreams.forEach(u => { upstreamDataMap[String(u.id)] = u; });
   document.getElementById('upstream-count').textContent = data.upstreams.length + ' 个上游';
   const tbody = document.querySelector('#upstream-table tbody');
 
@@ -28,16 +28,16 @@ async function loadUpstreamTable() {
   const formatColors = { responses: 'badge-blue', messages: 'badge-purple', chat_completions: 'badge-green' };
 
   tbody.innerHTML = data.upstreams.map(u =>
-    `<tr style="${u.is_active ? '' : 'opacity:0.5'};cursor:pointer" onclick="toggleModelDrawer(event, '${escHtml(u.id)}')">
+    `<tr data-upstream-id="${u.id}" style="${u.is_active ? '' : 'opacity:0.5'};cursor:pointer" onclick="toggleModelDrawer(event, '${u.id}')">
       <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${u.is_active ? 'hsl(var(--green))' : 'hsl(var(--red))'};"></span> ${u.is_active ? '活跃' : '已禁用'}</td>
-      <td><span class="badge badge-blue">${escHtml(u.id)}</span></td>
+      <td><span class="badge badge-blue">${escHtml(u.name)}</span></td>
       <td style="font-family:monospace;font-size:12px">${escHtml(u.base_url)}</td>
       <td><span class="badge ${formatColors[u.format] || ''}">${formatLabels[u.format] || u.format || '-'}</span></td>
       <td>${u.timeout}s</td>
       <td>
-        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); showUpstreamModal('${escHtml(u.id)}')">编辑</button>
-        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); testUpstream('${escHtml(u.id)}')">测试</button>
-        <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); showDeleteUpstreamModal('${escHtml(u.id)}')">删除</button>
+        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); showUpstreamModal('${u.id}')">编辑</button>
+        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); testUpstream('${u.id}')">测试</button>
+        <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); showDeleteUpstreamModal('${u.id}')">删除</button>
       </td>
     </tr>`
   ).join('');
@@ -72,7 +72,7 @@ function toggleModelDrawer(event, upstreamId) {
   drawerRow.innerHTML =
     '<td colspan="7">' +
       '<div class="drawer-content">' +
-        '<div class="drawer-header">🤖 模型列表 — 上游: ' + escHtml(upstreamId) +
+        '<div class="drawer-header">🤖 模型列表 — 上游: ' + escHtml(upstreamDataMap[upstreamId]?.name || upstreamId) +
           '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); showModelModalForUpstream(\'' + escHtml(upstreamId) + '\')" style="margin-left:auto;">＋ 新增模型</button>' + detectBtn + '</div>' +
         '<table class="drawer-model-table">' +
           '<thead><tr><th>模型名</th><th>所属上游</th><th>Multimodal</th><th>操作</th></tr></thead>' +
@@ -131,14 +131,10 @@ function loadAllModelConfigTables() {
   if (wasOpen) {
     // Re-open the drawer by simulating a click on the matching row
     requestAnimationFrame(() => {
-      const allRows = document.querySelectorAll('#upstream-table tbody tr');
-      for (const r of allRows) {
-        const badge = r.querySelector('.badge-blue');
-        if (badge && badge.textContent === wasOpen) {
-          const fakeEvent = { stopPropagation: () => {}, currentTarget: r };
-          toggleModelDrawer(fakeEvent, wasOpen);
-          break;
-        }
+      const row = document.querySelector(`#upstream-table tbody tr[data-upstream-id="${CSS.escape(wasOpen)}"]`);
+      if (row) {
+        const fakeEvent = { stopPropagation: () => {}, currentTarget: row };
+        toggleModelDrawer(fakeEvent, wasOpen);
       }
     });
   }
@@ -146,16 +142,16 @@ function loadAllModelConfigTables() {
 
 // ─── 上游模态框 ───
 async function showUpstreamModal(editId) {
-  let data = { id: '', base_url: '', api_key: '', timeout: 600, connect_timeout: 30, ssl_verify: 1, retry: 1, format: 'chat_completions' };
+  let data = { name: '', base_url: '', api_key: '', timeout: 600, connect_timeout: 30, ssl_verify: 1, retry: 1, format: 'chat_completions' };
   let title = '新增上游';
   if (editId) {
-    title = '编辑上游: ' + editId;
     const upstreams = await api('/api/upstreams');
-    const found = upstreams.upstreams.find(u => u.id === editId);
+    const found = upstreams.upstreams.find(u => String(u.id) === editId);
     if (found) data = found;
+    title = '编辑上游: ' + escHtml(data.name || editId);
   }
   showModal(title,
-    `<div class="form-group"><label class="form-label">名称 (ID)</label><input type="text" class="form-input" id="up-id" value="${escHtml(data.id)}" ${editId ? 'readonly' : ''}></div>
+    `<div class="form-group"><label class="form-label">名称</label><input type="text" class="form-input" id="up-name" value="${escHtml(data.name || data.id)}" ${editId ? 'readonly' : ''}></div>
      <div class="form-group"><label class="form-label">Base URL</label><input type="text" class="form-input" id="up-url" value="${escHtml(data.base_url)}"></div>
      <div class="form-group"><label class="form-label">API Key</label><input type="text" class="form-input" id="up-key" value="${escHtml(data.api_key)}"></div>
      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
@@ -180,7 +176,7 @@ async function saveUpstream(editId) {
     retry: parseInt(document.getElementById('up-retry').value) || 1,
     format: document.getElementById('up-format').value,
   };
-  if (!editId) data.id = document.getElementById('up-id').value.trim();
+  if (!editId) data.name = document.getElementById('up-name').value.trim();
   if (!data.base_url) { alert('Base URL 不能为空'); return; }
   if (editId) {
     await api('/api/upstreams/' + editId, { method: 'PUT', body: JSON.stringify(data) });
@@ -203,19 +199,20 @@ async function testUpstream(id) {
 
 async function showDeleteUpstreamModal(id) {
   const data = await api('/api/upstreams');
-  const u = data.upstreams.find(x => x.id === id);
+  const u = data.upstreams.find(x => String(x.id) === id);
   if (!u) return;
   const models = await api('/api/models?upstream_id=' + encodeURIComponent(id));
   const routes = await api('/api/routes');
-  const affected = routes.routes.filter(r => r.upstream_id === id);
+  const affected = routes.routes.filter(r => String(r.upstream_id) === id);
   const modelNames = models.models.map(m => m.name).join(', ') || '无';
+  const upstreamName = u ? (u.name || id) : id;
 
   if (affected.length > 0) {
     // 有引用：显示路由列表，确认按钮禁用
     const routeList = affected.map(r => '  • ' + escHtml(r.source)).join('\n');
     showModal('\u{1F5D1}  删除上游',
       '<div style="font-size:14px;line-height:1.8">' +
-      '<div>上游 ID: <code>' + escHtml(id) + '</code></div>' +
+      '<div>上游: ' + escHtml(upstreamName) + ' (ID: ' + escHtml(id) + ')</div>' +
       '<div>关联模型: ' + escHtml(modelNames) + '</div>' +
       '<div style="color:hsl(var(--red));margin-top:12px">❌ 该上游被以下路由引用：</div>' +
       '<pre style="background:hsl(var(--muted));padding:8px;border-radius:4px;font-size:12px;margin:8px 0">' + escHtml(routeList) + '</pre>' +
@@ -227,7 +224,7 @@ async function showDeleteUpstreamModal(id) {
     // 无引用：可以安全删除
     showModal('\u{1F5D1}  删除上游',
       '<div style="font-size:14px;line-height:1.8">' +
-      '<div>上游 ID: <code>' + escHtml(id) + '</code></div>' +
+      '<div>上游: ' + escHtml(upstreamName) + ' (ID: ' + escHtml(id) + ')</div>' +
       '<div>关联模型: ' + escHtml(modelNames) + '</div>' +
       '<div style="color:hsl(var(--green));margin-top:12px">✅ 无路由引用，可以安全删除</div>' +
       '</div>',
@@ -259,10 +256,10 @@ async function showModelModal(editId, defaultUpstreamId) {
   }
   const upstreams = await api('/api/upstreams');
   const activeUpstreams = upstreams.upstreams.filter(u => u.is_active);
-  const upstreamOpts = activeUpstreams.map(u => '<option value="' + escHtml(u.id) + '" ' + (data.upstream_id === u.id ? 'selected' : '') + '>' + escHtml(u.id) + '</option>').join('');
+  const upstreamOpts = activeUpstreams.map(u => '<option value="' + u.id + '" ' + (String(data.upstream_id) === String(u.id) ? 'selected' : '') + '>' + escHtml(u.name) + '</option>').join('');
 
   const upstreamField = defaultUpstreamId
-    ? `<input type="hidden" id="m-upstream" value="${escHtml(defaultUpstreamId)}"><div class="form-group"><label class="form-label">所属上游</label><input type="text" class="form-input" value="${escHtml(defaultUpstreamId)}" readonly style="background:hsl(var(--muted));color:hsl(var(--muted-foreground));cursor:not-allowed"></div>`
+    ? `<input type="hidden" id="m-upstream" value="${escHtml(defaultUpstreamId)}"><div class="form-group"><label class="form-label">所属上游</label><input type="text" class="form-input" value="${escHtml(upstreamDataMap[defaultUpstreamId]?.name || defaultUpstreamId)}" readonly style="background:hsl(var(--muted));color:hsl(var(--muted-foreground));cursor:not-allowed"></div>`
     : `<div class="form-group"><label class="form-label">所属上游</label><select class="form-input" id="m-upstream">${upstreamOpts}</select></div>`;
 
   showModal(title,
