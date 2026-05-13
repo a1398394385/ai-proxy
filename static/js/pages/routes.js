@@ -29,68 +29,113 @@ async function loadRouteTable(requestType) {
   ).join('') || '<tr><td colspan="6" class="empty-state">暂无路由</td></tr>';
 }
 
+// ─── 级联选择：上游 → 模型 ───
+function buildCascadingModelSelect(upstreams, models, selectedUpstreamId, selectedModelId) {
+  const fmtLabel = { responses: 'Resp', messages: 'Msg', chat_completions: 'Chat' };
+  let upOpts = '<option value="">-- 选择上游 --</option>';
+  upstreams.upstreams.forEach(u => {
+    const fmt = fmtLabel[u.format] || u.format;
+    const label = escHtml(u.name) + (fmt ? ' (' + fmt + ')' : '');
+    upOpts += `<option value="${u.id}"${u.id === selectedUpstreamId ? ' selected' : ''}${u.is_active ? '' : ' disabled'}>${label}</option>`;
+  });
+  let modelOpts, modelDisabled = 'disabled';
+  if (!selectedUpstreamId) {
+    modelOpts = '<option value="">-- 请先选择上游 --</option>';
+  } else if (!upstreams.upstreams.find(u => u.id === selectedUpstreamId)) {
+    modelOpts = '<option value="">上游不存在或已变更</option>';
+  } else {
+    const mlist = models.models.filter(m => m.upstream_id === selectedUpstreamId);
+    if (mlist.length === 0) {
+      modelOpts = '<option value="">暂无模型</option>';
+    } else {
+      modelDisabled = '';
+      modelOpts = mlist.map(m => `<option value="${m.id}"${m.id === selectedModelId ? ' selected' : ''}>${escHtml(m.name)}</option>`).join('');
+    }
+  }
+  return `
+    <div class="form-group"><label class="form-label">上游</label><select class="form-input" id="r-upstream">${upOpts}</select></div>
+    <div class="form-group"><label class="form-label">目标模型</label><select class="form-input" id="r-target" ${modelDisabled}>${modelOpts}</select></div>`;
+}
+
+function bindCascadeModelSelect() {
+  const upSelect = document.getElementById('r-upstream');
+  const modelSelect = document.getElementById('r-target');
+  if (!upSelect || !modelSelect) return;
+  upSelect.addEventListener('change', async () => {
+    const upstreamId = upSelect.value;
+    if (!upstreamId) {
+      modelSelect.innerHTML = '<option value="">-- 请先选择上游 --</option>';
+      modelSelect.disabled = true;
+      return;
+    }
+    modelSelect.disabled = true;
+    modelSelect.innerHTML = '<option value="">加载中…</option>';
+    try {
+      const data = await api('/api/models?upstream_id=' + encodeURIComponent(upstreamId));
+      const mlist = data.models || [];
+      modelSelect.innerHTML = mlist.length === 0
+        ? '<option value="">暂无模型</option>'
+        : mlist.map(m => `<option value="${m.id}">${escHtml(m.name)}</option>`).join('');
+      modelSelect.disabled = false;
+    } catch (_) {
+      modelSelect.innerHTML = '<option value="">加载失败</option>';
+    }
+  });
+}
+
 // ─── 路由模态框 ───
 async function showRouteModal(editId) {
   let data = { source: '', target_model_id: '', request_type: currentRequestType };
   let title = '新增路由';
-  if (editId) {
-    title = '编辑路由 #' + editId;
-    const routes = await api('/api/routes');
-    const found = routes.routes.find(r => r.id === editId);
-    if (found) data = found;
+  let routeUpstreamId = null;
+  let routeModelId = null;
+  let models, upstreams;
+  try {
+    if (editId) {
+      title = '编辑路由 #' + editId;
+      const routes = await api('/api/routes');
+      const found = routes.routes.find(r => r.id === editId);
+      if (found) data = found;
+    }
+    [models, upstreams] = await Promise.all([api('/api/models'), api('/api/upstreams')]);
+    if (editId && data.target_model_id) {
+      routeModelId = data.target_model_id;
+      const tm = models.models.find(m => m.id === data.target_model_id);
+      if (tm) routeUpstreamId = tm.upstream_id;
+    }
+  } catch (_) {
+    alert('加载数据失败，请检查服务是否正常运行');
+    return;
   }
-  const [models, upstreams] = await Promise.all([api('/api/models'), api('/api/upstreams')]);
-  const fmtLabel = { responses: 'Resp', messages: 'Msg', chat_completions: 'Chat' };
-  const upFmt = Object.fromEntries(upstreams.upstreams.map(u => [u.id, fmtLabel[u.format] || u.format]));
-  const byUpstream = {};
-  models.models.forEach(m => {
-    if (!byUpstream[m.upstream_name]) byUpstream[m.upstream_name] = [];
-    byUpstream[m.upstream_name].push(m);
-  });
-  let modelOpts = '';
-  for (const [upstream, mlist] of Object.entries(byUpstream)) {
-    const fmt = upFmt[upstream] || '';
-    modelOpts += '<optgroup label="' + escHtml(upstream) + (fmt ? ' (' + fmt + ')' : '') + '">';
-    mlist.forEach(m => { modelOpts += '<option value="' + m.id + '" ' + (data.target_model_id === m.id ? 'selected' : '') + '>' + escHtml(m.name) + '</option>'; });
-    modelOpts += '</optgroup>';
-  }
-  const requestTypeOptions = ['responses', 'messages', 'chat_completions']
-    .map(rt => `<option value="${rt}" ${data.request_type === rt ? 'selected' : ''}>${rt}</option>`)
-    .join('');
+  const cascadingHtml = buildCascadingModelSelect(upstreams, models, routeUpstreamId, routeModelId);
   const sourceField = data.source === '*'
     ? `<input type="text" class="form-input" value="* (fallback)" readonly style="background:hsl(var(--muted));color:hsl(var(--muted-foreground));cursor:not-allowed"><input type="hidden" id="r-source" value="*">`
     : `<input type="text" class="form-input" id="r-source" value="${escHtml(data.source)}" placeholder="如 gpt-4o">`;
   showModal(title,
     `<div class="form-group"><label class="form-label">源模型名</label>${sourceField}</div>
-     <div class="form-group"><label class="form-label">目标模型</label><select class="form-input" id="r-target">${modelOpts}</select></div>
+     ${cascadingHtml}
      <input type="hidden" id="r-proxy" value="${escHtml(data.request_type)}">`,
     `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveRoute(${editId || 0})">保存</button>`);
+  bindCascadeModelSelect();
 }
 
 async function showFallbackModal() {
   const data = { source: '*', target_model_id: '', request_type: currentRequestType };
-  const title = '新增回退路由';
-  const [models, upstreams] = await Promise.all([api('/api/models'), api('/api/upstreams')]);
-  const fmtLabel = { responses: 'Resp', messages: 'Msg', chat_completions: 'Chat' };
-  const upFmt = Object.fromEntries(upstreams.upstreams.map(u => [u.id, fmtLabel[u.format] || u.format]));
-  const byUpstream = {};
-  models.models.forEach(m => {
-    if (!byUpstream[m.upstream_name]) byUpstream[m.upstream_name] = [];
-    byUpstream[m.upstream_name].push(m);
-  });
-  let modelOpts = '';
-  for (const [upstream, mlist] of Object.entries(byUpstream)) {
-    const fmt = upFmt[upstream] || '';
-    modelOpts += '<optgroup label="' + escHtml(upstream) + (fmt ? ' (' + fmt + ')' : '') + '">';
-    mlist.forEach(m => { modelOpts += '<option value="' + m.id + '">' + escHtml(m.name) + '</option>'; });
-    modelOpts += '</optgroup>';
+  let models, upstreams;
+  try {
+    [models, upstreams] = await Promise.all([api('/api/models'), api('/api/upstreams')]);
+  } catch (_) {
+    alert('加载数据失败，请检查服务是否正常运行');
+    return;
   }
-  showModal(title,
+  const cascadingHtml = buildCascadingModelSelect(upstreams, models, null, null);
+  showModal('新增回退路由',
     `<div class="form-group"><label class="form-label">源模型名</label><input type="text" class="form-input" value="* (fallback)" readonly style="background:hsl(var(--muted));color:hsl(var(--muted-foreground));cursor:not-allowed"></div>
      <input type="hidden" id="r-source" value="*">
-     <div class="form-group"><label class="form-label">目标模型</label><select class="form-input" id="r-target">${modelOpts}</select></div>
+     ${cascadingHtml}
      <input type="hidden" id="r-proxy" value="${escHtml(data.request_type)}">`,
     `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveRoute(0, true)">保存</button>`);
+  bindCascadeModelSelect();
 }
 
 async function saveRoute(editId, allowFallback = false) {
