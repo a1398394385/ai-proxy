@@ -501,7 +501,7 @@ def create_codex_sse_stream(chunks_or_response, *, request_messages=None, respon
     if response_store is not None:
         from .response_store import ResponseRecord
         output_list = [item for _, item in converter.output_items]
-        from .transform_responses import output_items_to_messages
+        # output_items_to_messages 在同文件的 module 层级已导入，直接调用
         assistant_msgs = output_items_to_messages(output_list)
         messages_for_conv = (request_messages or []) + assistant_msgs
         record = ResponseRecord(
@@ -783,6 +783,9 @@ git commit -m "refactor: SSE 流式工厂兼容适配层——同时支持 file-
         driver = UpstreamDriver(upstream_cfg)
         logger = get_logger()
 
+        # Fix #2：duration_ms = time.time() 包裹 SDK 调用
+        import time as _time
+        _request_start = _time.time()
         try:
             raw_response = driver.create(target_format, chat_body)
             chat_response = raw_response.model_dump()
@@ -790,8 +793,7 @@ git commit -m "refactor: SSE 流式工厂兼容适配层——同时支持 file-
             self._handle_sdk_error(e)
             driver.close()
             return
-
-        duration_ms = 0  # SDK 不直接暴露耗时，由 upstream_driver 的 Timeout 管理
+        duration_ms = int((_time.time() - _request_start) * 1000)
         request_ts_for_stats = request_ts
 
         # 阶段 3：记录上游响应
@@ -841,8 +843,15 @@ git commit -m "refactor: SSE 流式工厂兼容适配层——同时支持 file-
             return
 
         # 存储 response（仅 responses 路径）
+        # 构造 multi-turn conversation：去掉 system 消息 + 拼接当前轮 assistant 输出
         if store_enabled and is_responses_api:
-            _store_response(self.server, output, chat_body.get("messages", []))
+            from .transform_responses import output_items_to_messages as _oitm
+            assistant_msgs = _oitm(output.get("output", []))
+            messages_for_conv = [
+                m for m in chat_body.get("messages", [])
+                if m.get("role") != "system"
+            ] + assistant_msgs
+            _store_response(self.server, output, messages_for_conv)
 
         self._send_json(200, output)
         driver.close()
@@ -876,7 +885,10 @@ git commit -m "refactor: SSE 流式工厂兼容适配层——同时支持 file-
 
         import time as _time
         start = _time.time()
+        # Fix #3：限制 sse_buffer 最大 200KB 避免 OOM，超限后仅保留尾部用于日志
+        SSE_BUFFER_MAX = 200 * 1024
         sse_buffer = []
+        sse_buffer_size = 0
         final_usage = None
 
         try:
@@ -891,7 +903,9 @@ git commit -m "refactor: SSE 流式工厂兼容适配层——同时支持 file-
             ):
                 self.wfile.write(sse_event.encode("utf-8"))
                 self.wfile.flush()
-                sse_buffer.append(sse_event)
+                if sse_buffer_size < SSE_BUFFER_MAX:
+                    sse_buffer.append(sse_event)
+                    sse_buffer_size += len(sse_event)
 
                 # 用 _parse_sse_event 做结构化解析，不依赖字符串切割
                 if "response.completed" in sse_event or "message_delta" in sse_event:
@@ -930,7 +944,7 @@ git commit -m "refactor: SSE 流式工厂兼容适配层——同时支持 file-
                 pass
 
         duration_ms = int((_time.time() - start) * 1000)
-        full_sse = "".join(sse_buffer)
+        full_sse = "".join(sse_buffer) if sse_buffer else "(buffer overflow)"
 
         # 日志
         if logger:
@@ -1014,6 +1028,7 @@ git commit -m "refactor: SSE 流式工厂兼容适配层——同时支持 file-
 ```python
 # 在现有 import 块末尾添加：
 from .transform_router import TransformRouter  # noqa: E402
+from .transform_responses import _parse_sse_event  # noqa: E402 — v2 流式使用
 ```
 
 - [ ] **Step 6: 保留旧方法**
@@ -1266,6 +1281,10 @@ class TestHandlerConvertSDK(unittest.TestCase):
         h.headers = {}
         h.path = "/v1/responses"
         h.command = "POST"
+        # Fix #6：mock send_response/send_header/end_headers（_send_json 依赖）
+        h.send_response = lambda code: None
+        h.send_header = lambda k, v: None
+        h.end_headers = lambda: None
 
         import io
         h.wfile = io.BytesIO()
