@@ -1216,15 +1216,23 @@ class StatsService:
     Args:
         data_db_path: data db 路径
         state_db_path: state.db 路径（运行时状态）
+        opencode_db_path: opencode.db 路径（默认 ~/.local/share/opencode/opencode.db）
     """
+
+    # ─── 默认 opencode 路径 ───
+    _OPENCODE_DB_DEFAULT = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
 
     def __init__(
         self,
         data_db_path: str,
         state_db_path: str,
+        opencode_db_path: str | None = None,
     ) -> None:
         self.data_db_path = Path(data_db_path) if data_db_path else DATA_DB
         self.state_db_path = Path(state_db_path)
+
+        self.opencode_db_path = Path(opencode_db_path) if opencode_db_path else self._OPENCODE_DB_DEFAULT
+        self._opencode_dao = None  # 懒加载
 
         # 初始化上游解析器
         self._upstream_resolver = _UpstreamResolver(self.data_db_path)
@@ -1239,15 +1247,24 @@ class StatsService:
         """获取 SessionDao 实例。"""
         return _SessionDao(self.state_db_path)
 
+    def _get_opencode_dao(self):
+        """获取 OpenCodeDao 实例，数据库不存在时返回 None。"""
+        if self._opencode_dao is None:
+            dao = _OpenCodeDao(self.opencode_db_path)
+            self._opencode_dao = dao if dao.db_path.exists() else None
+        return self._opencode_dao
+
     # ─── Provider 接口 ───
 
     def fetch_by_model(self, period: str) -> list:
-        """按模型维度获取统计数据，合并 proxy + sessions 双源。"""
+        """按模型维度获取统计数据，合并 proxy + sessions + opencode 三源。"""
         dao = self._get_dao()
         session_dao = self._get_session_dao()
+        opencode_dao = self._get_opencode_dao()
         proxy_models = dao.aggregate_by_model(period)
         session_models = session_dao.aggregate_by_model(period)
-        merged = _Merger.merge_model_lists(proxy_models, session_models)
+        opencode_models = opencode_dao.aggregate_by_model(period) if opencode_dao else []
+        merged = _Merger.merge_model_lists(proxy_models, session_models, opencode_models)
         calculator = self._get_calculator()
         for m in merged:
             m["estimated_cost_cny"] = round(calculator.calculate(
@@ -1300,6 +1317,18 @@ class StatsService:
             offset=0,
         )
 
+        opencode_dao = self._get_opencode_dao()
+        if opencode_dao:
+            oc_rows, oc_total = opencode_dao.query_messages_paged(
+                period=period,
+                model=model,
+                request_type=request_type,
+                limit=fetch_limit,
+                offset=0,
+            )
+        else:
+            oc_rows, oc_total = [], 0
+
         calculator = self._get_calculator()
         unified_requests = []
 
@@ -1327,9 +1356,20 @@ class StatsService:
             )
             unified_requests.append(rec)
 
+        for rec in oc_rows:
+            rec = _Merger._rename(rec)
+            rec["estimated_cost_cny"] = calculator.calculate(
+                model=rec.get("target_model", rec.get("model", "")),
+                input_tokens=rec.get("input_tokens", 0),
+                output_tokens=rec.get("output_tokens", 0),
+                cache_read_tokens=rec.get("cache_read_tokens", 0),
+                cache_write_tokens=rec.get("cache_write_tokens", 0),
+            )
+            unified_requests.append(rec)
+
         unified_requests.sort(key=lambda x: x.get("request_ts", ""), reverse=True)
 
-        total = token_total + session_total
+        total = token_total + session_total + oc_total
         paginated = unified_requests[offset:offset + limit]
 
         return {
@@ -1383,6 +1423,28 @@ class StatsService:
             agg["output_tokens"] += row["output_tokens"] or 0
             agg["cached_read_tokens"] += row["cached_read_tokens"] or 0
             agg["cached_write_tokens"] += row["cached_write_tokens"] or 0
+
+        # opencode 数据 → 归入 "[OpenCode]" 桶
+        opencode_dao = self._get_opencode_dao()
+        if opencode_dao:
+            oc_models = opencode_dao.aggregate_by_model(period)
+            oc_name = "[OpenCode]"
+            for oc_row in oc_models:
+                if oc_name not in session_upstream_data:
+                    session_upstream_data[oc_name] = {
+                        "upstream": oc_name,
+                        "request_count": 0,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cached_read_tokens": 0,
+                        "cached_write_tokens": 0,
+                    }
+                agg = session_upstream_data[oc_name]
+                agg["request_count"] += oc_row["request_count"] or 0
+                agg["input_tokens"] += oc_row["input_tokens"] or 0
+                agg["output_tokens"] += oc_row["output_tokens"] or 0
+                agg["cached_read_tokens"] += oc_row["cached_read_tokens"] or 0
+                agg["cached_write_tokens"] += oc_row["cached_write_tokens"] or 0
 
         # 4. 合并两个数据源（同名 upstream 累加）
         merged: dict = {}
@@ -1443,6 +1505,8 @@ class StatsService:
                 base_url = info.get("upstream_url")
             elif name == "__unknown__":
                 base_url = None
+            elif name == "[OpenCode]":
+                base_url = None
 
             # 成本计算：用 sample_model 或 name 作为模型名
             cost_model = sample_model if sample_model else name
@@ -1471,12 +1535,14 @@ class StatsService:
         return {"upstreams": result}
 
     def fetch_trend(self, period: str) -> list:
-        """获取时间趋势数据，合并 proxy + sessions 双源。逐点计算成本。"""
+        """获取时间趋势数据，合并 proxy + sessions + opencode 三源。逐点计算成本。"""
         dao = self._get_dao()
         session_dao = self._get_session_dao()
+        opencode_dao = self._get_opencode_dao()
         proxy_trend = dao.aggregate_trend(period)
         session_trend = session_dao.aggregate_trend(period)
-        merged = _Merger.merge_trend_lists(proxy_trend, session_trend)
+        opencode_trend = opencode_dao.aggregate_trend(period) if opencode_dao else []
+        merged = _Merger.merge_trend_lists(proxy_trend, session_trend, opencode_trend)
         merged.sort(key=lambda x: x.get("date", ""))
 
         # 加权均摊：从 per-model 汇总数据计算总成本，按 token 比例均摊到每个时间桶
@@ -1497,16 +1563,19 @@ class StatsService:
         return merged
 
     def fetch_summary(self, period: str) -> dict:
-        """获取汇总统计数据，合并 proxy + sessions 双源。成本按模型逐个计算后求和。"""
+        """获取汇总统计数据，合并 proxy + sessions + opencode 三源。成本按模型逐个计算后求和。"""
         dao = self._get_dao()
         session_dao = self._get_session_dao()
+        opencode_dao = self._get_opencode_dao()
         proxy = dao.aggregate_summary(period)
         session = session_dao.aggregate_summary(period)
-        result = _Merger.merge_summary(proxy, session)
+        opencode = opencode_dao.aggregate_summary(period) if opencode_dao else {}
+        result = _Merger.merge_summary(proxy, session, opencode)
         # 成本按模型逐个计算再求和
         proxy_models = dao.aggregate_by_model(period)
         session_models = session_dao.aggregate_by_model(period)
-        merged_models = _Merger.merge_model_lists(proxy_models, session_models)
+        opencode_models = opencode_dao.aggregate_by_model(period) if opencode_dao else []
+        merged_models = _Merger.merge_model_lists(proxy_models, session_models, opencode_models)
         calculator = self._get_calculator()
         total_cost = 0
         for m in merged_models:
@@ -1564,6 +1633,18 @@ class StatsService:
             offset=0,
         )
 
+        opencode_dao = self._get_opencode_dao()
+        if opencode_dao:
+            oc_rows, oc_total = opencode_dao.query_messages_paged(
+                period=period,
+                model=model,
+                request_type=None,
+                limit=fetch_limit,
+                offset=0,
+            )
+        else:
+            oc_rows, oc_total = [], 0
+
         # 3. 合并两个列表,统一添加 estimated_cost_cny 字段
         calculator = self._get_calculator()
         unified_requests = []
@@ -1592,11 +1673,22 @@ class StatsService:
             )
             unified_requests.append(rec)
 
+        for rec in oc_rows:
+            rec = _Merger._rename(rec)
+            rec["estimated_cost_cny"] = calculator.calculate(
+                model=rec.get("target_model", rec.get("model", "")),
+                input_tokens=rec.get("input_tokens", 0),
+                output_tokens=rec.get("output_tokens", 0),
+                cache_read_tokens=rec.get("cache_read_tokens", 0),
+                cache_write_tokens=rec.get("cache_write_tokens", 0),
+            )
+            unified_requests.append(rec)
+
         # 4. 按 request_ts DESC 排序
         unified_requests.sort(key=lambda x: x.get("request_ts", ""), reverse=True)
 
         # 5. 切片返回
-        total = token_total + session_total
+        total = token_total + session_total + oc_total
         paginated = unified_requests[offset:offset + limit]
 
         # 6. 返回格式

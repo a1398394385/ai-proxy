@@ -81,6 +81,7 @@ class TestStatsService(unittest.TestCase):
         return StatsService(
             data_db_path=str(self.data_db),
             state_db_path=str(self.state_db),
+            opencode_db_path=str(Path(self.tmpdir) / "nonexistent_opencode.db"),
         )
 
     def _insert_test_data(self, records: list):
@@ -810,6 +811,7 @@ class TestStatsServiceCostCalculation(unittest.TestCase):
         return StatsService(
             data_db_path=str(self.data_db),
             state_db_path=str(self.state_db),
+            opencode_db_path=str(Path(self.tmpdir) / "nonexistent_opencode.db"),
         )
 
     def _setup_pricing_db(self):
@@ -928,6 +930,7 @@ class TestCostCalculatorCNY(unittest.TestCase):
         service = StatsService(
             data_db_path=str(Path(self.tmpdir.name) / "access_log.db"),
             state_db_path=str(Path(self.tmpdir.name) / "state.db"),
+            opencode_db_path=str(Path(self.tmpdir.name) / "nonexistent_opencode.db"),
         )
         # 先触发 calculator 懒加载
         calc = service._get_calculator()
@@ -1101,6 +1104,7 @@ class TestUpstreamResolver(unittest.TestCase):
         service = StatsService(
             data_db_path=str(self.data_db),
             state_db_path=str(state_db),
+            opencode_db_path=str(Path(self.tmpdir) / "nonexistent_opencode.db"),
         )
 
         # 验证 resolver 已初始化
@@ -1515,6 +1519,7 @@ class TestFetchRequestsMerged(unittest.TestCase):
         return StatsService(
             data_db_path=str(self.data_db),
             state_db_path=str(self.state_db),
+            opencode_db_path=str(Path(self.tmpdir) / "nonexistent_opencode.db"),
         )
 
     def _insert_token_stat(self, **kwargs):
@@ -1838,6 +1843,7 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
         return StatsService(
             data_db_path=str(self.data_db),
             state_db_path=str(self.state_db),
+            opencode_db_path=str(Path(self.tmpdir) / "nonexistent_opencode.db"),
         )
 
     def _insert_token_stat(self, **kwargs):
@@ -2925,6 +2931,7 @@ class TestFetchSummaryMerged(unittest.TestCase):
         return StatsService(
             data_db_path=str(self.data_db),
             state_db_path=str(self.state_db),
+            opencode_db_path=str(Path(self.tmpdir) / "nonexistent_opencode.db"),
         )
 
     def test_fetch_summary_merges_both_sources(self):
