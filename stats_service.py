@@ -22,6 +22,7 @@
 
 import sqlite3
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from proxy.paths import DATA_DB
 from proxy.pricing_manager import PricingDB
@@ -361,15 +362,15 @@ class _UpstreamResolver:
         self.data_db_path = data_db_path
         self._cache_ttl = 60  # 缓存 60 秒
         self._loaded_at = 0.0  # 初始化为 0，强制首次加载
-        self._model_map: dict = {}  # {model_name: {upstream_name, upstream_url}}
-        self._upstream_list: list = []  # [{upstream_name, upstream_url}]
+        self._model_map: dict = {}  # {model_name: {upstream_id, upstream_name, base_url}}
+        self._id_map: dict = {}  # {upstream_id: {upstream_name, base_url}}
         self._refresh()
 
     def _refresh(self) -> None:
         """从 data db 重新加载映射到内存。"""
         self._loaded_at = time.time()
         self._model_map = {}
-        self._upstream_list = []
+        self._id_map = {}
 
         if not self.data_db_path.exists():
             return
@@ -380,27 +381,27 @@ class _UpstreamResolver:
             try:
                 rows = conn.execute(
                     """
-                    SELECT tm.name, u.base_url as upstream_url, u.id as upstream_id
+                    SELECT tm.name, u.base_url, u.id as upstream_id
                     FROM target_models tm
                     JOIN upstreams u ON tm.upstream_id = u.id
-                    WHERE tm.name IS NOT NULL AND u.base_url IS NOT NULL
+                    WHERE tm.name IS NOT NULL AND u.base_url IS NOT NULL AND u.base_url != ''
                     """
                 ).fetchall()
 
-                seen_upstreams = set()
                 for row in rows:
                     model_name = row["name"]
-                    upstream_url = row["upstream_url"]
+                    upstream_id = row["upstream_id"]
+                    base_url = row["base_url"]
                     self._model_map[model_name] = {
-                        "upstream_name": upstream_url,
-                        "upstream_url": upstream_url,
+                        "upstream_id": upstream_id,
+                        "upstream_name": base_url,
+                        "base_url": base_url,
                     }
-                    if upstream_url not in seen_upstreams:
-                        seen_upstreams.add(upstream_url)
-                        self._upstream_list.append({
-                            "upstream_name": upstream_url,
-                            "upstream_url": upstream_url,
-                        })
+                    if upstream_id not in self._id_map:
+                        self._id_map[upstream_id] = {
+                            "upstream_name": base_url,
+                            "base_url": base_url,
+                        }
             finally:
                 conn.close()
         except Exception:
@@ -414,8 +415,8 @@ class _UpstreamResolver:
             target_model: 目标模型名称
 
         Returns:
-            {upstream_name: str, upstream_url: str} 或
-            {upstream_name: '__unknown__', upstream_url: None}
+            {upstream_id, upstream_name, base_url} 或
+            {upstream_id: '__unknown__', upstream_name: '__unknown__', base_url: None}
         """
         # 检查缓存是否过期
         if time.time() - self._loaded_at > self._cache_ttl:
@@ -424,26 +425,62 @@ class _UpstreamResolver:
         entry = self._model_map.get(target_model)
         if entry:
             return {
+                "upstream_id": entry["upstream_id"],
                 "upstream_name": entry["upstream_name"],
-                "upstream_url": entry["upstream_url"],
+                "base_url": entry["base_url"],
             }
 
         return {
+            "upstream_id": "__unknown__",
             "upstream_name": "__unknown__",
-            "upstream_url": None,
+            "base_url": None,
+        }
+
+    def resolve_by_id(self, upstream_id: str) -> dict:
+        """按 upstream_id 解析 upstream 信息。
+
+        Args:
+            upstream_id: upstream ID
+
+        Returns:
+            {upstream_id, upstream_name, base_url} 或
+            {upstream_id, upstream_name: '__unknown__', base_url: None}
+        """
+        if time.time() - self._loaded_at > self._cache_ttl:
+            self._refresh()
+
+        entry = self._id_map.get(upstream_id)
+        if entry:
+            return {
+                "upstream_id": upstream_id,
+                "upstream_name": entry["upstream_name"],
+                "base_url": entry["base_url"],
+            }
+
+        return {
+            "upstream_id": upstream_id,
+            "upstream_name": "__unknown__",
+            "base_url": None,
         }
 
     def get_all_upstreams(self) -> list:
         """返回所有 upstream 列表。
 
         Returns:
-            [{upstream_name, upstream_url}]
+            [{upstream_id, upstream_name, base_url}]
         """
         # 检查缓存是否过期
         if time.time() - self._loaded_at > self._cache_ttl:
             self._refresh()
 
-        return list(self._upstream_list)
+        return [
+            {
+                "upstream_id": uid,
+                "upstream_name": info["upstream_name"],
+                "base_url": info["base_url"],
+            }
+            for uid, info in self._id_map.items()
+        ]
 
 
 class _CostCalculator:
@@ -598,12 +635,15 @@ class _SessionDao:
         """将 sessions 行包装为统一格式记录。"""
         model = row["model"] or ""
         normalized = _SessionDao._normalize_model_name(model)
+        ts = row["started_at"]
+        if isinstance(ts, (int, float)):
+            ts = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         return {
             "request_id": f"sess-{row['id']}",
             "request_type": "session",
             "model": model,
             "target_model": normalized,
-            "request_ts": row["started_at"],
+            "request_ts": ts,
             "duration_ms": None,
             "input_tokens": row["input_tokens"],
             "output_tokens": row["output_tokens"],
