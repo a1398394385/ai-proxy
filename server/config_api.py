@@ -141,7 +141,7 @@ def handle_get(path, qs, handler) -> bool:
     m = re.match(r"/api/upstreams/([^/]+)$", path)
     if m:
         with config_db() as db:
-            u = db.get_upstream(m.group(1))
+            u = db.get_upstream(int(m.group(1)))
         if u:
             json_response(handler, u)
         else:
@@ -230,7 +230,7 @@ def handle_post(path, handler) -> bool:
 
     test_m = re.match(r"/api/upstreams/([^/]+)/test$", path)
     if test_m:
-        uid = test_m.group(1)
+        uid = int(test_m.group(1))
         with config_db() as db:
             u = db.get_upstream(uid)
         if not u:
@@ -242,7 +242,7 @@ def handle_post(path, handler) -> bool:
 
     detect_m = re.match(r"/api/upstreams/([^/]+)/detect-models$", path)
     if detect_m:
-        uid = detect_m.group(1)
+        uid = int(detect_m.group(1))
         with config_db() as db:
             u = db.get_upstream(uid)
         if not u:
@@ -269,7 +269,7 @@ def handle_post(path, handler) -> bool:
 
     bulk_m = re.match(r"/api/upstreams/([^/]+)/models/bulk$", path)
     if bulk_m:
-        uid = bulk_m.group(1)
+        uid = int(bulk_m.group(1))
         data = _read_json(handler)
         if not data:
             return True
@@ -359,7 +359,7 @@ def handle_put(path, handler) -> bool:
             return True
         try:
             with config_db() as db:
-                db.update_upstream(m.group(1), data)
+                db.update_upstream(int(m.group(1)), data)
         except sqlite3.IntegrityError as e:
             json_response(handler, {"error": str(e)}, 409)
             return True
@@ -406,7 +406,7 @@ def handle_put(path, handler) -> bool:
 def handle_delete(path, handler) -> bool:
     m = re.match(r"/api/upstreams/([^/]+)$", path)
     if m:
-        uid = m.group(1)
+        uid = int(m.group(1))
         with config_db() as db:
             u = db.get_upstream(uid)
             if not u:
