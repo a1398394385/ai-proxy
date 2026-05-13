@@ -109,9 +109,10 @@ def handle_get(path, qs, handler) -> bool:
         if limit > 200:
             json_response(handler, {"error": "Limit exceeds maximum (200)"}, 400)
             return True
-        result = handler.stats_service.fetch_by_model_requests(
-            model=model, period=period, limit=limit, offset=offset
+        result = handler.stats_service.fetch_requests(
+            period=period, model=model, limit=limit, offset=offset
         )
+        result["model"] = model  # 保持与旧 fetch_by_model_requests 返回格式兼容
         json_response(handler, result)
         return True
 
