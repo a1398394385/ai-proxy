@@ -39,6 +39,7 @@ class TestStatsService(unittest.TestCase):
                 output_tokens       INTEGER DEFAULT 0,
                 cached_read_tokens  INTEGER DEFAULT 0,
                 cached_write_tokens INTEGER DEFAULT 0,
+                upstream_id INTEGER,
                 status              TEXT DEFAULT 'completed',
                 created_at          TEXT NOT NULL
             )
@@ -96,8 +97,9 @@ class TestStatsService(unittest.TestCase):
                 "INSERT INTO token_stats "
                 "(request_id, request_type, model, target_model, request_ts, duration_ms, "
                 "input_tokens, output_tokens, cached_read_tokens, cached_write_tokens, "
+                "upstream_id, "
                 "status, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     r.get("request_id", "test-1"),
                     r.get("request_type", "chat"),
@@ -109,6 +111,7 @@ class TestStatsService(unittest.TestCase):
                     r.get("output_tokens", 200),
                     r.get("cached_read_tokens", 0),
                     r.get("cached_write_tokens", 0),
+                    r.get("upstream_id"),
                     r.get("status", "completed"),
                     r.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
                 ),
@@ -122,14 +125,14 @@ class TestStatsService(unittest.TestCase):
         conn.execute("""
             CREATE TABLE IF NOT EXISTS upstreams (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
                 base_url TEXT NOT NULL,
                 api_key TEXT DEFAULT '',
                 timeout INTEGER DEFAULT 30,
                 connect_timeout INTEGER DEFAULT 10,
                 ssl_verify INTEGER DEFAULT 1,
                 retry INTEGER DEFAULT 0,
-                is_active INTEGER DEFAULT 1,
-                is_default INTEGER DEFAULT 0
+                is_active INTEGER DEFAULT 1
             )
         """)
         conn.execute("""
@@ -137,17 +140,16 @@ class TestStatsService(unittest.TestCase):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 upstream_id INTEGER,
-                multimodal INTEGER DEFAULT 0,
-                format TEXT DEFAULT 'chat'
+                multimodal INTEGER DEFAULT 0
             )
         """)
         conn.execute(
-            "INSERT INTO upstreams (id, base_url) VALUES (?, ?)",
-            (1, "https://api.openai.com"),
+            "INSERT INTO upstreams (id, name, base_url) VALUES (?, ?, ?)",
+            (1, "OpenAI", "https://api.openai.com"),
         )
         conn.execute(
-            "INSERT INTO upstreams (id, base_url) VALUES (?, ?)",
-            (2, "https://api.anthropic.com"),
+            "INSERT INTO upstreams (id, name, base_url) VALUES (?, ?, ?)",
+            (2, "Anthropic", "https://api.anthropic.com"),
         )
         conn.execute(
             "INSERT INTO target_models (id, name, upstream_id) VALUES (?, ?, ?)",
@@ -568,6 +570,7 @@ class TestStatsService(unittest.TestCase):
                 "request_ts": ts,
                 "input_tokens": 100,
                 "output_tokens": 200,
+                "upstream_id": 1,
             },
             {
                 "request_id": "req-2",
@@ -575,6 +578,7 @@ class TestStatsService(unittest.TestCase):
                 "request_ts": ts,
                 "input_tokens": 300,
                 "output_tokens": 500,
+                "upstream_id": 2,
             },
         ]
         self._insert_test_data(records)
@@ -585,14 +589,17 @@ class TestStatsService(unittest.TestCase):
 
         self.assertEqual(len(result["upstreams"]), 2)
         upstreams = result["upstreams"]
-        # 按 estimated_cost_cny 降序（qwen3.6-plus 有种子数据定价，claude-sonnet-4 没有）
-        self.assertEqual(upstreams[0]["upstream_id"], "https://api.openai.com")
-        self.assertEqual(upstreams[0]["output_tokens"], 200)
-        self.assertEqual(upstreams[1]["upstream_id"], "https://api.anthropic.com")
-        self.assertEqual(upstreams[1]["output_tokens"], 500)
+        # 按 total_output DESC（Anthropic 500 > OpenAI 200）
+        self.assertEqual(upstreams[0]["upstream_id"], 2)
+        self.assertEqual(upstreams[0]["upstream_name"], "Anthropic")
+        self.assertEqual(upstreams[0]["output_tokens"], 500)
+        self.assertEqual(upstreams[1]["upstream_id"], 1)
+        self.assertEqual(upstreams[1]["upstream_name"], "OpenAI")
+        self.assertEqual(upstreams[1]["output_tokens"], 200)
         # 验证返回格式包含所有必需字段
         for up in upstreams:
             self.assertIn("upstream_id", up)
+            self.assertIn("upstream_name", up)
             self.assertIn("base_url", up)
             self.assertIn("request_count", up)
             self.assertIn("input_tokens", up)
@@ -963,14 +970,14 @@ class TestUpstreamResolver(unittest.TestCase):
         conn.execute("""
             CREATE TABLE IF NOT EXISTS upstreams (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
                 base_url TEXT NOT NULL,
                 api_key TEXT DEFAULT '',
                 timeout INTEGER DEFAULT 30,
                 connect_timeout INTEGER DEFAULT 10,
                 ssl_verify INTEGER DEFAULT 1,
                 retry INTEGER DEFAULT 0,
-                is_active INTEGER DEFAULT 1,
-                is_default INTEGER DEFAULT 0
+                is_active INTEGER DEFAULT 1
             )
         """)
         conn.execute("""
@@ -978,17 +985,16 @@ class TestUpstreamResolver(unittest.TestCase):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 upstream_id INTEGER,
-                multimodal INTEGER DEFAULT 0,
-                format TEXT DEFAULT 'chat'
+                multimodal INTEGER DEFAULT 0
             )
         """)
         conn.execute(
-            "INSERT INTO upstreams (id, base_url) VALUES (?, ?)",
-            (1, "https://api.openai.com"),
+            "INSERT INTO upstreams (id, name, base_url) VALUES (?, ?, ?)",
+            (1, "OpenAI", "https://api.openai.com"),
         )
         conn.execute(
-            "INSERT INTO upstreams (id, base_url) VALUES (?, ?)",
-            (2, "https://api.anthropic.com"),
+            "INSERT INTO upstreams (id, name, base_url) VALUES (?, ?, ?)",
+            (2, "Anthropic", "https://api.anthropic.com"),
         )
         conn.execute(
             "INSERT INTO target_models (id, name, upstream_id) VALUES (?, ?, ?)",
@@ -1009,12 +1015,12 @@ class TestUpstreamResolver(unittest.TestCase):
         resolver = _UpstreamResolver(self.config_db)
 
         result = resolver.resolve("qwen3.6-plus")
-        self.assertEqual(result["upstream_name"], "https://api.openai.com")
-        self.assertEqual(result["upstream_url"], "https://api.openai.com")
+        self.assertEqual(result["upstream_name"], "OpenAI")
+        self.assertEqual(result["base_url"], "https://api.openai.com")
 
         result2 = resolver.resolve("claude-sonnet-4")
-        self.assertEqual(result2["upstream_name"], "https://api.anthropic.com")
-        self.assertEqual(result2["upstream_url"], "https://api.anthropic.com")
+        self.assertEqual(result2["upstream_name"], "Anthropic")
+        self.assertEqual(result2["base_url"], "https://api.anthropic.com")
 
     def test_resolve_orphan_model(self):
         """orphan model → __unknown__。"""
@@ -1025,7 +1031,7 @@ class TestUpstreamResolver(unittest.TestCase):
 
         result = resolver.resolve("nonexistent-model")
         self.assertEqual(result["upstream_name"], "__unknown__")
-        self.assertIsNone(result["upstream_url"])
+        self.assertIsNone(result["base_url"])
 
     def test_resolve_config_db_not_exists(self):
         """config.db 不存在 → 不抛异常，返回 __unknown__。"""
@@ -1037,7 +1043,7 @@ class TestUpstreamResolver(unittest.TestCase):
         # 不应抛异常
         result = resolver.resolve("any-model")
         self.assertEqual(result["upstream_name"], "__unknown__")
-        self.assertIsNone(result["upstream_url"])
+        self.assertIsNone(result["base_url"])
 
     def test_get_all_upstreams(self):
         """get_all_upstreams 返回所有 upstream。"""
@@ -1049,9 +1055,9 @@ class TestUpstreamResolver(unittest.TestCase):
         upstreams = resolver.get_all_upstreams()
         self.assertEqual(len(upstreams), 2)
 
-        urls = {up["upstream_url"] for up in upstreams}
-        self.assertIn("https://api.openai.com", urls)
-        self.assertIn("https://api.anthropic.com", urls)
+        urls = {up["upstream_name"] for up in upstreams}
+        self.assertIn("OpenAI", urls)
+        self.assertIn("Anthropic", urls)
 
     def test_cache_ttl_refresh(self):
         """缓存过期后自动刷新。"""
@@ -1063,14 +1069,14 @@ class TestUpstreamResolver(unittest.TestCase):
 
         # 首次解析
         result1 = resolver.resolve("qwen3.6-plus")
-        self.assertEqual(result1["upstream_name"], "https://api.openai.com")
+        self.assertEqual(result1["upstream_name"], "OpenAI")
 
         # 修改缓存时间为负值，强制过期
         resolver._loaded_at = time.time() - 61
 
         # 再次解析应触发刷新
         result2 = resolver.resolve("qwen3.6-plus")
-        self.assertEqual(result2["upstream_name"], "https://api.openai.com")
+        self.assertEqual(result2["upstream_name"], "OpenAI")
 
     def test_stats_service_uses_resolver(self):
         """StatsService 使用 _UpstreamResolver。"""
@@ -1094,6 +1100,7 @@ class TestUpstreamResolver(unittest.TestCase):
                 output_tokens INTEGER DEFAULT 0,
                 cached_read_tokens INTEGER DEFAULT 0,
                 cached_write_tokens INTEGER DEFAULT 0,
+                upstream_id INTEGER,
                 status TEXT DEFAULT 'completed',
                 created_at TEXT NOT NULL
             )
@@ -1112,7 +1119,7 @@ class TestUpstreamResolver(unittest.TestCase):
 
         # 验证 resolve 方法可用
         result = service._resolve_upstream("qwen3.6-plus")
-        self.assertEqual(result["upstream_name"], "https://api.openai.com")
+        self.assertEqual(result["upstream_name"], "OpenAI")
 
 
 class TestSessionDao(unittest.TestCase):
@@ -1483,6 +1490,7 @@ class TestFetchRequestsMerged(unittest.TestCase):
                 output_tokens INTEGER DEFAULT 0,
                 cached_read_tokens INTEGER DEFAULT 0,
                 cached_write_tokens INTEGER DEFAULT 0,
+                upstream_id INTEGER,
                 status TEXT DEFAULT 'completed',
                 created_at TEXT NOT NULL
             )
@@ -1535,6 +1543,7 @@ class TestFetchRequestsMerged(unittest.TestCase):
             "output_tokens": 200,
             "cached_read_tokens": 0,
             "cached_write_tokens": 0,
+            "upstream_id": None,
             "status": "completed",
             "created_at": now,
         }
@@ -1544,8 +1553,8 @@ class TestFetchRequestsMerged(unittest.TestCase):
         conn.execute(
             "INSERT INTO token_stats (request_id, request_type, model, target_model, "
             "request_ts, duration_ms, input_tokens, output_tokens, cached_read_tokens, "
-            "cached_write_tokens, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "cached_write_tokens, upstream_id, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 d["request_id"],
                 d["request_type"],
@@ -1557,6 +1566,7 @@ class TestFetchRequestsMerged(unittest.TestCase):
                 d["output_tokens"],
                 d["cached_read_tokens"],
                 d["cached_write_tokens"],
+                d.get("upstream_id"),
                 d["status"],
                 d["created_at"],
             ),
@@ -1805,6 +1815,7 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
                 output_tokens INTEGER DEFAULT 0,
                 cached_read_tokens INTEGER DEFAULT 0,
                 cached_write_tokens INTEGER DEFAULT 0,
+                upstream_id INTEGER,
                 status TEXT DEFAULT 'completed',
                 created_at TEXT NOT NULL
             )
@@ -1860,6 +1871,7 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
             "output_tokens": 200,
             "cached_read_tokens": 0,
             "cached_write_tokens": 0,
+            "upstream_id": None,
             "status": "completed",
             "created_at": now,
         }
@@ -1869,8 +1881,8 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
         conn.execute(
             "INSERT INTO token_stats (request_id, request_type, model, target_model, "
             "request_ts, duration_ms, input_tokens, output_tokens, cached_read_tokens, "
-            "cached_write_tokens, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "cached_write_tokens, upstream_id, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 d["request_id"],
                 d["request_type"],
@@ -1882,6 +1894,7 @@ class TestFetchByModelRequestsMerged(unittest.TestCase):
                 d["output_tokens"],
                 d["cached_read_tokens"],
                 d["cached_write_tokens"],
+                d.get("upstream_id"),
                 d["status"],
                 d["created_at"],
             ),
@@ -2100,6 +2113,7 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
                 output_tokens INTEGER DEFAULT 0,
                 cached_read_tokens INTEGER DEFAULT 0,
                 cached_write_tokens INTEGER DEFAULT 0,
+                upstream_id INTEGER,
                 status TEXT DEFAULT 'completed',
                 created_at TEXT NOT NULL
             )
@@ -2146,14 +2160,14 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         conn.execute("""
             CREATE TABLE IF NOT EXISTS upstreams (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
                 base_url TEXT NOT NULL,
                 api_key TEXT DEFAULT '',
                 timeout INTEGER DEFAULT 30,
                 connect_timeout INTEGER DEFAULT 10,
                 ssl_verify INTEGER DEFAULT 1,
                 retry INTEGER DEFAULT 0,
-                is_active INTEGER DEFAULT 1,
-                is_default INTEGER DEFAULT 0
+                is_active INTEGER DEFAULT 1
             )
         """)
         conn.execute("""
@@ -2161,17 +2175,16 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 upstream_id INTEGER,
-                multimodal INTEGER DEFAULT 0,
-                format TEXT DEFAULT 'chat'
+                multimodal INTEGER DEFAULT 0
             )
         """)
         conn.execute(
-            "INSERT INTO upstreams (id, base_url) VALUES (?, ?)",
-            (1, "https://api.openai.com"),
+            "INSERT INTO upstreams (id, name, base_url) VALUES (?, ?, ?)",
+            (1, "OpenAI", "https://api.openai.com"),
         )
         conn.execute(
-            "INSERT INTO upstreams (id, base_url) VALUES (?, ?)",
-            (2, "https://api.anthropic.com"),
+            "INSERT INTO upstreams (id, name, base_url) VALUES (?, ?, ?)",
+            (2, "Anthropic", "https://api.anthropic.com"),
         )
         conn.execute(
             "INSERT INTO target_models (id, name, upstream_id) VALUES (?, ?, ?)",
@@ -2198,6 +2211,7 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
             "output_tokens": 200,
             "cached_read_tokens": 0,
             "cached_write_tokens": 0,
+            "upstream_id": None,
             "status": "completed",
             "created_at": now,
         }
@@ -2207,8 +2221,8 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         conn.execute(
             "INSERT INTO token_stats (request_id, request_type, model, target_model, "
             "request_ts, duration_ms, input_tokens, output_tokens, cached_read_tokens, "
-            "cached_write_tokens, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "cached_write_tokens, upstream_id, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 d["request_id"],
                 d["request_type"],
@@ -2220,6 +2234,7 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
                 d["output_tokens"],
                 d["cached_read_tokens"],
                 d["cached_write_tokens"],
+                d.get("upstream_id"),
                 d["status"],
                 d["created_at"],
             ),
@@ -2280,6 +2295,7 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
             request_ts=ts,
             input_tokens=100,
             output_tokens=200,
+            upstream_id=1,
         )
         self._insert_token_stat(
             request_id="req-2",
@@ -2287,6 +2303,7 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
             request_ts=ts,
             input_tokens=50,
             output_tokens=100,
+            upstream_id=1,
         )
         self._setup_config_db()
 
@@ -2295,7 +2312,8 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
 
         self.assertEqual(len(result["upstreams"]), 1)
         up = result["upstreams"][0]
-        self.assertEqual(up["upstream_id"], "https://api.openai.com")
+        self.assertEqual(up["upstream_id"], 1)
+        self.assertEqual(up["upstream_name"], "OpenAI")
         self.assertEqual(up["request_count"], 2)
         self.assertEqual(up["input_tokens"], 150)
         self.assertEqual(up["output_tokens"], 300)
@@ -2318,24 +2336,26 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
 
         self.assertEqual(len(result["upstreams"]), 1)
         up = result["upstreams"][0]
-        self.assertEqual(up["upstream_id"], "https://api.openai.com")
+        self.assertEqual(up["upstream_id"], "[Hermes]")
+        self.assertEqual(up["upstream_name"], "[Hermes]")
         self.assertEqual(up["request_count"], 2)
         self.assertEqual(up["input_tokens"], 150)
         self.assertEqual(up["output_tokens"], 300)
 
     def test_merged_both_sources_same_upstream(self):
-        """token_stats 和 sessions 都指向同 upstream 时累加。"""
+        """token_stats 和 sessions 三源独立归桶，proxy→OpenAI，sessions→[Hermes]。"""
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
-        # token_stats: 100 input, 200 output
+        # token_stats: 100 input, 200 output → upstream_id=1
         self._insert_token_stat(
             request_id="proxy-1",
             target_model="qwen3.6-plus",
             request_ts=ts,
             input_tokens=100,
             output_tokens=200,
+            upstream_id=1,
         )
-        # sessions: 50 input, 100 output
+        # sessions: 50 input, 100 output → [Hermes]
         self._insert_session(
             model="qwen3.6-plus", started_at=ts, input_tokens=50, output_tokens=100
         )
@@ -2344,26 +2364,35 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         service = self._create_service()
         result = service.fetch_by_upstream("day")
 
-        self.assertEqual(len(result["upstreams"]), 1)
-        up = result["upstreams"][0]
-        self.assertEqual(up["upstream_id"], "https://api.openai.com")
-        self.assertEqual(up["request_count"], 2)  # 1 + 1
-        self.assertEqual(up["input_tokens"], 150)  # 100 + 50
-        self.assertEqual(up["output_tokens"], 300)  # 200 + 100
+        self.assertEqual(len(result["upstreams"]), 2)
+        openai = [up for up in result["upstreams"] if up["upstream_id"] == 1]
+        self.assertEqual(len(openai), 1)
+        self.assertEqual(openai[0]["upstream_name"], "OpenAI")
+        self.assertEqual(openai[0]["request_count"], 1)
+        self.assertEqual(openai[0]["input_tokens"], 100)
+        self.assertEqual(openai[0]["output_tokens"], 200)
+
+        hermes = [up for up in result["upstreams"] if up["upstream_id"] == "[Hermes]"]
+        self.assertEqual(len(hermes), 1)
+        self.assertEqual(hermes[0]["upstream_name"], "[Hermes]")
+        self.assertEqual(hermes[0]["request_count"], 1)
+        self.assertEqual(hermes[0]["input_tokens"], 50)
+        self.assertEqual(hermes[0]["output_tokens"], 100)
 
     def test_merged_different_upstreams(self):
         """不同 upstream 正确分组。"""
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
-        # token_stats → openai
+        # token_stats → openai (upstream_id=1)
         self._insert_token_stat(
             request_id="proxy-1",
             target_model="qwen3.6-plus",
             request_ts=ts,
             input_tokens=100,
             output_tokens=200,
+            upstream_id=1,
         )
-        # sessions → anthropic
+        # sessions → [Hermes]
         self._insert_session(
             model="claude-sonnet-4", started_at=ts, input_tokens=300, output_tokens=500
         )
@@ -2374,11 +2403,11 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
 
         self.assertEqual(len(result["upstreams"]), 2)
         upstream_ids = {up["upstream_id"] for up in result["upstreams"]}
-        self.assertIn("https://api.openai.com", upstream_ids)
-        self.assertIn("https://api.anthropic.com", upstream_ids)
+        self.assertIn(1, upstream_ids)
+        self.assertIn("[Hermes]", upstream_ids)
 
     def test_orphan_sessions_go_to_unknown(self):
-        """无法解析到 upstream 的 sessions 归入 __unknown__。"""
+        """无法解析到 upstream 的 sessions 归入 [Hermes]。"""
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
         # orphan session
@@ -2393,14 +2422,14 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         service = self._create_service()
         result = service.fetch_by_upstream("day")
 
-        unknown = [
-            up for up in result["upstreams"] if up["upstream_id"] == "__unknown__"
+        hermes = [
+            up for up in result["upstreams"] if up["upstream_id"] == "[Hermes]"
         ]
-        self.assertEqual(len(unknown), 1)
-        self.assertEqual(unknown[0]["request_count"], 1)
-        self.assertEqual(unknown[0]["input_tokens"], 100)
-        self.assertEqual(unknown[0]["output_tokens"], 200)
-        self.assertIsNone(unknown[0]["base_url"])
+        self.assertEqual(len(hermes), 1)
+        self.assertEqual(hermes[0]["request_count"], 1)
+        self.assertEqual(hermes[0]["input_tokens"], 100)
+        self.assertEqual(hermes[0]["output_tokens"], 200)
+        self.assertIsNone(hermes[0]["base_url"])
 
     def test_orphan_token_stats_go_to_unknown(self):
         """无法解析到 upstream 的 token_stats 也归入 __unknown__。"""
@@ -2419,7 +2448,7 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         result = service.fetch_by_upstream("day")
 
         unknown = [
-            up for up in result["upstreams"] if up["upstream_id"] == "__unknown__"
+            up for up in result["upstreams"] if up["upstream_name"] == "__unknown__"
         ]
         self.assertEqual(len(unknown), 1)
         self.assertEqual(unknown[0]["request_count"], 1)
@@ -2442,25 +2471,44 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
 
     def test_sorted_by_estimated_cost_cny_desc(self):
         """结果按 estimated_cost_cny 降序排列。"""
-        self._setup_pricing_db()
+        from proxy.pricing_manager import PricingDB
+
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
-        # openai: small tokens (qwen3.6-plus 种子定价: 0.325/1.95 USD)
+        # openai: cheaper pricing (0.325/1.95 USD)
         self._insert_token_stat(
             request_id="proxy-1",
             target_model="qwen3.6-plus",
             request_ts=ts,
             input_tokens=1000,
             output_tokens=2000,
+            upstream_id=1,
         )
-        # anthropic: large tokens (自定义定价: 10.0/20.0 USD)
-        self._insert_session(
-            model="claude-sonnet-4",
-            started_at=ts,
+        # anthropic: expensive pricing (10.0/20.0 USD)
+        self._insert_token_stat(
+            request_id="proxy-2",
+            target_model="claude-sonnet-4",
+            request_ts=ts,
             input_tokens=1000,
             output_tokens=2000,
+            upstream_id=2,
         )
         self._setup_config_db()
+        # Add pricing for upstream names (cost calculator receives upstream_name)
+        PricingDB(self.config_db).add_pricing({
+            "model_id": "Anthropic",
+            "display_name": "Anthropic Summary",
+            "input_cost_per_million": "10.0",
+            "output_cost_per_million": "20.0",
+            "currency": "USD",
+        })
+        PricingDB(self.config_db).add_pricing({
+            "model_id": "OpenAI",
+            "display_name": "OpenAI Summary",
+            "input_cost_per_million": "0.325",
+            "output_cost_per_million": "1.95",
+            "currency": "USD",
+        })
 
         service = self._create_service()
         result = service.fetch_by_upstream("day")
@@ -2468,14 +2516,14 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         self.assertEqual(len(result["upstreams"]), 2)
         # anthropic should be first (higher cost per token)
         self.assertEqual(
-            result["upstreams"][0]["upstream_id"], "https://api.anthropic.com"
+            result["upstreams"][0]["upstream_id"], 2
         )
         self.assertGreater(
             result["upstreams"][0]["estimated_cost_cny"],
             result["upstreams"][1]["estimated_cost_cny"],
         )
         self.assertEqual(
-            result["upstreams"][1]["upstream_id"], "https://api.openai.com"
+            result["upstreams"][1]["upstream_id"], 1
         )
 
     def test_base_url_correct(self):
@@ -2488,6 +2536,7 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
             request_ts=ts,
             input_tokens=100,
             output_tokens=200,
+            upstream_id=1,
         )
         self._setup_config_db()
 
@@ -2497,13 +2546,13 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         openai = [
             up
             for up in result["upstreams"]
-            if up["upstream_id"] == "https://api.openai.com"
+            if up["upstream_id"] == 1
         ]
         self.assertEqual(len(openai), 1)
         self.assertEqual(openai[0]["base_url"], "https://api.openai.com")
 
     def test_unknown_base_url_is_none(self):
-        """__unknown__ 的 base_url 为 None。"""
+        """[Hermes] 的 base_url 为 None。"""
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
         self._insert_session(
@@ -2514,11 +2563,11 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         service = self._create_service()
         result = service.fetch_by_upstream("day")
 
-        unknown = [
-            up for up in result["upstreams"] if up["upstream_id"] == "__unknown__"
+        hermes = [
+            up for up in result["upstreams"] if up["upstream_id"] == "[Hermes]"
         ]
-        self.assertEqual(len(unknown), 1)
-        self.assertIsNone(unknown[0]["base_url"])
+        self.assertEqual(len(hermes), 1)
+        self.assertIsNone(hermes[0]["base_url"])
 
     def test_config_db_not_exists_returns_empty(self):
         """config.db 不存在时返回空 upstreams。"""
@@ -2543,7 +2592,14 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         from proxy.pricing_manager import PricingDB
 
         PricingDB(self.config_db)  # 建表 + 种子数据
-        # 种子数据中 qwen3.6-plus: 0.325/1.95 USD → ×7 → 2.275/13.65 RMB
+        # 为 upstream 名称添加定价（fetch_by_upstream 按 upstream_name 计算成本）
+        PricingDB(self.config_db).add_pricing({
+            "model_id": "OpenAI",
+            "display_name": "OpenAI Summary",
+            "input_cost_per_million": "0.325",
+            "output_cost_per_million": "1.95",
+            "currency": "USD",
+        })
 
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -2553,6 +2609,7 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
             request_ts=ts,
             input_tokens=1000,
             output_tokens=2000,
+            upstream_id=1,
         )
         self._setup_config_db()
 
@@ -2586,7 +2643,7 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
             self.assertNotIn("cached_write_tokens", u)
 
     def test_session_and_token_orphan_merged_to_unknown(self):
-        """orphan sessions + orphan token_stats 都归入 __unknown__ 并合并。"""
+        """orphan token_stats → __unknown__，orphan sessions → [Hermes]，独立归桶。"""
         now = datetime.now()
         ts = now.strftime("%Y-%m-%d %H:%M:%S")
         # orphan token_stats
@@ -2597,7 +2654,7 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
             input_tokens=50,
             output_tokens=100,
         )
-        # orphan session
+        # orphan session → [Hermes]
         self._insert_session(
             model="orphan-model", started_at=ts, input_tokens=30, output_tokens=60
         )
@@ -2607,12 +2664,20 @@ class TestFetchByUpstreamMerged(unittest.TestCase):
         result = service.fetch_by_upstream("day")
 
         unknown = [
-            up for up in result["upstreams"] if up["upstream_id"] == "__unknown__"
+            up for up in result["upstreams"] if up["upstream_name"] == "__unknown__"
         ]
         self.assertEqual(len(unknown), 1)
-        self.assertEqual(unknown[0]["request_count"], 2)  # 1 + 1
-        self.assertEqual(unknown[0]["input_tokens"], 80)  # 50 + 30
-        self.assertEqual(unknown[0]["output_tokens"], 160)  # 100 + 60
+        self.assertEqual(unknown[0]["request_count"], 1)
+        self.assertEqual(unknown[0]["input_tokens"], 50)
+        self.assertEqual(unknown[0]["output_tokens"], 100)
+
+        hermes = [
+            up for up in result["upstreams"] if up["upstream_id"] == "[Hermes]"
+        ]
+        self.assertEqual(len(hermes), 1)
+        self.assertEqual(hermes[0]["request_count"], 1)
+        self.assertEqual(hermes[0]["input_tokens"], 30)
+        self.assertEqual(hermes[0]["output_tokens"], 60)
 
 
 class TestMerger(unittest.TestCase):
@@ -2894,10 +2959,11 @@ class TestFetchSummaryMerged(unittest.TestCase):
             request_ts TEXT NOT NULL, duration_ms INTEGER,
             input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0,
             cached_read_tokens INTEGER DEFAULT 0, cached_write_tokens INTEGER DEFAULT 0,
+            upstream_id INTEGER,
             status TEXT DEFAULT 'completed', created_at TEXT NOT NULL)""")
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn.execute(
-            "INSERT INTO token_stats VALUES (1,'r1','chat','m1','m1',?,100,100,50,20,10,'completed',?)",
+            "INSERT INTO token_stats VALUES (1,'r1','chat','m1','m1',?,100,100,50,20,10,NULL,'completed',?)",
             (now, now),
         )
         conn.commit()

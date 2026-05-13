@@ -747,3 +747,285 @@
 .unknown-upstream:hover {
   background: hsl(var(--red) / 0.06) !important;
 }
+
+/* ===== 请求日志 & 上游统计 — 数据终端风格 ===== */
+
+/* ─── 紧凑筛选栏 ─── */
+.filter-terminal {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.filter-terminal label {
+  font-size: 9px;
+  font-weight: 700;
+  color: hsl(var(--muted-foreground));
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.filter-terminal select {
+  padding: 5px 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 5px;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.filter-terminal select:focus {
+  border-color: hsl(190 80% 50% / 0.5);
+  box-shadow: 0 0 0 2px hsl(190 80% 50% / 0.08);
+}
+.filter-terminal .search-wrap {
+  position: relative;
+}
+.filter-terminal .search-wrap::before {
+  content: ">";
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  opacity: 0.5;
+}
+.filter-terminal .search-input {
+  padding: 5px 10px 5px 22px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 5px;
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  font-size: 12px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  outline: none;
+  width: 160px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.filter-terminal .search-input:focus {
+  border-color: hsl(190 80% 50% / 0.45);
+  box-shadow: 0 0 0 2px hsl(190 80% 50% / 0.06),
+              0 0 14px hsl(190 80% 50% / 0.04);
+}
+
+/* ─── 请求日志表 ─── */
+.req-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 1080px;
+}
+.req-table thead th {
+  font-size: 9px;
+  font-weight: 700;
+  color: hsl(var(--muted-foreground));
+  text-transform: uppercase;
+  letter-spacing: 0.9px;
+  padding: 10px 14px;
+  text-align: right;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--secondary) / 0.35);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  white-space: nowrap;
+}
+.req-table thead th:first-child {
+  text-align: left;
+  padding-left: 20px;
+}
+.req-table tbody td {
+  padding: 10px 14px;
+  font-size: 12px;
+  text-align: right;
+  border-bottom: 1px solid hsl(var(--border) / 0.35);
+  color: hsl(var(--foreground));
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+}
+.req-table tbody td:first-child {
+  text-align: left;
+  font-weight: 600;
+}
+.req-table tbody tr {
+  border-left: 3px solid transparent;
+  transition: background 0.12s, border-color 0.25s;
+}
+.req-table tbody tr:hover {
+  background: hsl(var(--primary) / 0.025);
+}
+.req-table tbody tr[data-type="session"] {
+  border-left-color: hsl(var(--purple) / 0.3);
+}
+.req-table tbody tr[data-type="session"]:hover {
+  border-left-color: hsl(var(--purple) / 0.65);
+}
+.req-table tbody tr[data-type="proxy"] {
+  border-left-color: hsl(190 80% 50% / 0.3);
+}
+.req-table tbody tr[data-type="proxy"]:hover {
+  border-left-color: hsl(190 80% 50% / 0.65);
+}
+
+/* 类型 Badge — 终端风格 */
+.type-badge-term {
+  display: inline-block;
+  padding: 1px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  border-radius: 3px;
+  border: 1px solid;
+}
+.type-badge-term.proxy {
+  color: hsl(190 80% 50%);
+  border-color: hsl(190 80% 50% / 0.3);
+  background: hsl(190 80% 50% / 0.06);
+}
+.type-badge-term.session {
+  color: hsl(var(--purple));
+  border-color: hsl(var(--purple) / 0.3);
+  background: hsl(var(--purple) / 0.06);
+}
+
+/* 成本药片 */
+.cost-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: hsl(var(--red) / 0.08);
+  color: hsl(var(--red));
+  border: 1px solid hsl(var(--red) / 0.12);
+}
+
+/* ─── 上游统计表 ─── */
+.up-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 880px;
+}
+.up-table thead th {
+  font-size: 9px;
+  font-weight: 700;
+  color: hsl(var(--muted-foreground));
+  text-transform: uppercase;
+  letter-spacing: 0.9px;
+  padding: 10px 14px;
+  text-align: right;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--secondary) / 0.35);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  white-space: nowrap;
+}
+.up-table thead th:first-child {
+  text-align: left;
+  padding-left: 20px;
+}
+.up-table tbody td {
+  padding: 12px 14px;
+  font-size: 12px;
+  text-align: right;
+  border-bottom: 1px solid hsl(var(--border) / 0.35);
+  color: hsl(var(--foreground));
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+}
+.up-table tbody td:first-child {
+  text-align: left;
+  font-weight: 600;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 12px;
+}
+.up-table tbody tr:hover {
+  background: hsl(var(--primary) / 0.025);
+}
+.up-table tbody tr.is-unknown {
+  opacity: 0.5;
+}
+
+/* 上游占比条 */
+.up-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.up-bar-track {
+  flex: 1;
+  height: 4px;
+  background: hsl(var(--secondary));
+  border-radius: 2px;
+  overflow: hidden;
+  min-width: 50px;
+  max-width: 110px;
+}
+.up-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+.up-bar-fill.cyan {
+  background: linear-gradient(90deg, hsl(190 80% 50%), hsl(var(--blue)));
+}
+.up-bar-fill.amber {
+  background: linear-gradient(90deg, hsl(var(--orange)), hsl(var(--red)));
+}
+.up-bar-pct {
+  font-size: 11px;
+  font-weight: 600;
+  color: hsl(var(--muted-foreground));
+  font-variant-numeric: tabular-nums;
+  min-width: 40px;
+  text-align: right;
+}
+
+/* ─── 分页终端风格 ─── */
+.pagination-terminal {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 4px;
+}
+.pagination-terminal .info {
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+}
+.pagination-terminal .btns {
+  display: flex;
+  gap: 4px;
+}
+.pagination-terminal .btns button {
+  padding: 4px 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 4px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+.pagination-terminal .btns button:hover:not(:disabled) {
+  color: hsl(var(--foreground));
+  border-color: hsl(var(--primary) / 0.3);
+  background: hsl(var(--primary) / 0.05);
+}
+.pagination-terminal .btns button:disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
+}
+.pagination-terminal .btns button.active {
+  color: hsl(190 80% 50%);
+  border-color: hsl(190 80% 50% / 0.4);
+  background: hsl(190 80% 50% / 0.08);
+}

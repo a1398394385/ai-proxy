@@ -11,10 +11,10 @@ class TestConfigIntegration(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmp.name) / "config.db"
         self.db = ConfigDB(self.db_path)
-        self.db.add_upstream({"id": "up-a", "base_url": "http://a:4000", "api_key": "sk-a"})
-        self.db.add_upstream({"id": "up-b", "base_url": "http://b:5000", "api_key": "sk-b"})
-        self.m1 = self.db.add_model({"name": "qwen", "upstream_id": "up-a", "multimodal": 1})
-        self.m2 = self.db.add_model({"name": "claude", "upstream_id": "up-b", "multimodal": 0})
+        self.id_a = self.db.add_upstream({"name": "up-a", "base_url": "http://a:4000", "api_key": "sk-a"})
+        self.id_b = self.db.add_upstream({"name": "up-b", "base_url": "http://b:5000", "api_key": "sk-b"})
+        self.m1 = self.db.add_model({"name": "qwen", "upstream_id": self.id_a, "multimodal": 1})
+        self.m2 = self.db.add_model({"name": "claude", "upstream_id": self.id_b, "multimodal": 0})
         self.db.add_route({"source": "gpt-4", "target_model_id": self.m1})
         self.db.add_route({"source": "codex-mini", "target_model_id": self.m1})
         self.db.add_route({"source": "*", "target_model_id": self.m2})
@@ -36,13 +36,13 @@ class TestConfigIntegration(unittest.TestCase):
         self.assertEqual(cfg["target_name"], "claude")
 
     def test_disable_upstream_affects_resolve(self):
-        self.db.disable_upstream("up-a")
+        self.db.disable_upstream(self.id_a)
         cache = ConfigCache(self.db_path)
         cfg = cache.resolve("gpt-4")
         self.assertEqual(cfg["target_name"], "claude")
 
     def test_star_fallback_validation(self):
-        self.db.disable_upstream("up-b")
+        self.db.disable_upstream(self.id_b)
         self.assertFalse(self.db.validate_star_fallback())
 
     def test_model_referenced_routes_precheck(self):
@@ -51,7 +51,7 @@ class TestConfigIntegration(unittest.TestCase):
         self.assertGreater(len(refs), 0)
 
     def test_upstream_active_routes(self):
-        refs = self.db.upstream_active_routes("up-a")
+        refs = self.db.upstream_active_routes(self.id_a)
         self.assertIn("gpt-4", refs)
 
     def test_get_counts(self):

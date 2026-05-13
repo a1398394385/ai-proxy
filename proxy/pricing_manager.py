@@ -196,9 +196,15 @@ class PricingDB:
                     cache_read_cost_per_million     TEXT NOT NULL DEFAULT '0',
                     cache_creation_cost_per_million TEXT NOT NULL DEFAULT '0',
                     currency                        TEXT NOT NULL DEFAULT 'USD'
-                                                    CHECK(currency IN ('USD', 'RMB'))
+                                                    CHECK(currency IN ('USD', 'RMB')),
+                    multiplier                      TEXT NOT NULL DEFAULT '1.0'
                 )
             """)
+            # 兼容旧库：确保 multiplier 列存在
+            try:
+                conn.execute("ALTER TABLE model_pricing ADD COLUMN multiplier TEXT NOT NULL DEFAULT '1.0'")
+            except Exception:
+                pass
             # 只在表为空时导入种子数据
             count = conn.execute("SELECT COUNT(*) FROM model_pricing").fetchone()[0]
             if count == 0:
@@ -265,13 +271,20 @@ class PricingDB:
             except (ValueError, TypeError):
                 raise ValueError(f"{field} 必须为合法数字，收到: {val}")
 
+        multiplier = data.get("multiplier", "1.0")
+        try:
+            float(multiplier)
+        except (ValueError, TypeError):
+            raise ValueError(f"multiplier 必须为合法数字，收到: {multiplier}")
+
         conn = self._connect()
         try:
             conn.execute(
                 "INSERT INTO model_pricing (model_id, display_name, "
                 "input_cost_per_million, output_cost_per_million, "
-                "cache_read_cost_per_million, cache_creation_cost_per_million, currency) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "cache_read_cost_per_million, cache_creation_cost_per_million, "
+                "currency, multiplier) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     model_id,
                     data["display_name"],
@@ -280,6 +293,7 @@ class PricingDB:
                     data.get("cache_read_cost_per_million", "0"),
                     data.get("cache_creation_cost_per_million", "0"),
                     currency,
+                    multiplier,
                 ),
             )
             conn.commit()
@@ -297,7 +311,8 @@ class PricingDB:
             raise ValueError(f"currency 必须为 USD 或 RMB，收到: {data['currency']}")
 
         for field in ("input_cost_per_million", "output_cost_per_million",
-                      "cache_read_cost_per_million", "cache_creation_cost_per_million"):
+                      "cache_read_cost_per_million", "cache_creation_cost_per_million",
+                      "multiplier"):
             if field in data:
                 try:
                     float(data[field])
@@ -306,7 +321,8 @@ class PricingDB:
 
         updatable = [
             "display_name", "input_cost_per_million", "output_cost_per_million",
-            "cache_read_cost_per_million", "cache_creation_cost_per_million", "currency",
+            "cache_read_cost_per_million", "cache_creation_cost_per_million",
+            "currency", "multiplier",
         ]
         sets = []
         vals = []

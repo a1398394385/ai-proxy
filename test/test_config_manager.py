@@ -80,8 +80,8 @@ class TestUpstreamCRUD(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_add_and_list_upstreams(self):
-        self.db.add_upstream({
-            "id": "litellm-prod",
+        uid = self.db.add_upstream({
+            "name": "litellm-prod",
             "base_url": "https://llm.cargoware.com/v1",
             "api_key": "sk-test123",
             "timeout": 120,
@@ -89,39 +89,40 @@ class TestUpstreamCRUD(unittest.TestCase):
             "ssl_verify": 1,
             "retry": 2,
         })
+        self.assertIsInstance(uid, int)
         upstreams = self.db.list_upstreams()
         self.assertEqual(len(upstreams), 1)
-        self.assertEqual(upstreams[0]["id"], "litellm-prod")
+        self.assertEqual(upstreams[0]["name"], "litellm-prod")
         self.assertEqual(upstreams[0]["api_key"], "sk-test123")
 
     def test_get_upstream(self):
-        self.db.add_upstream({"id": "test-up", "base_url": "http://x"})
-        u = self.db.get_upstream("test-up")
+        uid = self.db.add_upstream({"name": "test-up", "base_url": "http://x"})
+        u = self.db.get_upstream(uid)
         self.assertEqual(u["base_url"], "http://x")
 
     def test_get_upstream_not_found(self):
-        self.assertIsNone(self.db.get_upstream("nonexistent"))
+        self.assertIsNone(self.db.get_upstream(999))
 
     def test_update_upstream(self):
-        self.db.add_upstream({"id": "test-up", "base_url": "http://x"})
-        self.db.update_upstream("test-up", {"base_url": "http://y", "timeout": 60})
-        u = self.db.get_upstream("test-up")
+        uid = self.db.add_upstream({"name": "test-up", "base_url": "http://x"})
+        self.db.update_upstream(uid, {"base_url": "http://y", "timeout": 60})
+        u = self.db.get_upstream(uid)
         self.assertEqual(u["base_url"], "http://y")
         self.assertEqual(u["timeout"], 60)
 
     def test_disable_upstream(self):
-        self.db.add_upstream({"id": "test-up", "base_url": "http://x"})
-        self.db.disable_upstream("test-up")
-        u = self.db.get_upstream("test-up")
+        uid = self.db.add_upstream({"name": "test-up", "base_url": "http://x"})
+        self.db.disable_upstream(uid)
+        u = self.db.get_upstream(uid)
         self.assertEqual(u["is_active"], 0)
 
     def test_list_upstreams_active_only(self):
-        self.db.add_upstream({"id": "up-a", "base_url": "http://a"})
-        self.db.add_upstream({"id": "up-b", "base_url": "http://b"})
-        self.db.disable_upstream("up-b")
+        uid_a = self.db.add_upstream({"name": "up-a", "base_url": "http://a"})
+        uid_b = self.db.add_upstream({"name": "up-b", "base_url": "http://b"})
+        self.db.disable_upstream(uid_b)
         active = self.db.list_upstreams(active_only=True)
         self.assertEqual(len(active), 1)
-        self.assertEqual(active[0]["id"], "up-a")
+        self.assertEqual(active[0]["name"], "up-a")
 
 
 class TestModelCRUD(unittest.TestCase):
@@ -130,15 +131,15 @@ class TestModelCRUD(unittest.TestCase):
         self.db_path = Path(self.tmp.name) / "config.db"
         from proxy.config_manager import ConfigDB
         self.db = ConfigDB(self.db_path)
-        self.db.add_upstream({"id": "up-a", "base_url": "http://a"})
-        self.db.add_upstream({"id": "up-b", "base_url": "http://b"})
+        self.id_a = self.db.add_upstream({"name": "up-a", "base_url": "http://a"})
+        self.id_b = self.db.add_upstream({"name": "up-b", "base_url": "http://b"})
 
     def tearDown(self):
         self.db.close()
         self.tmp.cleanup()
 
     def test_add_and_list_models(self):
-        mid = self.db.add_model({"name": "qwen-plus", "upstream_id": "up-a"})
+        mid = self.db.add_model({"name": "qwen-plus", "upstream_id": self.id_a})
         self.assertIsInstance(mid, int)
         models = self.db.list_models()
         self.assertEqual(len(models), 1)
@@ -146,37 +147,37 @@ class TestModelCRUD(unittest.TestCase):
         self.assertEqual(models[0]["upstream_name"], "up-a")
 
     def test_list_models_filter_by_upstream(self):
-        self.db.add_model({"name": "qwen-a", "upstream_id": "up-a"})
-        self.db.add_model({"name": "qwen-b", "upstream_id": "up-b"})
-        models_a = self.db.list_models(upstream_id="up-a")
+        self.db.add_model({"name": "qwen-a", "upstream_id": self.id_a})
+        self.db.add_model({"name": "qwen-b", "upstream_id": self.id_b})
+        models_a = self.db.list_models(upstream_id=self.id_a)
         self.assertEqual(len(models_a), 1)
         self.assertEqual(models_a[0]["name"], "qwen-a")
 
     def test_add_duplicate_model_same_upstream_raises(self):
-        self.db.add_model({"name": "qwen", "upstream_id": "up-a"})
+        self.db.add_model({"name": "qwen", "upstream_id": self.id_a})
         with self.assertRaises(sqlite3.IntegrityError):
-            self.db.add_model({"name": "qwen", "upstream_id": "up-a"})
+            self.db.add_model({"name": "qwen", "upstream_id": self.id_a})
 
     def test_same_name_different_upstream_ok(self):
-        self.db.add_model({"name": "qwen", "upstream_id": "up-a"})
-        mid = self.db.add_model({"name": "qwen", "upstream_id": "up-b"})
+        self.db.add_model({"name": "qwen", "upstream_id": self.id_a})
+        mid = self.db.add_model({"name": "qwen", "upstream_id": self.id_b})
         self.assertIsInstance(mid, int)
 
     def test_update_model(self):
-        mid = self.db.add_model({"name": "qwen", "upstream_id": "up-a"})
+        mid = self.db.add_model({"name": "qwen", "upstream_id": self.id_a})
         self.db.update_model(mid, {"name": "qwen-plus", "multimodal": 0})
         m = self.db.get_model(mid)
         self.assertEqual(m["name"], "qwen-plus")
         self.assertEqual(m["multimodal"], 0)
 
     def test_delete_model(self):
-        mid = self.db.add_model({"name": "qwen", "upstream_id": "up-a"})
+        mid = self.db.add_model({"name": "qwen", "upstream_id": self.id_a})
         result = self.db.delete_model(mid)
         self.assertIn("message", result)
         self.assertIsNone(self.db.get_model(mid))
 
     def test_delete_model_referenced_by_route_raises(self):
-        mid = self.db.add_model({"name": "qwen", "upstream_id": "up-a"})
+        mid = self.db.add_model({"name": "qwen", "upstream_id": self.id_a})
         self.db.add_route({"source": "gpt-4", "target_model_id": mid})
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.delete_model(mid, check_refs=False)
@@ -188,7 +189,7 @@ class TestModelCRUD(unittest.TestCase):
         conn.close()
 
     def test_model_referenced_routes(self):
-        mid = self.db.add_model({"name": "qwen", "upstream_id": "up-a"})
+        mid = self.db.add_model({"name": "qwen", "upstream_id": self.id_a})
         self.db.add_route({"source": "gpt-4", "target_model_id": mid})
         self.db.add_route({"source": "o4-mini", "target_model_id": mid})
         refs = self.db.model_referenced_routes(mid)
@@ -201,11 +202,11 @@ class TestDeleteUpstream(unittest.TestCase):
         self.db_path = Path(self.tmp.name) / "config.db"
         from proxy.config_manager import ConfigDB
         self.db = ConfigDB(self.db_path)
-        self.db.add_upstream({"id": "up-a", "base_url": "http://a"})
-        self.db.add_upstream({"id": "up-b", "base_url": "http://b"})
-        self.m1 = self.db.add_model({"name": "gpt-4", "upstream_id": "up-a"})
-        self.m2 = self.db.add_model({"name": "gpt-35", "upstream_id": "up-a"})
-        self.m3 = self.db.add_model({"name": "claude", "upstream_id": "up-b"})
+        self.id_a = self.db.add_upstream({"name": "up-a", "base_url": "http://a"})
+        self.id_b = self.db.add_upstream({"name": "up-b", "base_url": "http://b"})
+        self.m1 = self.db.add_model({"name": "gpt-4", "upstream_id": self.id_a})
+        self.m2 = self.db.add_model({"name": "gpt-35", "upstream_id": self.id_a})
+        self.m3 = self.db.add_model({"name": "claude", "upstream_id": self.id_b})
 
     def tearDown(self):
         self.db.close()
@@ -213,28 +214,28 @@ class TestDeleteUpstream(unittest.TestCase):
 
     def test_delete_upstream_with_models_no_refs(self):
         """无路由引用时，删除上游及其关联模型。"""
-        self.db.delete_upstream_with_models("up-a")
+        self.db.delete_upstream_with_models(self.id_a)
         # 上游已删除
-        self.assertIsNone(self.db.get_upstream("up-a"))
+        self.assertIsNone(self.db.get_upstream(self.id_a))
         # 关联模型已删除
-        models = self.db.list_models(upstream_id="up-a")
+        models = self.db.list_models(upstream_id=self.id_a)
         self.assertEqual(len(models), 0)
         # 其他上游不受影响
-        self.assertIsNotNone(self.db.get_upstream("up-b"))
-        self.assertEqual(len(self.db.list_models(upstream_id="up-b")), 1)
+        self.assertIsNotNone(self.db.get_upstream(self.id_b))
+        self.assertEqual(len(self.db.list_models(upstream_id=self.id_b)), 1)
 
     def test_delete_upstream_cascades_to_models(self):
         """验证删除上游后，该上游下的模型全部被删除。"""
         # 确认 up-a 下有 2 个模型
-        models_before = self.db.list_models(upstream_id="up-a")
+        models_before = self.db.list_models(upstream_id=self.id_a)
         self.assertEqual(len(models_before), 2)
 
-        self.db.delete_upstream_with_models("up-a")
+        self.db.delete_upstream_with_models(self.id_a)
 
         # 上游已不存在
-        self.assertIsNone(self.db.get_upstream("up-a"))
+        self.assertIsNone(self.db.get_upstream(self.id_a))
         # 模型也全部消失
-        models_after = self.db.list_models(upstream_id="up-a")
+        models_after = self.db.list_models(upstream_id=self.id_a)
         self.assertEqual(len(models_after), 0)
 
     def test_delete_upstream_rollback_on_error(self):
@@ -267,13 +268,13 @@ class TestDeleteUpstream(unittest.TestCase):
 
         try:
             with self.assertRaises(RuntimeError):
-                self.db.delete_upstream_with_models("up-a")
+                self.db.delete_upstream_with_models(self.id_a)
         finally:
             self.db._connect = original_connect
 
         # 验证回滚：上游和模型仍然存在
-        self.assertIsNotNone(self.db.get_upstream("up-a"))
-        models_after = self.db.list_models(upstream_id="up-a")
+        self.assertIsNotNone(self.db.get_upstream(self.id_a))
+        models_after = self.db.list_models(upstream_id=self.id_a)
         self.assertEqual(len(models_after), 2)
 
 
@@ -283,8 +284,8 @@ class TestRouteCRUD(unittest.TestCase):
         self.db_path = Path(self.tmp.name) / "config.db"
         from proxy.config_manager import ConfigDB
         self.db = ConfigDB(self.db_path)
-        self.db.add_upstream({"id": "up-a", "base_url": "http://a"})
-        self.mid = self.db.add_model({"name": "qwen", "upstream_id": "up-a"})
+        self.id_a = self.db.add_upstream({"name": "up-a", "base_url": "http://a"})
+        self.mid = self.db.add_model({"name": "qwen", "upstream_id": self.id_a})
 
     def tearDown(self):
         self.db.close()
@@ -306,7 +307,7 @@ class TestRouteCRUD(unittest.TestCase):
 
     def test_update_route(self):
         rid = self.db.add_route({"source": "gpt-4", "target_model_id": self.mid})
-        mid2 = self.db.add_model({"name": "claude", "upstream_id": "up-a"})
+        mid2 = self.db.add_model({"name": "claude", "upstream_id": self.id_a})
         self.db.update_route(rid, {"source": "gpt-4o", "target_model_id": mid2})
         r = self.db.get_route(rid)
         self.assertEqual(r["source"], "gpt-4o")
@@ -324,7 +325,7 @@ class TestRouteCRUD(unittest.TestCase):
     def test_update_route_allows_fallback_update_without_source(self):
         """编辑回退路由时不传 source 字段 → 正常更新（如只改目标模型）。"""
         rid = self.db.add_route({"source": "*", "target_model_id": self.mid})
-        mid2 = self.db.add_model({"name": "claude", "upstream_id": "up-a"})
+        mid2 = self.db.add_model({"name": "claude", "upstream_id": self.id_a})
         # 不传 source，只改 target_model_id
         self.db.update_route(rid, {"target_model_id": mid2})
         r = self.db.get_route(rid)
@@ -338,7 +339,7 @@ class TestRouteCRUD(unittest.TestCase):
     def test_fk_restrict_upstream_delete(self):
         with self.assertRaises(sqlite3.IntegrityError):
             conn = self.db._connect()
-            conn.execute("DELETE FROM upstreams WHERE id = ?", ("up-a",))
+            conn.execute("DELETE FROM upstreams WHERE id = ?", (self.id_a,))
             conn.close()
 
 
@@ -348,10 +349,10 @@ class TestResolveModel(unittest.TestCase):
         self.db_path = Path(self.tmp.name) / "config.db"
         from proxy.config_manager import ConfigDB
         self.db = ConfigDB(self.db_path)
-        self.db.add_upstream({"id": "up-a", "base_url": "http://a", "api_key": "sk-a"})
-        self.db.add_upstream({"id": "up-b", "base_url": "http://b", "api_key": "sk-b"})
-        self.m1 = self.db.add_model({"name": "qwen", "upstream_id": "up-a"})
-        self.m2 = self.db.add_model({"name": "claude", "upstream_id": "up-b"})
+        self.id_a = self.db.add_upstream({"name": "up-a", "base_url": "http://a", "api_key": "sk-a"})
+        self.id_b = self.db.add_upstream({"name": "up-b", "base_url": "http://b", "api_key": "sk-b"})
+        self.m1 = self.db.add_model({"name": "qwen", "upstream_id": self.id_a})
+        self.m2 = self.db.add_model({"name": "claude", "upstream_id": self.id_b})
 
     def tearDown(self):
         self.db.close()
@@ -371,7 +372,7 @@ class TestResolveModel(unittest.TestCase):
     def test_resolve_skip_disabled_upstream(self):
         self.db.add_route({"source": "gpt-4", "target_model_id": self.m1})
         self.db.add_route({"source": "*", "target_model_id": self.m2})
-        self.db.disable_upstream("up-a")
+        self.db.disable_upstream(self.id_a)
         cfg = self.db.resolve_model("gpt-4")
         self.assertEqual(cfg["target_name"], "claude")
 
@@ -381,7 +382,7 @@ class TestResolveModel(unittest.TestCase):
 
     def test_resolve_none_when_star_also_disabled(self):
         self.db.add_route({"source": "*", "target_model_id": self.m1})
-        self.db.disable_upstream("up-a")
+        self.db.disable_upstream(self.id_a)
         cfg = self.db.resolve_model("anything")
         self.assertIsNone(cfg)
 
@@ -396,7 +397,7 @@ class TestResolveModel(unittest.TestCase):
     def test_get_all_routes_skips_disabled_upstream(self):
         self.db.add_route({"source": "gpt-4", "target_model_id": self.m1})
         self.db.add_route({"source": "*", "target_model_id": self.m2})
-        self.db.disable_upstream("up-a")
+        self.db.disable_upstream(self.id_a)
         all_routes = self.db.get_all_routes()
         self.assertNotIn("gpt-4", all_routes)
         self.assertIn("*", all_routes)
@@ -420,8 +421,8 @@ class TestConfigCache(unittest.TestCase):
         self.db_path = Path(self.tmp.name) / "config.db"
         from proxy.config_manager import ConfigDB, ConfigCache
         self.db = ConfigDB(self.db_path)
-        self.db.add_upstream({"id": "up-a", "base_url": "http://a"})
-        self.m1 = self.db.add_model({"name": "qwen", "upstream_id": "up-a"})
+        self.id_a = self.db.add_upstream({"name": "up-a", "base_url": "http://a"})
+        self.m1 = self.db.add_model({"name": "qwen", "upstream_id": self.id_a})
         self.db.add_route({"source": "*", "target_model_id": self.m1})
 
     def tearDown(self):
@@ -438,7 +439,7 @@ class TestConfigCache(unittest.TestCase):
         from proxy.config_manager import ConfigCache
         cache = ConfigCache(self.db_path)
         cfg1 = cache.resolve("*")
-        m2 = self.db.add_model({"name": "claude", "upstream_id": "up-a"})
+        m2 = self.db.add_model({"name": "claude", "upstream_id": self.id_a})
         star_rid = self.db.get_route_by_source("*")["id"]
         self.db.update_route(star_rid, {"target_model_id": m2})
         cfg2 = cache.resolve("*")
@@ -448,7 +449,7 @@ class TestConfigCache(unittest.TestCase):
         from proxy.config_manager import ConfigCache
         cache = ConfigCache(self.db_path)
         cfg1 = cache.resolve("*")
-        m2 = self.db.add_model({"name": "claude", "upstream_id": "up-a"})
+        m2 = self.db.add_model({"name": "claude", "upstream_id": self.id_a})
         star_rid = self.db.get_route_by_source("*")["id"]
         self.db.update_route(star_rid, {"target_model_id": m2})
         cache.reload()
@@ -468,10 +469,10 @@ class TestRouteProxyType(unittest.TestCase):
         self.db_path = Path(self.tmp.name) / "config.db"
         from proxy.config_manager import ConfigDB
         self.db = ConfigDB(self.db_path)
-        self.db.add_upstream({"id": "up-a", "base_url": "http://a", "api_key": "sk-a"})
-        self.db.add_upstream({"id": "up-b", "base_url": "http://b", "api_key": "sk-b"})
-        self.m1 = self.db.add_model({"name": "qwen", "upstream_id": "up-a"})
-        self.m2 = self.db.add_model({"name": "claude", "upstream_id": "up-b"})
+        self.id_a = self.db.add_upstream({"name": "up-a", "base_url": "http://a", "api_key": "sk-a"})
+        self.id_b = self.db.add_upstream({"name": "up-b", "base_url": "http://b", "api_key": "sk-b"})
+        self.m1 = self.db.add_model({"name": "qwen", "upstream_id": self.id_a})
+        self.m2 = self.db.add_model({"name": "claude", "upstream_id": self.id_b})
 
     def tearDown(self):
         self.db.close()
@@ -515,4 +516,108 @@ class TestRouteProxyType(unittest.TestCase):
         self.assertEqual(responses_result["target_name"], "qwen")
         self.assertEqual(messages_result["target_name"], "claude")
         self.assertNotEqual(responses_result["target_name"], messages_result["target_name"])
+
+
+class TestMigrations(unittest.TestCase):
+    """Migrations 测试。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "config.db"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _create_v4_db(self):
+        """创建 v4 schema 的数据库。"""
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (4);
+
+            CREATE TABLE upstreams (
+                id              TEXT PRIMARY KEY,
+                base_url        TEXT NOT NULL,
+                api_key         TEXT NOT NULL DEFAULT '',
+                timeout         INTEGER NOT NULL DEFAULT 600,
+                connect_timeout INTEGER NOT NULL DEFAULT 10,
+                ssl_verify      INTEGER NOT NULL DEFAULT 1,
+                retry           INTEGER NOT NULL DEFAULT 1,
+                is_active       INTEGER NOT NULL DEFAULT 1,
+                format          TEXT NOT NULL DEFAULT 'chat_completions',
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO upstreams (id, base_url) VALUES ('openai', 'https://api.openai.com');
+            INSERT INTO upstreams (id, base_url) VALUES ('anthropic', 'https://api.anthropic.com');
+
+            CREATE TABLE target_models (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT NOT NULL,
+                upstream_id TEXT NOT NULL REFERENCES upstreams(id) ON DELETE RESTRICT,
+                multimodal  INTEGER NOT NULL DEFAULT 1,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(name, upstream_id)
+            );
+            INSERT INTO target_models (name, upstream_id) VALUES ('gpt-4', 'openai');
+            INSERT INTO target_models (name, upstream_id) VALUES ('claude-3', 'anthropic');
+
+            CREATE TABLE model_routes (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                source          TEXT NOT NULL,
+                target_model_id INTEGER NOT NULL REFERENCES target_models(id) ON DELETE RESTRICT,
+                request_type    TEXT NOT NULL DEFAULT 'responses',
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(source, request_type)
+            );
+        """)
+        conn.commit()
+        conn.close()
+
+    def test_v5_migration_adds_name_column(self):
+        """v4 → v5 迁移应添加 name 列并将旧 id 复制为 name。"""
+        from proxy.config_manager import Migrations
+        self._create_v4_db()
+
+        m = Migrations(self.db_path)
+        result = m.migrate()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["version"], 5)
+
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            # 检查 name 列存在
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info('upstreams')").fetchall()}
+            self.assertIn("name", cols)
+            # 检查 id 是 INTEGER
+            id_type = None
+            for r in conn.execute("PRAGMA table_info('upstreams')").fetchall():
+                if r["name"] == "id":
+                    id_type = r["type"]
+                    break
+            self.assertEqual(id_type.upper(), "INTEGER")
+            # 检查数据正确
+            rows = conn.execute("SELECT id, name, base_url FROM upstreams ORDER BY id").fetchall()
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["name"], "openai")  # 旧 id → name
+            self.assertEqual(rows[0]["base_url"], "https://api.openai.com")
+            self.assertIsInstance(rows[0]["id"], int)
+            # 检查 target_models 的 upstream_id 已映射为 INTEGER
+            models = conn.execute("SELECT name, upstream_id FROM target_models ORDER BY id").fetchall()
+            self.assertEqual(models[0]["upstream_id"], rows[0]["id"])
+        finally:
+            conn.close()
+
+    def test_v5_migration_is_idempotent_when_already_done(self):
+        """已迁移到 v5 的数据库再次调用 migrate() 应返回 already_migrated。"""
+        from proxy.config_manager import Migrations
+        self._create_v4_db()
+
+        m = Migrations(self.db_path)
+        m.migrate()  # 第一次迁移
+        result = m.migrate()  # 第二次迁移
+        self.assertEqual(result["status"], "already_migrated")
 

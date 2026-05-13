@@ -36,9 +36,10 @@ class RequestLogger:
                     model       TEXT,
                     target_model TEXT,
                     status_code INTEGER,
-                    proxy_type  TEXT,
-                    data        TEXT,
-                    created_at  TEXT NOT NULL
+                    proxy_type   TEXT,
+                    request_path TEXT,
+                    data         TEXT,
+                    created_at   TEXT NOT NULL
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_debug_request_id ON debug_log(request_id)")
@@ -80,7 +81,7 @@ class RequestLogger:
         pass
 
     def _migrate_access_log(self):
-        """Auto-migration: 备份并重命名 proxy_type→request_type, agent→request_type。"""
+        """Auto-migration: 备份并重命名 proxy_type→request_type, agent→request_type, 添加 request_path。"""
         conn = self._get_conn()
         try:
             cols_debug = {row[1] for row in conn.execute('PRAGMA table_info(debug_log)')}
@@ -99,11 +100,19 @@ class RequestLogger:
                 if needs_stats:
                     conn.execute('ALTER TABLE token_stats RENAME COLUMN agent TO request_type')
 
-                conn.commit()
+            # request_path 列迁移
+            if 'request_path' not in cols_debug:
+                ts = time.strftime('%Y%m%d_%H%M%S')
+                backup_path = self.db_path.with_suffix('.db.bak.' + ts)
+                shutil.copy2(self.db_path, backup_path)
+                conn.execute('ALTER TABLE debug_log ADD COLUMN request_path TEXT')
+
+            conn.commit()
         finally:
             conn.close()
 
-    def log_raw_request(self, request_id: str, model: str, target: str, body: str | dict, request_type: str = None):
+    def log_raw_request(self, request_id: str, model: str, target: str, body: str | dict,
+                        request_type: str = None, request_path: str = None):
         """阶段 1：记录 agent 原始请求。"""
         try:
             conn = self._get_conn()
@@ -111,9 +120,9 @@ class RequestLogger:
                 data = body if isinstance(body, str) else json.dumps(body)
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn.execute(
-                    "INSERT INTO debug_log (request_id, stage, model, target_model, request_type, data, created_at) "
-                    "VALUES (?, 'raw_request', ?, ?, ?, ?, ?)",
-                    (request_id, model, target, request_type, data, now),
+                    "INSERT INTO debug_log (request_id, stage, model, target_model, request_type, request_path, data, created_at) "
+                    "VALUES (?, 'raw_request', ?, ?, ?, ?, ?, ?)",
+                    (request_id, model, target, request_type, request_path, data, now),
                 )
                 conn.commit()
             finally:
@@ -121,7 +130,8 @@ class RequestLogger:
         except Exception as e:
             logging.warning(f"日志写入失败 (raw_request): {e}")
 
-    def log_converted_request(self, request_id: str, model: str, target: str, body: dict, request_type: str = None):
+    def log_converted_request(self, request_id: str, model: str, target: str, body: dict,
+                              request_type: str = None, request_path: str = None):
         """阶段 2：记录 proxy 转换后的请求。"""
         try:
             conn = self._get_conn()
@@ -129,9 +139,9 @@ class RequestLogger:
                 data = json.dumps(body)
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn.execute(
-                    "INSERT INTO debug_log (request_id, stage, model, target_model, request_type, data, created_at) "
-                    "VALUES (?, 'converted_request', ?, ?, ?, ?, ?)",
-                    (request_id, model, target, request_type, data, now),
+                    "INSERT INTO debug_log (request_id, stage, model, target_model, request_type, request_path, data, created_at) "
+                    "VALUES (?, 'converted_request', ?, ?, ?, ?, ?, ?)",
+                    (request_id, model, target, request_type, request_path, data, now),
                 )
                 conn.commit()
             finally:

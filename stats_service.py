@@ -195,27 +195,33 @@ class _TokenStatsDao:
 
         conn = self._get_conn()
         try:
-            rows = conn.execute(
-                f"""
-                SELECT ts.upstream_id,
-                       COALESCE(u.base_url, '__unknown__') as upstream_name,
-                       COUNT(*) as request_count,
-                       COALESCE(SUM(ts.input_tokens), 0) as total_input,
-                       COALESCE(SUM(ts.output_tokens), 0) as total_output,
-                       COALESCE(SUM(ts.cached_read_tokens), 0) as total_cache_read,
-                       COALESCE(SUM(ts.cached_write_tokens), 0) as total_cache_write
-                FROM token_stats ts
-                LEFT JOIN upstreams u ON ts.upstream_id = u.id
-                WHERE {time_condition} AND ts.upstream_id IS NOT NULL
-                GROUP BY ts.upstream_id
-                ORDER BY total_output DESC
-                """,
-            ).fetchall()
+            try:
+                rows = conn.execute(
+                    f"""
+                    SELECT ts.upstream_id,
+                           COALESCE(u.name, '__unknown__') as upstream_name,
+                           u.base_url,
+                           COUNT(*) as request_count,
+                           COALESCE(SUM(ts.input_tokens), 0) as total_input,
+                           COALESCE(SUM(ts.output_tokens), 0) as total_output,
+                           COALESCE(SUM(ts.cached_read_tokens), 0) as total_cache_read,
+                           COALESCE(SUM(ts.cached_write_tokens), 0) as total_cache_write
+                    FROM token_stats ts
+                    LEFT JOIN upstreams u ON ts.upstream_id = u.id
+                    WHERE {time_condition}
+                    GROUP BY ts.upstream_id
+                    ORDER BY total_output DESC
+                    """,
+                ).fetchall()
+            except sqlite3.OperationalError:
+                # upstreams 表不存在时返回空列表
+                return []
 
             return [
                 {
                     "upstream_id": row["upstream_id"],
                     "upstream_name": row["upstream_name"],
+                    "base_url": row["base_url"],
                     "request_count": row["request_count"],
                     "input_tokens": row["total_input"],
                     "output_tokens": row["total_output"],
@@ -370,25 +376,26 @@ class _UpstreamResolver:
             try:
                 rows = conn.execute(
                     """
-                    SELECT tm.name, u.base_url, u.id as upstream_id
+                    SELECT tm.name, u.name as upstream_name, u.base_url, u.id as upstream_id
                     FROM target_models tm
                     JOIN upstreams u ON tm.upstream_id = u.id
-                    WHERE tm.name IS NOT NULL AND u.base_url IS NOT NULL AND u.base_url != ''
+                    WHERE tm.name IS NOT NULL AND u.name IS NOT NULL AND u.name != ''
                     """
                 ).fetchall()
 
                 for row in rows:
                     model_name = row["name"]
                     upstream_id = row["upstream_id"]
+                    up_name = row["upstream_name"]
                     base_url = row["base_url"]
                     self._model_map[model_name] = {
                         "upstream_id": upstream_id,
-                        "upstream_name": base_url,
+                        "upstream_name": up_name,
                         "base_url": base_url,
                     }
                     if upstream_id not in self._id_map:
                         self._id_map[upstream_id] = {
-                            "upstream_name": base_url,
+                            "upstream_name": up_name,
                             "base_url": base_url,
                         }
             finally:
@@ -510,12 +517,13 @@ class _CostCalculator:
             display_names = {}
             for r in rows:
                 rate = 1 if r["currency"] == "RMB" else self.EXCHANGE_RATE
+                multiplier = float(r.get("multiplier", "1.0"))
                 key = r["model_id"].lower()
                 pricing[key] = {
-                    "input_cost": float(r["input_cost_per_million"]) * rate,
-                    "output_cost": float(r["output_cost_per_million"]) * rate,
-                    "cache_read_cost": float(r["cache_read_cost_per_million"]) * rate,
-                    "cache_creation_cost": float(r["cache_creation_cost_per_million"]) * rate,
+                    "input_cost": round(float(r["input_cost_per_million"]) * rate * multiplier, 6),
+                    "output_cost": round(float(r["output_cost_per_million"]) * rate * multiplier, 6),
+                    "cache_read_cost": round(float(r["cache_read_cost_per_million"]) * rate * multiplier, 6),
+                    "cache_creation_cost": round(float(r["cache_creation_cost_per_million"]) * rate * multiplier, 6),
                 }
                 display_names[key] = r["display_name"]
             self._pricing_cache = pricing

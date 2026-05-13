@@ -92,6 +92,8 @@ class TestDBInitialization(unittest.TestCase):
             "model": "TEXT",
             "target_model": "TEXT",
             "status_code": "INTEGER",
+            "request_type": "TEXT",
+            "request_path": "TEXT",
             "data": "TEXT",
             "created_at": "TEXT",
         }

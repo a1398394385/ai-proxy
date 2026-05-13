@@ -70,7 +70,7 @@ function renderTable(items) {
   countEl.textContent = items.length + ' 条';
 
   if (items.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="7"><div class="pricing-empty">
+    tbody.innerHTML = `<tr><td colspan="8"><div class="pricing-empty">
       <div class="pricing-empty-icon">💰</div>
       <div class="pricing-empty-text">暂无定价数据</div>
       <div class="pricing-empty-sub">点击上方"新增定价"按钮添加</div>
@@ -125,6 +125,7 @@ function renderTable(items) {
         <span class="price-bar-bg" style="width:${(cwCny / maxCW * 100).toFixed(1)}%;background:hsl(var(--orange))"></span>
         <span class="price-value">${formatCny(p.cache_creation_cost_per_million, p.currency)}</span>
       </td>
+      <td class="cell-multiplier">${Number(p.multiplier || 1).toFixed(2)}×</td>
       <td>${badge}</td>
       <td class="cell-actions">
         <button class="btn-icon btn-edit" title="编辑" onclick="editPricing('${mid}')">✎</button>
@@ -165,6 +166,7 @@ export async function loadPricingPage() {
               <th class="th-price">输出 <span class="price-unit">¥/1M</span></th>
               <th class="th-price">缓存读 <span class="price-unit">¥/1M</span></th>
               <th class="th-price">缓存写 <span class="price-unit">¥/1M</span></th>
+              <th style="width:72px">倍率</th>
               <th style="width:72px">币种</th>
               <th style="width:80px">操作</th>
             </tr>
@@ -240,6 +242,13 @@ function showPricingModal(existing = null) {
         <input class="form-input" id="pm-cache-write" type="number" step="0.000001" value="${existing?.cache_creation_cost_per_million || '0'}" placeholder="0">
       </div>
 
+      <div class="pricing-modal-section">倍率</div>
+      <div class="form-group full">
+        <label class="form-label">计费倍率</label>
+        <input class="form-input" id="pm-multiplier" type="number" step="0.01" min="0" value="${existing?.multiplier || '1.0'}" placeholder="1.0">
+        <span class="form-hint">四个价格（输入/输出/缓存读/缓存写）均乘以该倍率</span>
+      </div>
+
       <div class="pricing-modal-section">币种</div>
       <div class="form-group full">
         <label class="form-label">结算币种</label>
@@ -266,6 +275,7 @@ async function savePricing(editModelId) {
     output_cost_per_million: document.getElementById('pm-output').value,
     cache_read_cost_per_million: document.getElementById('pm-cache-read').value || '0',
     cache_creation_cost_per_million: document.getElementById('pm-cache-write').value || '0',
+    multiplier: document.getElementById('pm-multiplier').value || '1.0',
     currency: document.getElementById('pm-currency').value,
   };
   if (!payload.model_id || !payload.display_name || !payload.input_cost_per_million || !payload.output_cost_per_million) {

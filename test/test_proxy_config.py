@@ -42,8 +42,8 @@ upstream:
             db_path = Path(td) / "config.db"
             from proxy.config_manager import ConfigDB, ConfigCache
             db = ConfigDB(db_path)
-            db.add_upstream({"id": "test-up", "base_url": "https://example.com/v1", "api_key": "sk-test"})
-            m1 = db.add_model({"name": "claude-sonnet-4-6", "upstream_id": "test-up", "multimodal": 0})
+            uid = db.add_upstream({"name": "test-up", "base_url": "https://example.com/v1", "api_key": "sk-test"})
+            m1 = db.add_model({"name": "claude-sonnet-4-6", "upstream_id": uid, "multimodal": 0})
             db.add_route({"source": "gpt-4o", "target_model_id": m1})
             db.add_route({"source": "*", "target_model_id": m1})
             db.close()
