@@ -843,13 +843,15 @@ async function loadUpstreamStats() {
   }
 }
 
+function formatTokenM(n) {
+  return (n / 1_000_000).toFixed(2) + 'M';
+}
+
 function renderUpstreamTable(data) {
   const subtabEl = document.getElementById('subtab-upstream');
   if (!subtabEl) return;
 
   const sorted = [...data].sort((a, b) => (b.estimated_cost_cny || 0) - (a.estimated_cost_cny || 0));
-  const maxTokens = Math.max(...sorted.map(u => u.total_tokens || 0), 1);
-  const maxCost = Math.max(...sorted.map(u => u.estimated_cost_cny || 0), 1);
 
   const headerBar = `<div class="table-card">
     <div class="table-header">
@@ -886,8 +888,6 @@ function renderUpstreamTable(data) {
     const isSpecial = upstreamId === '__unknown__' || upstreamId === '__hermes__' || upstreamId === '__opencode__';
     const rowClass = isSpecial ? ' class="is-unknown"' : '';
     const displayName = u.upstream_name || u.upstream_id || 'Unknown';
-    const tokenPct = maxTokens > 0 ? ((u.total_tokens || 0) / maxTokens * 100).toFixed(0) : 0;
-    const costPct = maxCost > 0 ? ((u.estimated_cost_cny || 0) / maxCost * 100).toFixed(0) : 0;
     const costStr = (u.estimated_cost_cny || 0).toFixed(6);
 
     return `<tr${rowClass}>
@@ -897,18 +897,8 @@ function renderUpstreamTable(data) {
       <td class="cell-number">${formatTokens(u.output_tokens || 0)}</td>
       <td class="cell-number">${formatTokens(u.cache_read_tokens || 0)}</td>
       <td class="cell-number">${formatTokens(u.cache_write_tokens || 0)}</td>
-      <td class="cell-number">
-        <div class="up-bar-wrap">
-          <div class="up-bar-track"><div class="up-bar-fill cyan" style="width:${tokenPct}%"></div></div>
-          <span class="up-bar-pct">${formatTokens(u.total_tokens || 0)}</span>
-        </div>
-      </td>
-      <td class="cell-number">
-        <div class="up-bar-wrap" style="min-width:100px">
-          <div class="up-bar-track"><div class="up-bar-fill amber" style="width:${costPct}%"></div></div>
-          <span class="cost-badge">¥${costStr}</span>
-        </div>
-      </td>
+      <td class="cell-number">${formatTokenM(u.total_tokens || 0)}</td>
+      <td class="cell-cost">¥${costStr}</td>
     </tr>`;
   }).join('');
 }
