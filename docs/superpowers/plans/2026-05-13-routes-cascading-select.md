@@ -71,17 +71,22 @@ async function showRouteModal(editId) {
   let title = '新增路由';
   let routeUpstreamId = null;
   let routeModelId = null;
-  if (editId) {
-    title = '编辑路由 #' + editId;
-    const routes = await api('/api/routes');
-    const found = routes.routes.find(r => r.id === editId);
-    if (found) data = found;
-  }
-  const [models, upstreams] = await Promise.all([api('/api/models'), api('/api/upstreams')]);
-  if (editId && data.target_model_id) {
-    routeModelId = data.target_model_id;
-    const tm = models.models.find(m => m.id === data.target_model_id);
-    if (tm) routeUpstreamId = tm.upstream_id;
+  try {
+    if (editId) {
+      title = '编辑路由 #' + editId;
+      const routes = await api('/api/routes');
+      const found = routes.routes.find(r => r.id === editId);
+      if (found) data = found;
+    }
+    const [models, upstreams] = await Promise.all([api('/api/models'), api('/api/upstreams')]);
+    if (editId && data.target_model_id) {
+      routeModelId = data.target_model_id;
+      const tm = models.models.find(m => m.id === data.target_model_id);
+      if (tm) routeUpstreamId = tm.upstream_id;
+    }
+  } catch (_) {
+    alert('加载数据失败，请检查服务是否正常运行');
+    return;
   }
   const cascadingHtml = buildCascadingModelSelect(upstreams, models, routeUpstreamId, routeModelId);
   const requestTypeOptions = ['responses', 'messages', 'chat_completions']
@@ -143,7 +148,13 @@ function bindCascadeModelSelect() {
 ```javascript
 async function showFallbackModal() {
   const data = { source: '*', target_model_id: '', request_type: currentRequestType };
-  const [models, upstreams] = await Promise.all([api('/api/models'), api('/api/upstreams')]);
+  let models, upstreams;
+  try {
+    [models, upstreams] = await Promise.all([api('/api/models'), api('/api/upstreams')]);
+  } catch (_) {
+    alert('加载数据失败，请检查服务是否正常运行');
+    return;
+  }
   const cascadingHtml = buildCascadingModelSelect(upstreams, models, null, null);
   showModal('新增回退路由',
     `<div class="form-group"><label class="form-label">源模型名</label><input type="text" class="form-input" value="* (fallback)" readonly style="background:hsl(var(--muted));color:hsl(var(--muted-foreground));cursor:not-allowed"></div>
@@ -168,12 +179,7 @@ async function showFallbackModal() {
 - `let modelOpts = '';` 及其构建逻辑
 - `<div class="form-group"><label class="form-label">目标模型</label><select class="form-input" id="r-target">${modelOpts}</select></div>`
 
-- [ ] **Step 2: 验证 JavaScript 语法**
-
-Run: `python3 -c "import ast; ast.parse(open('static/js/pages/routes.js').read()); print('JS syntax OK: line 1, no errors')"`
-Expected: 无报错，打印 "JS syntax OK..."
-
-- [ ] **Step 3: 运行现有测试确认无回归**
+- [ ] **Step 2: 运行现有测试确认无回归**
 
 Run: `python3 -m pytest test/ -q`
 Expected: 所有 531+ 测试通过
