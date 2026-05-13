@@ -201,11 +201,11 @@ class TestRecordTokenStats(unittest.TestCase):
         r = rows[0]
         self.assertEqual(r[1], "req-001")           # request_id
         self.assertEqual(r[2], "codex")             # request_type
-        self.assertEqual(r[7], 100)                 # input_tokens
-        self.assertEqual(r[8], 50)                  # output_tokens
-        self.assertEqual(r[9], 20)                  # cached_read_tokens
-        self.assertEqual(r[10], 0)                  # cached_write_tokens
-        self.assertEqual(r[11], "completed")        # status
+        self.assertEqual(r[8], 100)                 # input_tokens
+        self.assertEqual(r[9], 50)                  # output_tokens
+        self.assertEqual(r[10], 20)                 # cached_read_tokens
+        self.assertEqual(r[11], 0)                  # cached_write_tokens
+        self.assertEqual(r[12], "completed")        # status
 
     def test_empty_usage_does_not_write(self):
         from proxy.token_stats import record_token_stats

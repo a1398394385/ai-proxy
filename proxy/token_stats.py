@@ -120,6 +120,7 @@ def record_token_stats(usage: dict, context: dict) -> None:
                     request_type        TEXT NOT NULL,
                     model               TEXT NOT NULL,
                     target_model        TEXT NOT NULL,
+                    upstream_id         INTEGER,
                     request_ts          TEXT NOT NULL,
                     duration_ms         INTEGER,
                     input_tokens        INTEGER DEFAULT 0,
@@ -131,23 +132,32 @@ def record_token_stats(usage: dict, context: dict) -> None:
                 )
             """)
 
+            # ─── 兼容旧表：确保 upstream_id 列存在 ───
+            try:
+                conn.execute("ALTER TABLE token_stats ADD COLUMN upstream_id INTEGER")
+            except Exception:
+                pass  # 列已存在
+
             # ─── 性能索引 ───
             conn.execute("CREATE INDEX IF NOT EXISTS idx_token_stats_request_ts ON token_stats(request_ts)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_token_stats_target_model ON token_stats(target_model)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_token_stats_upstream_id ON token_stats(upstream_id)")
 
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             conn.execute(
                 "INSERT INTO token_stats "
-                "(request_id, request_type, model, target_model, request_ts, duration_ms, "
+                "(request_id, request_type, model, target_model, upstream_id, "
+                "request_ts, duration_ms, "
                 "input_tokens, output_tokens, cached_read_tokens, cached_write_tokens, "
                 "status, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)",
                 (
                     request_id,
                     context.get("request_type", "unknown"),
                     context.get("model", "unknown"),
                     context.get("target_model", "unknown"),
+                    context.get("upstream_id"),
                     context.get("request_ts", ""),
                     context.get("duration_ms", 0),
                     tokens["input_tokens"],
