@@ -527,19 +527,20 @@ function expandModelRow(model, rowElement) {
       const rows = requests.slice(0, limit).map(r => {
         const isSession = r.type === 'session' || r.request_type === 'session';
         const typeBadge = isSession
-          ? '<span class="type-badge session">会话</span>'
-          : '<span class="type-badge proxy">代理</span>';
+          ? '<span class="type-badge-term session">[session]</span>'
+          : '<span class="type-badge-term proxy">>_proxy</span>';
         const timeStr = r.created_at || r.request_ts || r.timestamp || '-';
+        const costStr = (r.estimated_cost_cny || 0).toFixed(6);
 
         const tokenCells = isSession
-          ? '<td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-total">-</td><td class="cell-number">-</td><td class="cell-cost">-</td>'
+          ? '<td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-total">-</td><td class="cell-number">-</td><td class="cell-cost"><span class="cost-badge">-</span></td>'
           : `<td class="cell-number">${formatTokens(r.input_tokens || 0)}</td>
              <td class="cell-number">${formatTokens(r.output_tokens || 0)}</td>
              <td class="cell-number">${formatTokens(r.cache_read_tokens || 0)}</td>
              <td class="cell-number">${formatTokens(r.cache_write_tokens || 0)}</td>
              <td class="cell-total">${formatTokens((r.input_tokens || 0) + (r.output_tokens || 0) + (r.cache_read_tokens || 0) + (r.cache_write_tokens || 0))}</td>
-             <td class="cell-number">${r.duration_ms ? r.duration_ms + 'ms' : '-'}</td>
-             <td class="cell-cost">¥${(r.estimated_cost_cny || 0).toFixed(6)}</td>`;
+             <td class="cell-number">${r.duration_ms ? (r.duration_ms / 1000).toFixed(2) + 's' : '-'}</td>
+             <td class="cell-cost"><span class="cost-badge">¥${costStr}</span></td>`;
 
         return `<tr class="detail-row">
           <td class="cell-detail-id">${escHtml(r.request_id || r.id || '-')}</td>
@@ -649,40 +650,37 @@ function renderRequestTable(requests) {
 
   if (!document.getElementById('request-log-container')) {
     subtabEl.innerHTML = `
-      <div class="filter-bar">
-        <div class="filter-group">
-          <label>模型</label>
-          <input type="text" id="req-filter-model" placeholder="过滤模型..." value="${escHtml(requestFilters.model || '')}" />
+      <div class="filter-terminal">
+        <div class="search-wrap">
+          <input type="text" class="search-input" id="req-filter-model" placeholder="model..." value="${escHtml(requestFilters.model || '')}" />
         </div>
-        <div class="filter-group">
-          <label>类型</label>
-          <select id="req-filter-type">
-            <option value="">全部</option>
-            <option value="proxy" ${requestFilters.requestType === 'proxy' ? 'selected' : ''}>代理</option>
-            <option value="session" ${requestFilters.requestType === 'session' ? 'selected' : ''}>会话</option>
-          </select>
-        </div>
-        <button class="btn btn-secondary btn-sm" id="req-filter-clear">清除筛选</button>
+        <label>Type</label>
+        <select id="req-filter-type">
+          <option value="">All</option>
+          <option value="proxy" ${requestFilters.requestType === 'proxy' ? 'selected' : ''}>Proxy</option>
+          <option value="session" ${requestFilters.requestType === 'session' ? 'selected' : ''}>Session</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" id="req-filter-clear">Clear</button>
       </div>
       <div id="request-log-container">
         <div class="table-card">
           <div class="table-header">
-            <span class="table-title">📋 请求日志</span>
-            <span id="request-count" style="font-size:12px;color:hsl(var(--muted-foreground))"></span>
+            <span class="table-title">请求日志</span>
+            <span id="request-count" style="font-size:11px;color:hsl(var(--muted-foreground))"></span>
           </div>
           <div class="table-scroll">
-            <table id="request-log-table">
+            <table class="req-table" id="request-log-table">
               <thead>
                 <tr>
                   <th>模型</th><th>请求ID</th><th>时间</th><th>类型</th><th>Input</th><th>Output</th>
-                  <th>Cache Read</th><th>Cache Create</th><th>总Token</th><th>耗时</th><th>成本</th>
+                  <th>Cache Rd</th><th>Cache Wr</th><th>总Token</th><th>耗时</th><th>成本</th>
                 </tr>
               </thead>
               <tbody></tbody>
             </table>
           </div>
         </div>
-        <div class="pagination-bar" id="request-pagination"></div>
+        <div id="request-pagination"></div>
       </div>`;
     setupRequestFilters();
   }
@@ -700,22 +698,24 @@ function renderRequestTable(requests) {
 
   tbody.innerHTML = requests.map(r => {
     const isSession = r.type === 'session' || r.request_type === 'session';
+    const typeAttr = isSession ? 'session' : 'proxy';
     const typeBadge = isSession
-      ? '<span class="type-badge session">会话</span>'
-      : '<span class="type-badge proxy">代理</span>';
+      ? '<span class="type-badge-term session">[session]</span>'
+      : '<span class="type-badge-term proxy">>_proxy</span>';
     const timeStr = r.created_at || r.request_ts || r.timestamp || '-';
+    const costStr = (r.estimated_cost_cny || 0).toFixed(6);
 
     const tokenCells = isSession
-      ? '<td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-total">-</td><td class="cell-number">-</td><td class="cell-cost">-</td>'
+      ? '<td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-total">-</td><td class="cell-number">-</td><td class="cell-cost"><span class="cost-badge">-</span></td>'
       : `<td class="cell-number">${formatTokens(r.input_tokens || 0)}</td>
          <td class="cell-number">${formatTokens(r.output_tokens || 0)}</td>
          <td class="cell-number">${formatTokens(r.cache_read_tokens || 0)}</td>
          <td class="cell-number">${formatTokens(r.cache_write_tokens || 0)}</td>
          <td class="cell-total">${formatTokens((r.input_tokens || 0) + (r.output_tokens || 0) + (r.cache_read_tokens || 0) + (r.cache_write_tokens || 0))}</td>
-         <td class="cell-number">${r.duration_ms ? r.duration_ms + 'ms' : '-'}</td>
-         <td class="cell-cost">¥${(r.estimated_cost_cny || 0).toFixed(6)}</td>`;
+         <td class="cell-number">${r.duration_ms ? (r.duration_ms / 1000).toFixed(2) + 's' : '-'}</td>
+         <td class="cell-cost"><span class="cost-badge">¥${costStr}</span></td>`;
 
-    return `<tr>
+    return `<tr data-type="${typeAttr}">
       <td class="model-name-text">${escHtml(r.model || '-')}</td>
       <td class="cell-detail-id">${escHtml(r.request_id || r.id || '-')}</td>
       <td class="cell-number">${escHtml(timeStr)}</td>
@@ -772,12 +772,31 @@ function renderPagination(total, limit, offset) {
   const hasNext = currentPage < totalPages;
   const hasPrev = currentPage > 1;
 
+  // 生成页码按钮（最多 7 个）
+  const maxVisible = 7;
+  let pageNumbers = [];
+  if (totalPages <= maxVisible) {
+    for (let i = 1; i <= totalPages; i++) pageNumbers.push(i);
+  } else {
+    const half = Math.floor(maxVisible / 2);
+    let start = Math.max(1, currentPage - half);
+    let end = Math.min(totalPages, currentPage + half);
+    if (start === 1) end = maxVisible;
+    if (end === totalPages) start = totalPages - maxVisible + 1;
+    for (let i = start; i <= end; i++) pageNumbers.push(i);
+  }
+
+  const pageBtns = pageNumbers.map(p =>
+    `<button class="${p === currentPage ? 'active' : ''}" data-page="${p}">${p}</button>`
+  ).join('');
+
   container.innerHTML = `
-    <div class="pagination-content">
-      <span class="pagination-info">第 ${currentPage} / ${totalPages} 页，共 ${total} 条</span>
-      <div class="pagination-buttons">
-        <button class="btn btn-secondary btn-sm" id="pagination-prev" ${hasPrev ? '' : 'disabled'} ${hasPrev ? '' : 'style="opacity:0.4;cursor:not-allowed"'} >上一页</button>
-        <button class="btn btn-secondary btn-sm" id="pagination-next" ${hasNext ? '' : 'disabled'} ${hasNext ? '' : 'style="opacity:0.4;cursor:not-allowed"'}>下一页</button>
+    <div class="pagination-terminal">
+      <span class="info">${total.toLocaleString()} records · pg ${currentPage}/${totalPages}</span>
+      <div class="btns">
+        <button id="pagination-prev" ${hasPrev ? '' : 'disabled'}>‹ Prev</button>
+        ${pageBtns}
+        <button id="pagination-next" ${hasNext ? '' : 'disabled'}>Next ›</button>
       </div>
     </div>`;
 
@@ -797,6 +816,15 @@ function renderPagination(total, limit, offset) {
       loadRequestLog();
     });
   }
+
+  // 页码点击
+  container.querySelectorAll('[data-page]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const page = parseInt(btn.dataset.page, 10);
+      requestPagination.offset = (page - 1) * limit;
+      loadRequestLog();
+    });
+  });
 }
 
 // ===== 上游统计 tab =====
@@ -820,18 +848,20 @@ function renderUpstreamTable(data) {
   if (!subtabEl) return;
 
   const sorted = [...data].sort((a, b) => (b.estimated_cost_cny || 0) - (a.estimated_cost_cny || 0));
+  const maxTokens = Math.max(...sorted.map(u => u.total_tokens || 0), 1);
+  const maxCost = Math.max(...sorted.map(u => u.estimated_cost_cny || 0), 1);
 
   const headerBar = `<div class="table-card">
     <div class="table-header">
-      <span class="table-title">🏢 按上游统计</span>
-      <span style="font-size:12px;color:hsl(var(--muted-foreground))">${sorted.length} 个上游</span>
+      <span class="table-title">上游统计</span>
+      <span style="font-size:11px;color:hsl(var(--muted-foreground))">${sorted.length} upstreams</span>
     </div>
     <div class="table-scroll">
-      <table id="upstream-stats-table">
+      <table class="up-table" id="upstream-stats-table">
         <thead>
           <tr>
-            <th>上游 ID</th><th>基本 URL</th><th>请求数</th><th>Input</th><th>Output</th>
-            <th>Cache Read</th><th>Cache Create</th><th>总Token</th><th>成本</th>
+            <th>上游</th><th>请求数</th><th>Input</th><th>Output</th>
+            <th>Cache Rd</th><th>Cache Wr</th><th>总Token</th><th>成本</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -847,24 +877,38 @@ function renderUpstreamTable(data) {
   if (!tbody) return;
 
   if (!sorted.length) {
-    tbody.innerHTML = '<tr><td colspan="9" class="empty-state">暂无上游统计数据</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-state">暂无上游统计数据</td></tr>';
     return;
   }
 
   tbody.innerHTML = sorted.map(u => {
-    const isUnknown = u.upstream_id === '__unknown__';
-    const rowClass = isUnknown ? ' class="unknown-upstream"' : '';
-    const baseUrl = isUnknown ? '未知' : escHtml(u.base_url || '-');
+    const upstreamId = u.upstream_id || '';
+    const isSpecial = upstreamId === '__unknown__' || upstreamId === '__hermes__' || upstreamId === '__opencode__';
+    const rowClass = isSpecial ? ' class="is-unknown"' : '';
+    const displayName = u.upstream_name || u.upstream_id || 'Unknown';
+    const tokenPct = maxTokens > 0 ? ((u.total_tokens || 0) / maxTokens * 100).toFixed(0) : 0;
+    const costPct = maxCost > 0 ? ((u.estimated_cost_cny || 0) / maxCost * 100).toFixed(0) : 0;
+    const costStr = (u.estimated_cost_cny || 0).toFixed(6);
+
     return `<tr${rowClass}>
-      <td class="model-name-text">${escHtml(u.upstream_id || '-')}</td>
-      <td title="${escHtml(u.base_url || '')}">${baseUrl}</td>
-      <td class="cell-requests">${(u.request_count || 0).toLocaleString()}</td>
+      <td>${escHtml(displayName)}</td>
+      <td class="cell-number">${(u.request_count || 0).toLocaleString()}</td>
       <td class="cell-number">${formatTokens(u.input_tokens || 0)}</td>
       <td class="cell-number">${formatTokens(u.output_tokens || 0)}</td>
       <td class="cell-number">${formatTokens(u.cache_read_tokens || 0)}</td>
       <td class="cell-number">${formatTokens(u.cache_write_tokens || 0)}</td>
-      <td class="cell-total">${formatTokens(u.total_tokens || 0)}</td>
-      <td class="cell-cost">¥${(u.estimated_cost_cny || 0).toFixed(6)}</td>
+      <td class="cell-number">
+        <div class="up-bar-wrap">
+          <div class="up-bar-track"><div class="up-bar-fill cyan" style="width:${tokenPct}%"></div></div>
+          <span class="up-bar-pct">${formatTokens(u.total_tokens || 0)}</span>
+        </div>
+      </td>
+      <td class="cell-number">
+        <div class="up-bar-wrap" style="min-width:100px">
+          <div class="up-bar-track"><div class="up-bar-fill amber" style="width:${costPct}%"></div></div>
+          <span class="cost-badge">¥${costStr}</span>
+        </div>
+      </td>
     </tr>`;
   }).join('');
 }
