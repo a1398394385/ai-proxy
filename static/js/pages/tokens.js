@@ -469,7 +469,7 @@ function renderModelTable(models) {
       <td class="cell-number">${formatTokens(m.output_tokens)}</td>
       <td class="cell-number">${formatTokens(m.cache_read_tokens)}</td>
       <td class="cell-number">${formatTokens(m.cache_write_tokens)}</td>
-      <td class="cell-total">${formatTokens(m.total_tokens)}</td>
+      <td class="cell-total">${formatTokenM(m.total_tokens)}</td>
       <td>
         <div class="pct-cell">
           <div class="pct-bar-track">
@@ -525,12 +525,12 @@ function expandModelRow(model, rowElement) {
       }
 
       const rows = requests.slice(0, limit).map(r => {
-        const isSession = r.type === 'session' || r.request_type === 'session';
+        const isSession = r.upstream_id === 'hermes' || r.upstream_id === 'opencode';
         const typeBadge = isSession
           ? '<span class="type-badge-term session">[session]</span>'
           : '<span class="type-badge-term proxy">>_proxy</span>';
         const timeStr = r.created_at || r.request_ts || r.timestamp || '-';
-        const costStr = (r.estimated_cost_cny || 0).toFixed(6);
+        const costStr = ((r.input_cost_cny || 0) + (r.output_cost_cny || 0) + (r.cache_read_cost_cny || 0) + (r.cache_write_cost_cny || 0)).toFixed(6);
 
         const tokenCells = isSession
           ? '<td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-total">-</td><td class="cell-number">-</td><td class="cell-cost"><span class="cost-badge">-</span></td>'
@@ -697,13 +697,13 @@ function renderRequestTable(requests) {
   }
 
   tbody.innerHTML = requests.map(r => {
-    const isSession = r.type === 'session' || r.request_type === 'session';
+    const isSession = r.upstream_id === 'hermes' || r.upstream_id === 'opencode';
     const typeAttr = isSession ? 'session' : 'proxy';
     const typeBadge = isSession
       ? '<span class="type-badge-term session">[session]</span>'
       : '<span class="type-badge-term proxy">>_proxy</span>';
     const timeStr = r.created_at || r.request_ts || r.timestamp || '-';
-    const costStr = (r.estimated_cost_cny || 0).toFixed(6);
+    const costStr = ((r.input_cost_cny || 0) + (r.output_cost_cny || 0) + (r.cache_read_cost_cny || 0) + (r.cache_write_cost_cny || 0)).toFixed(6);
 
     const tokenCells = isSession
       ? '<td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-total">-</td><td class="cell-number">-</td><td class="cell-cost"><span class="cost-badge">-</span></td>'
