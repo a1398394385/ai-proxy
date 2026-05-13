@@ -920,44 +920,61 @@ class CodexStreamConverter:
 StreamState = CodexStreamConverter
 
 
-def create_codex_sse_stream(upstream_response, request_messages: list = None, response_store=None):
-    """读取上游 SSE 流，逐事件 yield Responses API 格式的 SSE 字符串。
+def create_codex_sse_stream(chunks_or_response, *, request_messages=None, response_store=None):
+    """读取上游 SSE 流（file-like 或 SDK Iterable），生成 Responses API 格式的 SSE 事件。
 
-    request_messages: chat_body["messages"]，用于构建完整 conversation（Phase 2 新增）
-    response_store: ResponseStore 实例；非 None 时在 finish() 后存储 response（Phase 2 新增）
+    chunks_or_response:
+        - file-like 对象（有 read 方法）→ 兼容旧路径（透传/过渡期）
+        - Iterable[dict|ChatCompletionChunk] → 新路径（openai SDK 流）
+    request_messages: chat_body["messages"]，用于构建 conversation
+    response_store: ResponseStore 实例；非 None 时在 finish() 后存储 response
     """
     converter = CodexStreamConverter()
     converter.response_id = generate_response_id()
 
-    for event in iter_sse_events(upstream_response):
-        if event["event"] == "[DONE]":
+    # 兼容适配：检测输入类型
+    if hasattr(chunks_or_response, 'read'):
+        # 旧路径：file-like 对象
+        chunks_iter = iter_sse_events(chunks_or_response)
+        # iter_sse_events 返回 (event_type, data) 的 dict，需要提取 data
+        chunks_iter = (e.get("data") or {} for e in chunks_iter if e.get("data"))
+    else:
+        # 新路径：SDK 流式迭代器
+        def _to_dict(chunk):
+            if hasattr(chunk, 'model_dump'):
+                return chunk.model_dump()
+            return chunk
+        chunks_iter = (_to_dict(c) for c in chunks_or_response)
+
+    for data_dict in chunks_iter:
+        if isinstance(data_dict, str) and data_dict == "[DONE]":
             break
-        data = event.get("data")
-        if not data:
-            continue
-        for sse_str in converter.process_chunk(data):
+        if isinstance(data_dict, str):
+            # "data:" 前缀后的 JSON 字符串
+            try:
+                data_dict = json.loads(data_dict)
+            except json.JSONDecodeError:
+                continue
+        for sse_str in converter.process_chunk(data_dict):
             yield sse_str
 
     for sse_str in converter.finish():
         yield sse_str
 
-    # finish() 返回后 output_items 已按 output_index 排序为 (index, item) 元组
+    # finish() 返回后：存储 response
     if response_store is not None:
         from .response_store import ResponseRecord
         output_list = [item for _, item in converter.output_items]
+        # output_items_to_messages 在同文件的 module 层级已导入，直接调用
         assistant_msgs = output_items_to_messages(output_list)
-        conversation = [
-            m for m in (request_messages or []) if m.get("role") != "system"
-        ] + assistant_msgs
-        usage = converter._convert_usage(converter.final_usage) if converter.final_usage is not None else None
-        status = "incomplete" if converter.finish_reason in ("length", "content_filter") else "completed"
+        messages_for_conv = (request_messages or []) + assistant_msgs
         record = ResponseRecord(
             response_id=converter.response_id,
-            model=converter.model,
+            model=converter.model or "",
             output=output_list,
-            conversation=conversation,
-            usage=usage,
-            status=status,
+            conversation=messages_for_conv,
+            usage=converter.usage,
+            status="completed",
             created_at=time.time(),
             expires_at=time.time() + response_store.ttl_seconds,
         )

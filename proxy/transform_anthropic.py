@@ -328,67 +328,71 @@ def _close_open_blocks(state: AnthropicStreamState) -> list:
     return events
 
 
-def create_anthropic_sse_stream(upstream_response):
-    """读取上游 Chat Completions SSE 流，逐事件 yield Anthropic Messages 格式的 SSE 字符串。
+def create_anthropic_sse_stream(chunks_or_response, *, request_messages=None, response_store=None):
+    """读取上游 SSE 流（file-like 或 SDK Iterable），生成 Anthropic Messages 格式的 SSE 事件。
 
-    upstream_response: 有 read(size) 方法的对象
+    chunks_or_response: 同 create_codex_sse_stream。
+    request_messages / response_store: 当前未使用，预留签名一致性。
     """
     state = AnthropicStreamState()
 
-    try:
-        for event in iter_sse_events(upstream_response):
-            if event["event"] == "[DONE]":
-                break
+    # 兼容适配：检测输入类型
+    if hasattr(chunks_or_response, 'read'):
+        chunks_iter = iter_sse_events(chunks_or_response)
+        chunks_iter = (e.get("data") or {} for e in chunks_iter if e.get("data"))
+    else:
+        def _to_dict(chunk):
+            if hasattr(chunk, 'model_dump'):
+                return chunk.model_dump()
+            return chunk
+        chunks_iter = (_to_dict(c) for c in chunks_or_response)
 
-            data = event.get("data", {})
-            if not data:
+    try:
+        for data_dict in chunks_iter:
+            if isinstance(data_dict, str) and data_dict == "[DONE]":
+                break
+            if isinstance(data_dict, str):
+                try:
+                    data_dict = json.loads(data_dict)
+                except json.JSONDecodeError:
+                    continue
+            if not data_dict:
                 continue
 
             # 捕获 model / id → 发送 message_start
             if not state.message_id:
-                state.message_id = data.get("id", "")
-                state.model = data.get("model", "")
+                state.message_id = data_dict.get("id", "")
+                state.model = data_dict.get("model", "")
                 for event_str in _send_message_start(state):
                     yield event_str
 
-            # 捕获 usage
-            if "usage" in data and data["usage"]:
-                state.usage = data["usage"]
+            if "usage" in data_dict and data_dict["usage"]:
+                state.usage = data_dict["usage"]
 
-            # 捕获 finish_reason（独立于 delta，防止最后一个 chunk 有 finish_reason 但 delta 为空）
-            choices = data.get("choices", [])
+            choices = data_dict.get("choices", [])
             if choices:
                 choice = choices[0]
                 if choice.get("finish_reason") and not state.finish_reason:
                     state.finish_reason = choice["finish_reason"]
-
                 delta = choice.get("delta", {})
                 if delta:
                     for event_str in _process_anthropic_delta(delta, state):
                         yield event_str
     except Exception as e:
-        # 流中断 → error 事件
         error_data = {
-            "error": {
-                "type": "stream_error",
-                "message": f"Stream error: {e}",
-            },
+            "error": {"type": "stream_error", "message": f"Stream error: {e}"},
         }
         yield _format_sse_event("error", error_data)
         return
 
-    # finish_reason 出现但 delta 为空时，_process_anthropic_delta 不会被调用，
-    # 需要在此补发 message_delta 以携带 usage 和 stop_reason
+    # 补发 message_delta
     if state.finish_reason and not state.message_delta_sent:
         state.message_delta_sent = True
         events = _close_open_blocks(state)
         for event_str in events:
             yield event_str
-
         stop_reason = _STREAM_FINISH_MAP.get(state.finish_reason, "end_turn")
-        delta_event = {
-            "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-        }
+        delta_event = {"delta": {"stop_reason": stop_reason, "stop_sequence": None}}
         if state.usage:
             usage_out = {
                 "input_tokens": state.usage.get("prompt_tokens", 0),
@@ -398,10 +402,8 @@ def create_anthropic_sse_stream(upstream_response):
             if cached is not None:
                 usage_out["cache_read_input_tokens"] = cached
             delta_event["usage"] = usage_out
-
         yield _format_sse_event("message_delta", delta_event)
 
-    # 读完所有 chunk，发送 message_stop
     yield _format_sse_event("message_stop", {})
 
 

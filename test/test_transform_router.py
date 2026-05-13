@@ -39,3 +39,11 @@ class TestTransformRouter(unittest.TestCase):
         )
         self.assertIsInstance(result, dict)
 
+    def test_stream_converter_has_unified_signature(self):
+        """流式转换器注册表中所有函数接受 (chunks, *, request_messages, response_store)。"""
+        import inspect
+        for (source, target), func in TransformRouter._stream_converters.items():
+            sig = inspect.signature(func)
+            self.assertIn("request_messages", sig.parameters)
+            self.assertIn("response_store", sig.parameters)
+
