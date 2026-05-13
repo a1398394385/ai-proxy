@@ -105,6 +105,9 @@ return {
     "estimated_cost_cny": round(sum(4 项成本和), 6),
     "avg_duration_ms": avg(...),
 }
+# 注意：fetch_summary 暂不返回 4 项成本拆分（保持 API 兼容）。
+# 4 项成本已在 _fetch_unified_records 的每条记录中计算好，
+# 前端若未来需要 KPI 卡片展示成本拆分，只需在此处多加 4 个 sum 即可。
 ```
 
 ### fetch_by_model(period) → list
@@ -118,8 +121,16 @@ records = self._fetch_unified_records(period)
 
 ```python
 records = self._fetch_unified_records(period)
-# groupby "upstream_id" → sum 各项 → 附 upstream_name（_UpstreamResolver）
-# hermes/opencode 展示名固定为 "[Hermes]"/"[OpenCode]"
+# groupby "upstream_id" → sum 各项 → 附 upstream_name
+
+# upstream_name 解析优先级：
+#   1. upstream_id == "hermes"  → upstream_name = "[Hermes]"
+#   2. upstream_id == "opencode" → upstream_name = "[OpenCode]"
+#   3. 其他 → 调 _UpstreamResolver.resolve_by_id(upstream_id) 获取真实上游名
+#
+# 注意：_UpstreamResolver 只认识 upstreams 表中的真实上游，
+# "hermes"/"opencode" 不在表中，resolve_by_id() 会返回 "__unknown__"。
+# 因此必须在 fetch_by_upstream 中硬编码这两个虚拟上游的展示名。
 ```
 
 ### fetch_trend(period) → list
@@ -261,13 +272,26 @@ def calculate_breakdown(
 
 ## 测试策略
 
-`test/test_stats_service.py` 需重写：
+`test/test_stats_service.py`（当前 3308 行）需大幅重写。以下测试类因依赖被删除的内部类，需整类重写：
 
-- 复用现有 `setUp` 模式（`tempfile.TemporaryDirectory` + 建表 + 种子数据）
-- 核心测试：对给定种子数据，`fetch_summary` / `fetch_by_model` / `fetch_by_upstream` / `fetch_trend` / `fetch_requests` 返回一致结果
+| 需重写的类 | 原因 |
+|-----------|------|
+| `TestMerger` (行 2678) | 9 个测试直接测要删除的 `_Merger` 类 |
+| `TestFetchRequestsMerged` | 依赖三源各自分页再合并的内部流程 |
+| `TestFetchByModelRequestsMerged` | 同上 |
+| `TestFetchByUpstreamMerged` (213 行) | 测的是旧的多源聚合路径 |
+
+需新增的测试：
+
+- `_fetch_unified_records` 的单元测试：三源数据合并、字段归一化、成本计算、分页
+- 各 `fetch_*` 方法的聚合正确性测试
 - 交叉验证：`fetch_summary` 的总 token ≡ `fetch_by_model` 各行求和 ≡ `fetch_by_upstream` 各行求和
 - 分页测试：`fetch_requests(limit=10, offset=0)` 的 total 与全量记录数一致
-- 成本测试：逐项成本字段非负，总计与 `estimated_cost_cny` 一致
+- 成本测试：4 项成本字段非负，总计与 `estimated_cost_cny` 一致
+- 虚拟上游测试：hermes/opencode 的 upstream_name 正确展示为 `[Hermes]`/`[OpenCode]`
+- `_CostCalculator.calculate_breakdown()` 单独测试
+
+**保留不变**：`setUp` 模式（`tempfile.TemporaryDirectory` + 建表 + 种子数据）和现有的 DB schema 初始化逻辑。
 
 ---
 
@@ -275,7 +299,7 @@ def calculate_breakdown(
 
 | 文件 | 预计变动 |
 |------|---------|
-| `stats_service.py` | 删 ~400 行，增 ~180 行（净减 ~220） |
+| `stats_service.py` | 删 ~400 行，增 ~200 行（净减 ~200） |
 | `server/token_api.py` | ~3 行改动 |
 | `static/js/pages/tokens.js` | ~8 行改动 |
-| `test/test_stats_service.py` | 重写测试方法，断言逻辑保持 |
+| `test/test_stats_service.py` | 删 ~1200 行（_Merger + 旧聚合测试），增 ~800 行（新统一方法测试），净减 ~400 |
