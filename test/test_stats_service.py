@@ -3602,6 +3602,156 @@ class TestOpenCodeDao(unittest.TestCase):
         self.assertEqual(day12["input_tokens"], 200)
 
 
+class TestCrossViewConsistency(unittest.TestCase):
+    """所有视图的数据一致性验证 — 同源同结果。"""
+
+    def setUp(self):
+        import json, time
+        self.tmpdir = tempfile.mkdtemp()
+        self.data_db = Path(self.tmpdir) / "access_log.db"
+        self.state_db = Path(self.tmpdir) / "state.db"
+        self.opencode_db = Path(self.tmpdir) / "opencode.db"
+
+        conn = sqlite3.connect(str(self.data_db))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""CREATE TABLE token_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT, request_type TEXT,
+            model TEXT, target_model TEXT, request_ts TEXT, duration_ms INTEGER,
+            input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0,
+            cached_read_tokens INTEGER DEFAULT 0, cached_write_tokens INTEGER DEFAULT 0,
+            upstream_id INTEGER, status TEXT DEFAULT 'completed', created_at TEXT)""")
+        conn.execute("""CREATE TABLE upstreams (
+            id TEXT PRIMARY KEY, base_url TEXT, name TEXT, is_active INTEGER, format TEXT)""")
+        conn.execute("""CREATE TABLE target_models (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, upstream_id TEXT)""")
+        conn.execute("""CREATE TABLE model_pricing (
+            model_id TEXT PRIMARY KEY, display_name TEXT,
+            input_cost_per_million REAL DEFAULT 0, output_cost_per_million REAL DEFAULT 0,
+            cache_read_cost_per_million REAL DEFAULT 0, cache_creation_cost_per_million REAL DEFAULT 0,
+            currency TEXT DEFAULT 'RMB', multiplier REAL DEFAULT 1.0,
+            created_at TEXT, updated_at TEXT)""")
+
+        conn.execute("INSERT INTO upstreams (id, name, is_active, format) "
+                     "VALUES ('up-a', 'Upstream A', 1, 'chat_completions')")
+        conn.execute("INSERT INTO target_models (name, upstream_id) VALUES ('model-a', 'up-a')")
+        conn.execute("INSERT INTO target_models (name, upstream_id) VALUES ('model-b', 'up-a')")
+        conn.execute("INSERT INTO model_pricing (model_id, input_cost_per_million, "
+                     "output_cost_per_million, cache_read_cost_per_million, cache_creation_cost_per_million, "
+                     "currency) VALUES ('model-a', 1.0, 2.0, 0.5, 0.25, 'RMB')")
+        conn.execute("INSERT INTO model_pricing (model_id, input_cost_per_million, "
+                     "output_cost_per_million, cache_read_cost_per_million, cache_creation_cost_per_million, "
+                     "currency) VALUES ('model-b', 3.0, 4.0, 1.0, 0.5, 'RMB')")
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("INSERT INTO token_stats (request_id, request_type, model, target_model, "
+                     "request_ts, input_tokens, output_tokens, cached_read_tokens, cached_write_tokens, "
+                     "upstream_id, status, created_at) VALUES "
+                     "('req-1', 'responses', 'model-a', 'model-a', ?, 100, 50, 10, 5, 'up-a', 'completed', ?)",
+                     (now, now))
+        conn.execute("INSERT INTO token_stats (request_id, request_type, model, target_model, "
+                     "request_ts, input_tokens, output_tokens, cached_read_tokens, cached_write_tokens, "
+                     "upstream_id, status, created_at) VALUES "
+                     "('req-2', 'responses', 'model-b', 'model-b', ?, 200, 100, 20, 10, 'up-a', 'completed', ?)",
+                     (now, now))
+        conn.commit()
+        conn.close()
+
+        sconn = sqlite3.connect(str(self.state_db))
+        sconn.execute("""CREATE TABLE sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT,
+            started_at REAL, input_tokens INTEGER, output_tokens INTEGER,
+            cache_read_tokens INTEGER DEFAULT 0, cache_write_tokens INTEGER DEFAULT 0,
+            message_count INTEGER DEFAULT 0)""")
+        sconn.execute("INSERT INTO sessions (model, started_at, input_tokens, output_tokens, "
+                      "cache_read_tokens, cache_write_tokens) VALUES ('model-a', ?, 300, 150, 30, 15)",
+                      (time.time(),))
+        sconn.commit()
+        sconn.close()
+
+        oconn = sqlite3.connect(str(self.opencode_db))
+        oconn.execute("CREATE TABLE session (id TEXT PRIMARY KEY, model TEXT, time_created INTEGER)")
+        oconn.execute("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, "
+                      "time_created INTEGER, data TEXT)")
+        now_ms = int(time.time() * 1000)
+        msg_data = json.dumps({
+            "role": "assistant", "modelID": "model-a",
+            "tokens": {"input": 50, "output": 25, "reasoning": 0, "cache": {"read": 5, "write": 2}},
+            "time": {"created": now_ms - 3600000, "completed": now_ms - 3500000},
+        })
+        oconn.execute("INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)",
+                      ("msg-1", "s-1", now_ms - 3600000, msg_data))
+        oconn.commit()
+        oconn.close()
+
+    def tearDown(self):
+        import os
+        for p in [self.data_db, self.state_db, self.opencode_db]:
+            if p.exists():
+                os.remove(str(p))
+                for s in ["-wal", "-shm"]:
+                    wp = Path(str(p) + s)
+                    if wp.exists():
+                        os.remove(str(wp))
+        os.rmdir(self.tmpdir)
+
+    def _create_service(self):
+        from stats_service import StatsService
+        return StatsService(
+            data_db_path=str(self.data_db),
+            state_db_path=str(self.state_db),
+            opencode_db_path=str(self.opencode_db),
+        )
+
+    def test_summary_matches_by_model_sum(self):
+        """fetch_summary 的 token 总数等于 fetch_by_model 各行求和。"""
+        svc = self._create_service()
+        summary = svc.fetch_summary("week")
+        by_model = svc.fetch_by_model("week")
+
+        model_input_sum = sum(m["input_tokens"] for m in by_model)
+        model_output_sum = sum(m["output_tokens"] for m in by_model)
+        model_cache_read_sum = sum(m["cache_read_tokens"] for m in by_model)
+        model_cache_write_sum = sum(m["cache_write_tokens"] for m in by_model)
+        model_total_sum = sum(m["total_tokens"] for m in by_model)
+        model_cost_sum = sum(m["estimated_cost_cny"] for m in by_model)
+
+        self.assertEqual(summary["input_tokens"], model_input_sum)
+        self.assertEqual(summary["output_tokens"], model_output_sum)
+        self.assertEqual(summary["cache_read_tokens"], model_cache_read_sum)
+        self.assertEqual(summary["cache_write_tokens"], model_cache_write_sum)
+        self.assertAlmostEqual(summary["estimated_cost_cny"], model_cost_sum, places=6)
+
+    def test_summary_matches_by_upstream_sum(self):
+        """fetch_summary 的 token 总数等于 fetch_by_upstream 各行求和。"""
+        svc = self._create_service()
+        summary = svc.fetch_summary("week")
+        by_up = svc.fetch_by_upstream("week")["upstreams"]
+
+        up_input_sum = sum(u["input_tokens"] for u in by_up)
+        up_output_sum = sum(u["output_tokens"] for u in by_up)
+        up_cost_sum = sum(u["estimated_cost_cny"] for u in by_up)
+
+        self.assertEqual(summary["input_tokens"], up_input_sum)
+        self.assertEqual(summary["output_tokens"], up_output_sum)
+        self.assertAlmostEqual(summary["estimated_cost_cny"], up_cost_sum, places=6)
+
+    def test_fetch_requests_total_matches_all_records(self):
+        """fetch_requests 的 total 等于全量记录数。"""
+        svc = self._create_service()
+        result = svc.fetch_requests("week", limit=10)
+        all_records = svc._fetch_unified_records("week")
+        self.assertEqual(result["total"], len(all_records))
+
+    def test_virtual_upstream_names(self):
+        """虚拟上游 [Hermes]/[OpenCode] 展示名正确。"""
+        svc = self._create_service()
+        result = svc.fetch_by_upstream("week")
+        name_map = {u["upstream_id"]: u["upstream_name"] for u in result["upstreams"]}
+
+        self.assertEqual(name_map.get("hermes"), "[Hermes]")
+        self.assertEqual(name_map.get("opencode"), "[OpenCode]")
+
+
 class TestFetchUnifiedRecords(unittest.TestCase):
     """_fetch_unified_records 集成测试 — 三源数据合并 + 成本计算 + 分页。"""
 

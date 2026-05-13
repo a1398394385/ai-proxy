@@ -1595,26 +1595,163 @@ class StatsService:
 
     # ─── Provider 接口 ───
 
+    def fetch_summary(self, period: str) -> dict:
+        """获取汇总统计数据，合并三源。"""
+        records = self._fetch_unified_records(period)
+        if not records:
+            return {
+                "period": period, "request_count": 0, "input_tokens": 0,
+                "output_tokens": 0, "cache_read_tokens": 0,
+                "cache_write_tokens": 0, "total_tokens": 0,
+                "estimated_cost_cny": 0.0, "avg_duration_ms": 0,
+            }
+        total_input = sum(r["input_tokens"] for r in records)
+        total_output = sum(r["output_tokens"] for r in records)
+        total_cache_read = sum(r["cache_read_tokens"] for r in records)
+        total_cache_write = sum(r["cache_write_tokens"] for r in records)
+        total_cost = sum(
+            r["input_cost_cny"] + r["output_cost_cny"]
+            + r["cache_read_cost_cny"] + r["cache_write_cost_cny"]
+            for r in records
+        )
+        durations = [r["duration_ms"] for r in records if r["duration_ms"]]
+        avg_duration = round(sum(durations) / len(durations), 2) if durations else 0
+        return {
+            "period": period,
+            "request_count": len(records),
+            "input_tokens": total_input,
+            "output_tokens": total_output,
+            "cache_read_tokens": total_cache_read,
+            "cache_write_tokens": total_cache_write,
+            "total_tokens": total_input + total_output + total_cache_read + total_cache_write,
+            "estimated_cost_cny": round(total_cost, 6),
+            "avg_duration_ms": avg_duration,
+        }
+
     def fetch_by_model(self, period: str) -> list:
-        """按模型维度获取统计数据，合并 proxy + sessions + opencode 三源。"""
-        dao = self._get_dao()
-        session_dao = self._get_session_dao()
-        opencode_dao = self._get_opencode_dao()
-        proxy_models = dao.aggregate_by_model(period)
-        session_models = session_dao.aggregate_by_model(period)
-        opencode_models = opencode_dao.aggregate_by_model(period) if opencode_dao else []
-        merged = _Merger.merge_model_lists(proxy_models, session_models, opencode_models)
+        """按模型维度获取统计数据。"""
+        records = self._fetch_unified_records(period)
         calculator = self._get_calculator()
-        for m in merged:
-            m["estimated_cost_cny"] = round(calculator.calculate(
-                model=m["model"], input_tokens=m["input_tokens"],
-                output_tokens=m["output_tokens"],
-                cache_read_tokens=m["cache_read_tokens"],
-                cache_write_tokens=m["cache_write_tokens"],
-            ), 6)
-            m["display_name"] = calculator.get_display_name(m["model"])
-        merged.sort(key=lambda x: x.get("total_tokens", 0), reverse=True)
-        return merged
+        grouped: dict = {}
+        for r in records:
+            model = r["model"]
+            if model not in grouped:
+                grouped[model] = {
+                    "model": model, "request_count": 0,
+                    "input_tokens": 0, "output_tokens": 0,
+                    "cache_read_tokens": 0, "cache_write_tokens": 0,
+                    "total_tokens": 0, "estimated_cost_cny": 0.0,
+                    "avg_duration_ms": 0,
+                }
+                grouped[model]["display_name"] = calculator.get_display_name(model)
+            m = grouped[model]
+            m["request_count"] += 1
+            m["input_tokens"] += r["input_tokens"]
+            m["output_tokens"] += r["output_tokens"]
+            m["cache_read_tokens"] += r["cache_read_tokens"]
+            m["cache_write_tokens"] += r["cache_write_tokens"]
+            m["total_tokens"] += (r["input_tokens"] + r["output_tokens"]
+                                 + r["cache_read_tokens"] + r["cache_write_tokens"])
+            m["estimated_cost_cny"] += (r["input_cost_cny"] + r["output_cost_cny"]
+                                       + r["cache_read_cost_cny"] + r["cache_write_cost_cny"])
+
+        result = []
+        for m in grouped.values():
+            m["estimated_cost_cny"] = round(m["estimated_cost_cny"], 6)
+            result.append(m)
+        result.sort(key=lambda x: x["total_tokens"], reverse=True)
+        return result
+
+    def fetch_by_upstream(self, period: str) -> dict:
+        """按上游维度获取统计数据。"""
+        records = self._fetch_unified_records(period)
+        resolver = self._upstream_resolver
+        grouped: dict = {}
+
+        for r in records:
+            uid = r["upstream_id"]
+            if uid not in grouped:
+                grouped[uid] = {
+                    "upstream_id": uid,
+                    "request_count": 0, "input_tokens": 0, "output_tokens": 0,
+                    "cache_read_tokens": 0, "cache_write_tokens": 0,
+                    "total_tokens": 0, "total_cost": 0.0,
+                }
+            g = grouped[uid]
+            g["request_count"] += 1
+            g["input_tokens"] += r["input_tokens"]
+            g["output_tokens"] += r["output_tokens"]
+            g["cache_read_tokens"] += r["cache_read_tokens"]
+            g["cache_write_tokens"] += r["cache_write_tokens"]
+            g["total_tokens"] += (r["input_tokens"] + r["output_tokens"]
+                                 + r["cache_read_tokens"] + r["cache_write_tokens"])
+            g["total_cost"] += (r["input_cost_cny"] + r["output_cost_cny"]
+                               + r["cache_read_cost_cny"] + r["cache_write_cost_cny"])
+
+        result = []
+        for uid, agg in grouped.items():
+            if uid == "hermes":
+                upstream_name = "[Hermes]"
+                base_url = None
+            elif uid == "opencode":
+                upstream_name = "[OpenCode]"
+                base_url = None
+            else:
+                info = resolver.resolve_by_id(uid)
+                upstream_name = info["upstream_name"]
+                base_url = info.get("base_url")
+            result.append({
+                "upstream_id": uid,
+                "upstream_name": upstream_name,
+                "base_url": base_url,
+                "request_count": agg["request_count"],
+                "input_tokens": agg["input_tokens"],
+                "output_tokens": agg["output_tokens"],
+                "cache_read_tokens": agg["cache_read_tokens"],
+                "cache_write_tokens": agg["cache_write_tokens"],
+                "total_tokens": agg["total_tokens"],
+                "estimated_cost_cny": round(agg["total_cost"], 6),
+            })
+
+        result.sort(key=lambda x: x["estimated_cost_cny"], reverse=True)
+        return {"upstreams": result}
+
+    def fetch_trend(self, period: str) -> list:
+        """获取时间趋势数据，逐桶聚合。"""
+        records = self._fetch_unified_records(period)
+
+        if period in ("day", "24h"):
+            def bucket_key(ts):
+                return ts[:13] + ":00"
+        else:
+            def bucket_key(ts):
+                return ts[:10]
+
+        buckets: dict = {}
+        for r in records:
+            key = bucket_key(r["request_ts"])
+            if key not in buckets:
+                buckets[key] = {"date": key, "request_count": 0,
+                                "input_tokens": 0, "output_tokens": 0,
+                                "cache_read_tokens": 0, "cache_write_tokens": 0,
+                                "estimated_cost_cny": 0.0}
+            b = buckets[key]
+            b["request_count"] += 1
+            b["input_tokens"] += r["input_tokens"]
+            b["output_tokens"] += r["output_tokens"]
+            b["cache_read_tokens"] += r["cache_read_tokens"]
+            b["cache_write_tokens"] += r["cache_write_tokens"]
+            b["estimated_cost_cny"] += (r["input_cost_cny"] + r["output_cost_cny"]
+                                        + r["cache_read_cost_cny"] + r["cache_write_cost_cny"])
+
+        result = []
+        for b in buckets.values():
+            b["total_tokens"] = (b["input_tokens"] + b["output_tokens"]
+                                 + b["cache_read_tokens"] + b["cache_write_tokens"])
+            b["estimated_cost_cny"] = round(b["estimated_cost_cny"], 6)
+            result.append(b)
+        result.sort(key=lambda x: x["date"])
+        return result
 
     def fetch_requests(
         self,
@@ -1624,291 +1761,17 @@ class StatsService:
         limit: int = 50,
         offset: int = 0,
     ) -> dict:
-        """获取请求详情列表（分页），合并 token_stats 和 sessions 两个数据源。
-
-        Args:
-            period: 时间周期
-            model: 可选，按模型过滤
-            request_type: 可选，按请求类型过滤
-            limit: 每页数量
-            offset: 偏移量
-
-        Returns:
-            {requests: [...], total: int, limit: int, offset: int}
-        """
-        fetch_limit = limit + offset
-
-        token_dao = self._get_dao()
-        token_rows, token_total = token_dao.query_token_stats(
-            period=period,
-            model=model,
-            request_type=request_type,
-            limit=fetch_limit,
-            offset=0,
+        """获取请求详情列表（分页）。"""
+        records, total = self._fetch_unified_records(
+            period=period, model=model, request_type=request_type,
+            limit=limit, offset=offset,
         )
-
-        session_dao = self._get_session_dao()
-        session_rows, session_total = session_dao.query_sessions_paged(
-            period=period,
-            model=model,
-            request_type=request_type,
-            limit=fetch_limit,
-            offset=0,
-        )
-
-        opencode_dao = self._get_opencode_dao()
-        if opencode_dao:
-            oc_rows, oc_total = opencode_dao.query_messages_paged(
-                period=period,
-                model=model,
-                request_type=request_type,
-                limit=fetch_limit,
-                offset=0,
-            )
-        else:
-            oc_rows, oc_total = [], 0
-
-        calculator = self._get_calculator()
-        unified_requests = []
-
-        for row in token_rows:
-            row_dict = dict(row) if hasattr(row, 'keys') else dict(row)
-            row_dict = _Merger._rename(row_dict)
-            row_dict["_source"] = "proxy"
-            row_dict["estimated_cost_cny"] = calculator.calculate(
-                model=row_dict.get("target_model", row_dict.get("model", "")),
-                input_tokens=row_dict.get("input_tokens", 0),
-                output_tokens=row_dict.get("output_tokens", 0),
-                cache_read_tokens=row_dict.get("cache_read_tokens", 0),
-                cache_write_tokens=row_dict.get("cache_write_tokens", 0),
-            )
-            unified_requests.append(row_dict)
-
-        for rec in session_rows:
-            rec = _Merger._rename(rec)
-            rec["estimated_cost_cny"] = calculator.calculate(
-                model=rec.get("target_model", rec.get("model", "")),
-                input_tokens=rec.get("input_tokens", 0),
-                output_tokens=rec.get("output_tokens", 0),
-                cache_read_tokens=rec.get("cache_read_tokens", 0),
-                cache_write_tokens=rec.get("cache_write_tokens", 0),
-            )
-            unified_requests.append(rec)
-
-        for rec in oc_rows:
-            rec = _Merger._rename(rec)
-            rec["estimated_cost_cny"] = calculator.calculate(
-                model=rec.get("target_model", rec.get("model", "")),
-                input_tokens=rec.get("input_tokens", 0),
-                output_tokens=rec.get("output_tokens", 0),
-                cache_read_tokens=rec.get("cache_read_tokens", 0),
-                cache_write_tokens=rec.get("cache_write_tokens", 0),
-            )
-            unified_requests.append(rec)
-
-        unified_requests.sort(key=lambda x: x.get("request_ts", ""), reverse=True)
-
-        total = token_total + session_total + oc_total
-        paginated = unified_requests[offset:offset + limit]
-
         return {
-            "requests": paginated,
+            "requests": records,
             "total": total,
             "limit": limit,
             "offset": offset,
         }
-
-    def fetch_by_upstream(self, period: str) -> dict:
-        """按上游维度获取统计数据，三源独立归桶。
-
-        Proxy 按 aggregate_by_upstream() 分组，Hermes sessions 归入 [Hermes]，
-        OpenCode 归入 [OpenCode]，每项计算成本后按 estimated_cost_cny 降序排列。
-
-        Args:
-            period: 时间周期
-
-        Returns:
-            {upstreams: [{upstream_id, base_url, upstream_name, request_count,
-              input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-              total_tokens, estimated_cost_cny}]}
-        """
-        token_dao = self._get_dao()
-        session_dao = self._get_session_dao()
-        opencode_dao = self._get_opencode_dao()
-        calculator = self._get_calculator()
-
-        # 1. Proxy 数据 — 按 upstream_id + model 分组（用于逐模型算成本）
-        proxy_models = token_dao.aggregate_by_upstream(period)
-
-        # 4. 合并三源，按上游汇总并逐模型算成本
-        merged: dict = {}
-
-        # 2. Hermes sessions → [Hermes] 桶
-        session_models = session_dao.aggregate_by_model(period)
-        hermes_bucket = {
-            "upstream_id": "[Hermes]", "upstream_name": "[Hermes]", "base_url": None,
-            "request_count": 0, "input_tokens": 0, "output_tokens": 0,
-            "cache_read_tokens": 0, "cache_write_tokens": 0, "total_tokens": 0,
-        }
-
-        # 3. OpenCode → [OpenCode] 桶
-        oc_bucket = {
-            "upstream_id": "[OpenCode]", "upstream_name": "[OpenCode]", "base_url": None,
-            "request_count": 0, "input_tokens": 0, "output_tokens": 0,
-            "cache_read_tokens": 0, "cache_write_tokens": 0, "total_tokens": 0,
-        }
-
-        # 4a) Proxy — 逐模型算成本后汇总到上游
-        proxy_upstream: dict = {}
-        for item in proxy_models:
-            uid = item["upstream_id"]
-            if uid not in proxy_upstream:
-                proxy_upstream[uid] = {
-                    "upstream_id": uid,
-                    "upstream_name": item["upstream_name"],
-                    "base_url": item.get("base_url"),
-                    "request_count": 0,
-                    "input_tokens": 0, "output_tokens": 0,
-                    "cache_read_tokens": 0, "cache_write_tokens": 0,
-                    "total_tokens": 0, "total_cost": 0.0,
-                }
-            agg = proxy_upstream[uid]
-            agg["request_count"] += item["request_count"]
-            agg["input_tokens"] += item["input_tokens"]
-            agg["output_tokens"] += item["output_tokens"]
-            agg["cache_read_tokens"] += item["cache_read_tokens"]
-            agg["cache_write_tokens"] += item["cache_write_tokens"]
-            agg["total_tokens"] += item["total_tokens"]
-            # 逐模型算成本
-            agg["total_cost"] += calculator.calculate(
-                model=item["model"],
-                input_tokens=item["input_tokens"],
-                output_tokens=item["output_tokens"],
-                cache_read_tokens=item["cache_read_tokens"],
-                cache_write_tokens=item["cache_write_tokens"],
-            )
-
-        for uid, agg in proxy_upstream.items():
-            merged[uid] = agg
-
-        # 4b) Hermes — 逐模型算成本后汇总
-        if session_models:
-            hermes_cost = 0.0
-            for m in session_models:
-                hermes_bucket["request_count"] += m.get("request_count", 0) or 0
-                hermes_bucket["input_tokens"] += m.get("input_tokens", 0) or 0
-                hermes_bucket["output_tokens"] += m.get("output_tokens", 0) or 0
-                hermes_bucket["cache_read_tokens"] += m.get("cache_read_tokens", 0) or 0
-                hermes_bucket["cache_write_tokens"] += m.get("cache_write_tokens", 0) or 0
-                hermes_cost += calculator.calculate(
-                    model=m.get("model", ""),
-                    input_tokens=m.get("input_tokens", 0) or 0,
-                    output_tokens=m.get("output_tokens", 0) or 0,
-                    cache_read_tokens=0, cache_write_tokens=0,
-                )
-            hermes_bucket["total_tokens"] = (
-                hermes_bucket["input_tokens"] + hermes_bucket["output_tokens"]
-                + hermes_bucket["cache_read_tokens"] + hermes_bucket["cache_write_tokens"]
-            )
-            hermes_bucket["total_cost"] = hermes_cost
-            merged["[Hermes]"] = hermes_bucket
-
-        # 4c) OpenCode — 逐模型算成本后汇总
-        if opencode_dao:
-            oc_models = opencode_dao.aggregate_by_model(period)
-            oc_cost = 0.0
-            for m in oc_models:
-                oc_bucket["request_count"] += m.get("request_count", 0) or 0
-                oc_bucket["input_tokens"] += m.get("input_tokens", 0) or 0
-                oc_bucket["output_tokens"] += m.get("output_tokens", 0) or 0
-                oc_bucket["cache_read_tokens"] += m.get("cache_read_tokens", 0) or 0
-                oc_bucket["cache_write_tokens"] += m.get("cache_write_tokens", 0) or 0
-                oc_cost += calculator.calculate(
-                    model=m.get("model", ""),
-                    input_tokens=m.get("input_tokens", 0) or 0,
-                    output_tokens=m.get("output_tokens", 0) or 0,
-                    cache_read_tokens=0, cache_write_tokens=0,
-                )
-            oc_bucket["total_tokens"] = (
-                oc_bucket["input_tokens"] + oc_bucket["output_tokens"]
-                + oc_bucket["cache_read_tokens"] + oc_bucket["cache_write_tokens"]
-            )
-            oc_bucket["total_cost"] = oc_cost
-            if oc_bucket["request_count"] > 0:
-                merged["[OpenCode]"] = oc_bucket
-
-        # 5. 格式化输出
-        result = [
-            {
-                "upstream_id": uid,
-                "base_url": agg.get("base_url"),
-                "upstream_name": agg["upstream_name"],
-                "request_count": agg["request_count"],
-                "input_tokens": agg["input_tokens"],
-                "output_tokens": agg["output_tokens"],
-                "cache_read_tokens": agg["cache_read_tokens"],
-                "cache_write_tokens": agg["cache_write_tokens"],
-                "total_tokens": agg["total_tokens"],
-                "estimated_cost_cny": round(agg["total_cost"], 6),
-            }
-            for uid, agg in merged.items()
-        ]
-        result.sort(key=lambda x: x["estimated_cost_cny"], reverse=True)
-        return {"upstreams": result}
-
-    def fetch_trend(self, period: str) -> list:
-        """获取时间趋势数据，合并 proxy + sessions + opencode 三源。逐点计算成本。"""
-        dao = self._get_dao()
-        session_dao = self._get_session_dao()
-        opencode_dao = self._get_opencode_dao()
-        proxy_trend = dao.aggregate_trend(period)
-        session_trend = session_dao.aggregate_trend(period)
-        opencode_trend = opencode_dao.aggregate_trend(period) if opencode_dao else []
-        merged = _Merger.merge_trend_lists(proxy_trend, session_trend, opencode_trend)
-        merged.sort(key=lambda x: x.get("date", ""))
-
-        # 加权均摊：从 per-model 汇总数据计算总成本，按 token 比例均摊到每个时间桶
-        by_model = self.fetch_by_model(period)
-        total_cost = sum(m.get("estimated_cost_cny", 0) for m in by_model)
-        total_tokens = sum(m.get("total_tokens", 0) or 0 for m in by_model)
-
-        for point in merged:
-            point_tokens = point.get("total_tokens", 0) or (
-                point.get("input_tokens", 0) + point.get("output_tokens", 0)
-                + point.get("cache_read_tokens", 0) + point.get("cache_write_tokens", 0)
-            )
-            if total_tokens > 0:
-                point["estimated_cost_cny"] = total_cost * point_tokens / total_tokens
-            else:
-                point["estimated_cost_cny"] = 0.0
-
-        return merged
-
-    def fetch_summary(self, period: str) -> dict:
-        """获取汇总统计数据，合并 proxy + sessions + opencode 三源。成本按模型逐个计算后求和。"""
-        dao = self._get_dao()
-        session_dao = self._get_session_dao()
-        opencode_dao = self._get_opencode_dao()
-        proxy = dao.aggregate_summary(period)
-        session = session_dao.aggregate_summary(period)
-        opencode = opencode_dao.aggregate_summary(period) if opencode_dao else {}
-        result = _Merger.merge_summary(proxy, session, opencode)
-        # 成本按模型逐个计算再求和
-        proxy_models = dao.aggregate_by_model(period)
-        session_models = session_dao.aggregate_by_model(period)
-        opencode_models = opencode_dao.aggregate_by_model(period) if opencode_dao else []
-        merged_models = _Merger.merge_model_lists(proxy_models, session_models, opencode_models)
-        calculator = self._get_calculator()
-        total_cost = 0
-        for m in merged_models:
-            total_cost += calculator.calculate(
-                model=m["model"], input_tokens=m["input_tokens"],
-                output_tokens=m["output_tokens"],
-                cache_read_tokens=m["cache_read_tokens"],
-                cache_write_tokens=m["cache_write_tokens"],
-            )
-        result["estimated_cost_cny"] = round(total_cost, 6)
-        return result
 
     def fetch_all_summaries(self) -> dict:
         """获取 day/week/month 三个周期的汇总数据。"""
@@ -1916,111 +1779,6 @@ class StatsService:
         for period in ("day", "week", "month"):
             result[period] = self.fetch_summary(period)
         return result
-
-    def fetch_by_model_requests(
-        self,
-        model: str,
-        period: str,
-        limit: int = 50,
-        offset: int = 0,
-    ) -> dict:
-        """获取指定模型的请求详情列表(分页),合并 token_stats 和 sessions 数据源。
-
-        Args:
-            model: 模型名称
-            period: 时间周期
-            limit: 每页数量
-            offset: 偏移量
-
-        Returns:
-            {model: str, requests: [...], total: int, limit: int, offset: int}
-        """
-        fetch_limit = limit + offset
-
-        # 1. 从 token_stats 取 limit+offset 条
-        token_dao = self._get_dao()
-        token_rows, token_total = token_dao.query_token_stats(
-            period=period,
-            model=model,
-            limit=fetch_limit,
-            offset=0,
-        )
-
-        # 2. 从 sessions 取 limit+offset 条(按 model 过滤,会用 _normalize_model_name 匹配)
-        session_dao = self._get_session_dao()
-        session_rows, session_total = session_dao.query_sessions_paged(
-            period=period,
-            model=model,
-            limit=fetch_limit,
-            offset=0,
-        )
-
-        opencode_dao = self._get_opencode_dao()
-        if opencode_dao:
-            oc_rows, oc_total = opencode_dao.query_messages_paged(
-                period=period,
-                model=model,
-                request_type=None,
-                limit=fetch_limit,
-                offset=0,
-            )
-        else:
-            oc_rows, oc_total = [], 0
-
-        # 3. 合并两个列表,统一添加 estimated_cost_cny 字段
-        calculator = self._get_calculator()
-        unified_requests = []
-
-        for row in token_rows:
-            row_dict = dict(row) if hasattr(row, 'keys') else dict(row)
-            row_dict = _Merger._rename(row_dict)
-            row_dict["_source"] = "proxy"
-            row_dict["estimated_cost_cny"] = calculator.calculate(
-                model=row_dict.get("target_model", row_dict.get("model", "")),
-                input_tokens=row_dict.get("input_tokens", 0),
-                output_tokens=row_dict.get("output_tokens", 0),
-                cache_read_tokens=row_dict.get("cache_read_tokens", 0),
-                cache_write_tokens=row_dict.get("cache_write_tokens", 0),
-            )
-            unified_requests.append(row_dict)
-
-        for rec in session_rows:
-            rec = _Merger._rename(rec)
-            rec["estimated_cost_cny"] = calculator.calculate(
-                model=rec.get("target_model", rec.get("model", "")),
-                input_tokens=rec.get("input_tokens", 0),
-                output_tokens=rec.get("output_tokens", 0),
-                cache_read_tokens=rec.get("cache_read_tokens", 0),
-                cache_write_tokens=rec.get("cache_write_tokens", 0),
-            )
-            unified_requests.append(rec)
-
-        for rec in oc_rows:
-            rec = _Merger._rename(rec)
-            rec["estimated_cost_cny"] = calculator.calculate(
-                model=rec.get("target_model", rec.get("model", "")),
-                input_tokens=rec.get("input_tokens", 0),
-                output_tokens=rec.get("output_tokens", 0),
-                cache_read_tokens=rec.get("cache_read_tokens", 0),
-                cache_write_tokens=rec.get("cache_write_tokens", 0),
-            )
-            unified_requests.append(rec)
-
-        # 4. 按 request_ts DESC 排序
-        unified_requests.sort(key=lambda x: x.get("request_ts", ""), reverse=True)
-
-        # 5. 切片返回
-        total = token_total + session_total + oc_total
-        paginated = unified_requests[offset:offset + limit]
-
-        # 6. 返回格式
-        return {
-            "model": model,
-            "requests": paginated,
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-        }
     # ─── 辅助方法 ───
 
     def _load_upstream_map(self) -> dict:
