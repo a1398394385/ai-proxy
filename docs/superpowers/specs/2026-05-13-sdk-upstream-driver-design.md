@@ -248,11 +248,31 @@ if request_type == target_format:
 
 chat_body = TransformRouter.convert_request(body, request_type, target_format, model_cfg)
 
+# previous_response_id：仅 responses 路径支持多轮对话
+if request_type == REQUEST_TYPE_RESPONSES:
+    prev_id = body.get("previous_response_id")
+    if prev_id:
+        response_store = getattr(self.server, "response_store", None)
+        if response_store is not None:
+            record = response_store.get(prev_id)
+            if record:
+                system_msgs = [m for m in chat_body["messages"] if m.get("role") == "system"]
+                non_system_msgs = [m for m in chat_body["messages"] if m.get("role") != "system"]
+                chat_body["messages"] = system_msgs + record.conversation + non_system_msgs
+            else:
+                logging.warning(f"previous_response_id={prev_id!r} 不存在或已过期，忽略历史")
+
 driver = UpstreamDriver(upstream_cfg)
 raw_response = driver.create(target_format, chat_body)
 chat_response = raw_response.model_dump()
 
 output = TransformRouter.convert_response(chat_response, target_format, request_type)
+
+# 存储 response（仅 responses 路径）
+if store_enabled and is_responses_api:
+    _store_response(self.server, output, chat_body.get("messages", []))
+
+driver.close()
 ```
 
 **流式：**
@@ -265,6 +285,21 @@ if request_type == target_format:
 
 chat_body = TransformRouter.convert_request(body, request_type, target_format, model_cfg)
 
+# previous_response_id：仅 responses 路径支持多轮对话
+# 必须在 TransformRouter 转换之后、调上游之前执行（因为要修改 chat_body.messages）
+if request_type == REQUEST_TYPE_RESPONSES:
+    prev_id = body.get("previous_response_id")
+    if prev_id:
+        response_store = getattr(self.server, "response_store", None)
+        if response_store is not None:
+            record = response_store.get(prev_id)
+            if record:
+                system_msgs = [m for m in chat_body["messages"] if m.get("role") == "system"]
+                non_system_msgs = [m for m in chat_body["messages"] if m.get("role") != "system"]
+                chat_body["messages"] = system_msgs + record.conversation + non_system_msgs
+            else:
+                logging.warning(f"previous_response_id={prev_id!r} 不存在或已过期，忽略历史")
+
 driver = UpstreamDriver(upstream_cfg)
 stream = driver.create_stream(target_format, chat_body)
 
@@ -275,7 +310,7 @@ self.send_header("Cache-Control", "no-cache")
 self.send_header("X-Accel-Buffering", "no")
 self.end_headers()
 
-# TransformRouter 迭代转换
+# TransformRouter 迭代转换，同时从 SSE 事件中提取 usage
 _rstore = getattr(self.server, "response_store", None) if store_enabled else None
 final_usage = None
 for sse_event in TransformRouter.stream_convert(
@@ -285,12 +320,28 @@ for sse_event in TransformRouter.stream_convert(
 ):
     self.wfile.write(sse_event.encode())
     self.wfile.flush()
+    # 从 response.completed / message_delta 事件中提取 usage
+    if "response.completed" in sse_event or "message_delta" in sse_event:
+        try:
+            data_json = sse_event.split("data: ", 1)[1]
+            data = json.loads(data_json)
+            usage = (data.get("response", {}).get("usage")
+                     or data.get("usage"))
+            if usage:
+                final_usage = usage
+        except (json.JSONDecodeError, IndexError):
+            pass
 
-# 流结束后提取 usage 并记录 token 统计
+# 流结束后记录 token 统计
 if final_usage:
     record_token_stats(final_usage, ctx)
+else:
+    logger.warning(f"流式路径未提取到 usage: request_id={request_id}")
 driver.close()
 ```
+
+> **usage 提取说明**：SSE 工厂在 `response.completed`（Responses 格式）或 `message_delta`（Anthropic 格式）事件中携带 usage。
+> handler 在迭代时从这些事件中解析。这是当前 `_forward_streaming` 已有的模式（handler.py:977-981），保持一致。
 
 ## 四、SSE 流式工厂适配
 
