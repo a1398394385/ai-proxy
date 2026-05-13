@@ -70,6 +70,71 @@ class _TokenStatsDao:
 
     # ─── 查询方法 ───
 
+    def query_raw(
+        self,
+        period: str,
+        model: str | None = None,
+        request_type: str | None = None,
+    ) -> list[dict]:
+        """查询原始 token_stats 记录，返回统一格式 dict 列表。
+
+        Args:
+            period: 时间周期
+            model: 可选，按 target_model 精确匹配（已规范化的模型名）
+            request_type: 可选，按 request_type 过滤
+
+        Returns:
+            统一格式记录列表
+        """
+        time_condition = self._period_to_condition(period)
+        conditions = [time_condition]
+        params: list = []
+
+        if model:
+            conditions.append("target_model = ?")
+            params.append(model)
+
+        if request_type:
+            conditions.append("request_type = ?")
+            params.append(request_type)
+
+        where_clause = " AND ".join(conditions)
+
+        conn = self._get_conn()
+        try:
+            rows = conn.execute(
+                f"""
+                SELECT request_id, request_type, target_model,
+                       request_ts, duration_ms, input_tokens, output_tokens,
+                       cached_read_tokens, cached_write_tokens,
+                       COALESCE(upstream_id, '__unknown__') as upstream_id,
+                       status
+                FROM token_stats
+                WHERE {where_clause}
+                ORDER BY request_ts DESC
+                """,
+                params,
+            ).fetchall()
+
+            return [
+                {
+                    "request_id": row["request_id"],
+                    "model": row["target_model"] or "",
+                    "request_type": row["request_type"],
+                    "request_ts": row["request_ts"],
+                    "duration_ms": row["duration_ms"],
+                    "status": row["status"] or "completed",
+                    "input_tokens": row["input_tokens"] or 0,
+                    "output_tokens": row["output_tokens"] or 0,
+                    "cache_read_tokens": row["cached_read_tokens"] or 0,   # DB 列名带 d
+                    "cache_write_tokens": row["cached_write_tokens"] or 0, # 输出时去 d
+                    "upstream_id": row["upstream_id"],
+                }
+                for row in rows
+            ]
+        finally:
+            conn.close()
+
     def query_token_stats(
         self,
         period: str,

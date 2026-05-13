@@ -1107,6 +1107,93 @@ class TestCostCalculatorBreakdown(unittest.TestCase):
         self.assertAlmostEqual(result["output_cost_cny"], 2.0, places=6)
 
 
+class TestTokenStatsDao(unittest.TestCase):
+    """_TokenStatsDao 测试。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.data_db = Path(self.tmpdir) / "access_log.db"
+        conn = sqlite3.connect(str(self.data_db))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""CREATE TABLE IF NOT EXISTS token_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL,
+            request_type TEXT NOT NULL, model TEXT NOT NULL, target_model TEXT NOT NULL,
+            request_ts TEXT NOT NULL, duration_ms INTEGER, input_tokens INTEGER DEFAULT 0,
+            output_tokens INTEGER DEFAULT 0, cached_read_tokens INTEGER DEFAULT 0,
+            cached_write_tokens INTEGER DEFAULT 0, upstream_id INTEGER,
+            status TEXT DEFAULT 'completed', created_at TEXT NOT NULL)""")
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _seed_token_stats_data(self):
+        """插入测试用 token_stats 数据。"""
+        conn = sqlite3.connect(str(self.data_db))
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "INSERT INTO token_stats (request_id, request_type, model, target_model, "
+            "request_ts, duration_ms, input_tokens, output_tokens, cached_read_tokens, "
+            "cached_write_tokens, upstream_id, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("req-001", "responses", "deepseek-v4-flash", "deepseek-v4-flash",
+             now, 500, 1000, 500, 100, 50, "up-deepseek", "completed", now),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_query_raw_returns_unified_schema(self):
+        """query_raw 返回统一格式记录，字段名符合 schema。"""
+        from stats_service import _TokenStatsDao
+        dao = _TokenStatsDao(self.data_db)
+        self._seed_token_stats_data()
+
+        records = dao.query_raw("week")
+
+        self.assertIsInstance(records, list)
+        self.assertGreater(len(records), 0)
+        r = records[0]
+        # 统一 schema 必须字段
+        self.assertIn("request_id", r)
+        self.assertIn("model", r)
+        self.assertIn("request_type", r)
+        self.assertIn("request_ts", r)
+        self.assertIn("duration_ms", r)
+        self.assertIn("status", r)
+        self.assertIn("input_tokens", r)
+        self.assertIn("output_tokens", r)
+        self.assertIn("cache_read_tokens", r)     # 注意：不带 'd'
+        self.assertIn("cache_write_tokens", r)    # 注意：不带 'd'
+        self.assertIn("upstream_id", r)
+        # 不应存在的旧字段
+        self.assertNotIn("_source", r)
+        self.assertNotIn("target_model", r)
+        self.assertNotIn("cached_read_tokens", r)
+        self.assertNotIn("cached_write_tokens", r)
+
+    def test_query_raw_upstream_id_null_defaults_unknown(self):
+        """upstream_id 为 NULL 时，query_raw 返回 '__unknown__'。"""
+        from stats_service import _TokenStatsDao
+        dao = _TokenStatsDao(self.data_db)
+
+        conn = sqlite3.connect(str(self.data_db))
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "INSERT INTO token_stats (request_id, request_type, model, target_model, "
+            "request_ts, duration_ms, input_tokens, output_tokens, cached_read_tokens, "
+            "cached_write_tokens, upstream_id, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'completed', ?)",
+            ("req-1", "responses", "gpt-4", "gpt-4", now, 100, 50, 30, 0, 0, now),
+        )
+        conn.commit()
+        conn.close()
+
+        records = dao.query_raw("week")
+        self.assertEqual(records[0]["upstream_id"], "__unknown__")
+
+
 class TestUpstreamResolver(unittest.TestCase):
     """_UpstreamResolver 测试。"""
 
