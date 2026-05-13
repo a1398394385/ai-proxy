@@ -156,6 +156,31 @@ class TestCostCalculatorBreakdown(unittest.TestCase):
             cache_read_tokens=0, cache_write_tokens=0,
         )
         self.assertEqual(result_lower["input_cost_cny"], result_upper["input_cost_cny"])
+
+    def test_breakdown_with_multiplier(self):
+        """multiplier 非 1.0 时成本按比例缩放。"""
+        from stats_service import _CostCalculator
+
+        # 插入 multiplier=2.0 的定价
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute("INSERT INTO model_pricing (model_id, display_name, input_cost_per_million, "
+                     "output_cost_per_million, cache_read_cost_per_million, cache_creation_cost_per_million, "
+                     "currency, multiplier) VALUES (?, ?, ?, ?, ?, ?, 'RMB', 2.0)",
+                     ("mult-model", "Multi Model", 1.0, 2.0, 0.5, 0.25))
+        conn.commit()
+        conn.close()
+
+        calc = _CostCalculator(str(self.db_path))
+        result = calc.calculate_breakdown(
+            model="mult-model",
+            input_tokens=1_000_000,
+            output_tokens=500_000,
+            cache_read_tokens=200_000,
+            cache_write_tokens=100_000,
+        )
+        # multiplier=2.0，成本应翻倍
+        self.assertAlmostEqual(result["input_cost_cny"], 2.0, places=6)   # 1.0 × 2 = 2.0
+        self.assertAlmostEqual(result["output_cost_cny"], 2.0, places=6)  # 2.0 × 0.5M/1M × 2 = 2.0
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -163,7 +188,7 @@ class TestCostCalculatorBreakdown(unittest.TestCase):
 ```bash
 python3 -m pytest test/test_stats_service.py::TestCostCalculatorBreakdown -q
 ```
-Expected: 5 failures, `_CostCalculator` object has no attribute `calculate_breakdown`
+Expected: 6 failures, `_CostCalculator` object has no attribute `calculate_breakdown`
 
 - [ ] **Step 3: Implement `calculate_breakdown()`**
 
@@ -213,7 +238,7 @@ Expected: 5 failures, `_CostCalculator` object has no attribute `calculate_break
 ```bash
 python3 -m pytest test/test_stats_service.py::TestCostCalculatorBreakdown -v
 ```
-Expected: 5 passed
+Expected: 6 passed
 
 - [ ] **Step 5: Commit**
 
@@ -494,7 +519,7 @@ Expected: AttributeError, `_SessionDao` has no attribute `query_raw`
                 normalized = self._normalize_model_name(model_name)
                 ts = row["started_at"]
                 if isinstance(ts, (int, float)):
-                    ts = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                    ts = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")  # localtime，与 token_stats 的 SQLite datetime() 一致
                 records.append({
                     "request_id": f"sess-{row['id']}",
                     "model": normalized,
@@ -604,7 +629,7 @@ Expected: AttributeError
                 f"""
                 SELECT m.id as message_id,
                        json_extract(m.data, '$.modelID') as model_id,
-                       datetime(m.time_created / 1000, 'unixepoch') as request_ts,
+                       datetime(m.time_created / 1000, 'unixepoch', 'localtime') as request_ts,
                        CAST(json_extract(m.data, '$.tokens.input') AS INTEGER) as input_tokens,
                        CAST(json_extract(m.data, '$.tokens.output') AS INTEGER)
                            + CAST(json_extract(m.data, '$.tokens.reasoning') AS INTEGER) as output_tokens,
@@ -623,7 +648,7 @@ Expected: AttributeError
                 {
                     "request_id": f"oc-msg-{row['message_id']}",
                     "model": row["model_id"] or "",
-                    "request_type": "session",
+                    "request_type": "session",  # OpenCode 也是 "session"，与 hermes 一致；通过 upstream_id("opencode") 区分
                     "request_ts": row["request_ts"],
                     "duration_ms": row["duration_ms"],
                     "status": "completed",
@@ -851,6 +876,11 @@ python3 -m pytest test/test_stats_service.py::TestFetchUnifiedRecords -q
 Expected: 7 failures, `StatsService` has no attribute `_fetch_unified_records`
 
 - [ ] **Step 3: Implement `_fetch_unified_records()`**
+
+**关键决策：**
+- 模型规范化：在入口统一调用 `_SessionDao._normalize_model_name()`，三个 DAO 拿到的 `model` 参数已经是干净名
+- 分页 total：合并后 `len(records)` 即为 `total`（无需各 DAO 返回 count 再求和）
+- 排序：`request_ts` 字符串 DESC 排序。三源的 request_ts 已统一为 localtime 格式（详见 Task 3-4 的时区修正）
 
 在 `stats_service.py` 的 `StatsService` 类中，`_get_dao()` 方法之前新增：
 
@@ -1348,12 +1378,14 @@ git commit -m "feat: 重写所有 fetch_* 方法为 _fetch_unified_records() 内
 - `aggregate_by_model()` (lines 752-814)
 - `aggregate_summary()` (lines 816-853)
 - `aggregate_trend()` (lines 855-897)
+- `_row_to_record()` (line 629) — `query_raw()` 直接构造 dict，不再需要此方法
 
 **`_OpenCodeDao` 类中删除：**
 - `aggregate_by_model()` (lines 957-996)
 - `aggregate_summary()` (lines 997-1035)
 - `aggregate_trend()` (lines 1037-1080)
 - `query_messages_paged()` (lines 1082-1142)
+- `_row_to_record()` (line 930) — 同上
 
 **删除整个 `_Merger` 类** (lines 1145-1246)
 
@@ -1372,16 +1404,42 @@ python3 -m pytest test/test_stats_service.py -q 2>&1 | tail -5
 
 Expected: 部分测试会失败，因为 `TestMerger`、`TestFetchRequestsMerged` 等旧测试引用了已删除的类和方法。这是预期行为。
 
-- [ ] **Step 3: Delete old test classes**
+- [ ] **Step 3: Delete old test classes and methods**
 
-在 `test/test_stats_service.py` 中删除以下测试类：
-- `TestMerger`（及其所有测试方法）
-- `TestFetchRequestsMerged`
-- `TestFetchByModelRequestsMerged`
-- `TestFetchByUpstreamMerged`
-- `TestFetchByModelRequests`（如果只测 `fetch_by_model_requests`）
+在 `test/test_stats_service.py` 中按以下清单删除：
 
-保留 `TestTokenStatsDao`、`TestSessionDao`、`TestOpenCodeDao`、`TestStatsService`，以及新增的 `TestCostCalculatorBreakdown`、`TestFetchUnifiedRecords`、`TestCrossViewConsistency`。
+| 测试类 | 需删除的方法 | 原因 |
+|--------|------------|------|
+| `TestMerger` (整类) | 全部 9 个测试方法 | 直接测已删除的 `_Merger` 类 |
+| `TestFetchRequestsMerged` (整类) | 全部测试方法 | 依赖三源各自分页再合并的内部流程 |
+| `TestFetchByModelRequestsMerged` (整类) | 全部测试方法 | 同上 |
+| `TestFetchByUpstreamMerged` (整类) | 全部 ~213 行 | 测旧的多源聚合路径 |
+| `TestFetchSummaryMerged` (整类) | 全部测试方法 | 依赖 `_Merger.merge_summary` 内部逻辑 |
+| `TestTokenStatsDao` | `test_query_token_stats_*` | 被测的 `query_token_stats()` 已删除 |
+| `TestSessionDao` | `test_query_sessions_basic` | `query_sessions()` 已删除 |
+| | `test_query_sessions_db_not_exists` | 同上 |
+| | `test_query_sessions_model_filter` | 同上 |
+| | `test_query_sessions_period_filter` | 同上 |
+| | `test_query_sessions_null_input_tokens_excluded` | 同上 |
+| | `test_aggregate_by_model_*` (4 个) | `aggregate_by_model()` 已删除 |
+| | `test_aggregate_summary_*` (2 个) | `aggregate_summary()` 已删除 |
+| | `test_aggregate_trend_*` (2 个) | `aggregate_trend()` 已删除 |
+| `TestOpenCodeDao` | `test_aggregate_by_model_*` (2 个) | `aggregate_by_model()` 已删除 |
+| | `test_aggregate_summary_*` (2 个) | `aggregate_summary()` 已删除 |
+| | `test_aggregate_trend_*` (2 个) | `aggregate_trend()` 已删除 |
+| | `test_query_messages_paged_*` (5 个) | `query_messages_paged()` 已删除 |
+| `TestStatsService` | `test_fetch_by_model_requests_exists` | `fetch_by_model_requests()` 已删除 |
+| | `test_fetch_by_model_requests_basic` | 同上 |
+
+**保留的测试类（不做删除）：**
+- `TestTokenStatsDao` — 保留不依赖已删除方法的测试
+- `TestSessionDao` — 保留 `test_query_raw_returns_unified_schema` 等新测试
+- `TestOpenCodeDao` — 同上
+- `TestStatsService` — 保留 `test_create_service` / `test_fetch_summary_*` / `test_fetch_*` 等核心测试
+- `TestCostCalculator` — 保留现有测试
+- `TestCostCalculatorBreakdown` (新增)
+- `TestFetchUnifiedRecords` (新增)
+- `TestCrossViewConsistency` (新增)
 
 - [ ] **Step 4: Run remaining tests**
 
@@ -1485,7 +1543,8 @@ git commit -m "refactor: token_api by_model 端点改用 fetch_requests + 补 mo
 **Files:**
 - Modify: `static/js/pages/tokens.js:528` (展开行 isSession)
 - Modify: `static/js/pages/tokens.js:700` (请求日志 isSession)
-- Modify: `static/js/pages/tokens.js:537-542` (成本展示)
+- Modify: `static/js/pages/tokens.js:537` (展开行成本改为 4 项求和)
+- Modify: `static/js/pages/tokens.js:706` (请求日志表格成本改为 4 项求和)
 
 - [ ] **Step 1: 第一处改动 — 展开行 isSession 判断 (line 528)**
 
@@ -1497,6 +1556,10 @@ const isSession = r.type === 'session' || r.request_type === 'session';
 const isSession = r.upstream_id === 'hermes' || r.upstream_id === 'opencode';
 ```
 
+> **设计决策：保留 dash 渲染逻辑。** 新 schema 下 hermes/opencode 来源的记录也有完整的 4 项 token 数据，
+> 可以正常渲染数值而非 `-`。此处保守处理，先只改判断条件不改渲染行为，
+> 等验证 hermes/opencode 的 token 数据质量后再决定是否去掉 dash 逻辑。
+
 - [ ] **Step 2: 第二处改动 — 请求日志行 isSession 判断 (line 700)**
 
 ```javascript
@@ -1507,26 +1570,40 @@ const isSession = r.type === 'session' || r.request_type === 'session';
 const isSession = r.upstream_id === 'hermes' || r.upstream_id === 'opencode';
 ```
 
-- [ ] **Step 3: 第三处改动 — 成本展示从单值改为 4 项和 (line 537 附近)**
+- [ ] **Step 3: 第三处改动 — 展开行成本展示 (line 537 附近)**
 
 在展开行的 token 单元格渲染中，找到 `r.estimated_cost_cny` 并替换：
 
 ```javascript
-// 旧:
+// 旧 (line 537):
 const costStr = (r.estimated_cost_cny || 0).toFixed(6);
 
 // 改为:
 const costStr = ((r.input_cost_cny || 0) + (r.output_cost_cny || 0) + (r.cache_read_cost_cny || 0) + (r.cache_write_cost_cny || 0)).toFixed(6);
 ```
 
-- [ ] **Step 4: 重启服务验证前端**
+- [ ] **Step 4: 第四处改动 — 请求日志表格成本列 (line 706)**
+
+请求日志表格 `renderRequestTable` 中同样直接读了 `r.estimated_cost_cny`，必须同步改为 4 项求和：
+
+```javascript
+// 旧 (line 706):
+const costStr = (r.estimated_cost_cny || 0).toFixed(6);
+
+// 改为:
+const costStr = ((r.input_cost_cny || 0) + (r.output_cost_cny || 0) + (r.cache_read_cost_cny || 0) + (r.cache_write_cost_cny || 0)).toFixed(6);
+```
+
+> **注意：** 新 schema 下单条记录不再有 `estimated_cost_cny` 字段，如果不改 line 706，请求日志行的成本列会变成 `NaN`。
+
+- [ ] **Step 5: 重启服务验证前端**
 
 ```bash
 ./server.sh restart
 ```
 Then manually verify: open the token stats page, switch through all 3 sub-tabs, verify data loads correctly.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add static/js/pages/tokens.js
