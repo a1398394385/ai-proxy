@@ -123,6 +123,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
         request_id = _generate_request_id()
         request_ts = time.strftime("%Y-%m-%d %H:%M:%S")
 
+        # 构建完整下游请求 URL
+        scheme = self.headers.get("X-Forwarded-Proto", "http")
+        host = self.headers.get("Host", "localhost")
+        downstream_url = f"{scheme}://{host}{self.path}"
+
         # 解析 JSON body
         try:
             body = json.loads(body_raw)
@@ -136,11 +141,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     "?",
                     {"raw_error": str(e), "raw_body": body_raw.decode("utf-8", errors="replace")[:5000]},
                     request_type=request_type,
+                    request_path=downstream_url,
                 )
             self._send_json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
             return
 
         model_name = body.get("model", "*")
+        client_ip = self.client_address[0]
+        user_agent = self.headers.get("User-Agent", "")[:120]
+
+        # 日志：记录客户端信息，便于排查来源
+        logging.info(
+            f"请求: client={client_ip}, ua={user_agent}, "
+            f"model={model_name}, type={request_type}, path={self.path}"
+        )
 
         # 解析模型路由：先查 config_cache.resolve 获取完整信息（含 format）
         raw_cfg = config_cache.resolve(model_name, request_type)
@@ -164,10 +178,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": {"type": "internal_error", "message": "模型路由不可用"}})
             return
 
-        # 阶段 1：记录原始请求
+        # 阶段 1：记录原始请求（完整下游 URL）
         logger = get_logger()
         if logger:
-            logger.log_raw_request(request_id, model_name, target, body, request_type=request_type)
+            logger.log_raw_request(request_id, model_name, target, body,
+                                   request_type=request_type, request_path=downstream_url)
 
         # 透传/转换判定
         if request_type == upstream_format and upstream_format:
@@ -217,7 +232,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
         与 PassThroughHandler._handle_pass_through() 对应，
         增加阶段 2/4 日志 + token_stats 调用。
         """
-        # 阶段 2：记录"透传"标记
+        # 构建上游完整请求 URL
+        forward_path = _normalize_forward_path(self.path)
+        if forward_path is None:
+            self._send_json(400, {"error": {"type": "invalid_request_error", "message": "无效的请求路径"}})
+            return
+
+        upstream_url = upstream_cfg["base_url"].rstrip("/") + forward_path
+
         logger = get_logger()
         if logger:
             logger.log_converted_request(
@@ -225,6 +247,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 {"passthrough": True, "format_match": True,
                  "reason": f"request_type '{request_type}' 匹配上游 format"},
                 request_type=request_type,
+                request_path=upstream_url,
             )
 
         # 替换 body 中的 model 名称为 target（如路由有映射）
@@ -236,12 +259,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     body_raw = json.dumps(new_body).encode("utf-8")
             except (json.JSONDecodeError, UnicodeDecodeError):
                 pass
-
-        # 归一化转发路径
-        forward_path = _normalize_forward_path(self.path)
-        if forward_path is None:
-            self._send_json(400, {"error": {"type": "invalid_request_error", "message": "无效的请求路径"}})
-            return
 
         # 检测 stream 模式
         is_stream = False
@@ -325,14 +342,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         chat_response = json.loads(resp_body)
                         usage = chat_response.get("usage", {})
                         if usage:
-                            record_token_stats(usage, {
+                            ctx = {
                                 "request_id": request_id,
                                 "request_type": request_type,
                                 "model": model_name,
                                 "target_model": target,
                                 "request_ts": request_ts,
                                 "duration_ms": duration_ms,
-                            })
+                            }
+                            if upstream_cfg.get("id") is not None:
+                                ctx["upstream_id"] = upstream_cfg["id"]
+                            record_token_stats(usage, ctx)
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         logging.warning("透传: 响应非 JSON，无法提取 usage")
 
@@ -495,14 +515,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
                 # Token 统计（透传流式路径）
                 if final_usage:
-                    record_token_stats(final_usage, {
+                    ctx = {
                         "request_id": request_id,
                         "request_type": request_type,
                         "model": model_name,
                         "target_model": target,
                         "request_ts": request_ts,
                         "duration_ms": duration_ms,
-                    })
+                    }
+                    if upstream_cfg.get("id") is not None:
+                        ctx["upstream_id"] = upstream_cfg["id"]
+                    record_token_stats(final_usage, ctx)
 
                 self.close_connection = True
                 return
@@ -591,10 +614,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": {"type": "internal_error", "message": str(e)}})
             return
 
-        # 阶段 2：记录转换后的请求
+        # 阶段 2：记录转换后的请求（完整上游 URL）
+        upstream_url = None
+        if upstream_cfg and upstream_cfg.get("base_url"):
+            upstream_url = upstream_cfg["base_url"].rstrip("/") + "/v1/chat/completions"
         if logger:
             logger.log_converted_request(
                 request_id, model_name, target, chat_body, request_type=request_type,
+                request_path=upstream_url,
             )
 
         # previous_response_id：仅 responses 路径支持多轮对话
@@ -673,7 +700,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         retries = upstream_cfg.get("retry", 0) + 1
 
         parsed = urllib.parse.urlparse(base_url)
-        path = parsed.path.rstrip("/") + "/chat/completions"
+        path = parsed.path.rstrip("/") + "/v1/chat/completions"
         port = parsed.port or (80 if parsed.scheme == "http" else 443)
         use_ssl = parsed.scheme == "https"
         ssl_ctx = ssl.create_default_context() if upstream_cfg.get("ssl_verify", True) else ssl._create_unverified_context()
@@ -742,14 +769,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
                     usage = chat_response.get("usage", {})
                     if usage:
-                        record_token_stats(usage, {
+                        ctx = {
                             "request_id": request_id,
                             "request_type": request_type,
                             "model": model,
                             "target_model": target,
                             "request_ts": request_ts,
                             "duration_ms": duration_ms,
-                        })
+                        }
+                        if upstream_cfg.get("id") is not None:
+                            ctx["upstream_id"] = upstream_cfg["id"]
+                        record_token_stats(usage, ctx)
                 except Exception as e:
                     logging.exception("响应转换失败")
                     if logger:
@@ -800,7 +830,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         ssl_verify = upstream_cfg.get("ssl_verify", True)
 
         parsed = urllib.parse.urlparse(base_url)
-        path = parsed.path.rstrip("/") + "/chat/completions"
+        path = parsed.path.rstrip("/") + "/v1/chat/completions"
         port = parsed.port or (80 if parsed.scheme == "http" else 443)
         use_ssl = parsed.scheme == "https"
         ssl_ctx = ssl.create_default_context() if ssl_verify else ssl._create_unverified_context()
@@ -1023,14 +1053,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     request_type=request_type,
                 )
                 if final_usage:
-                    record_token_stats(final_usage, {
+                    ctx = {
                         "request_id": request_id,
                         "request_type": request_type,
                         "model": model,
                         "target_model": target,
                         "request_ts": request_ts,
                         "duration_ms": duration_ms,
-                    })
+                    }
+                    if upstream_cfg.get("id") is not None:
+                        ctx["upstream_id"] = upstream_cfg["id"]
+                    record_token_stats(final_usage, ctx)
         finally:
             try:
                 conn.close()
