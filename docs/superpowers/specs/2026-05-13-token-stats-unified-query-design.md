@@ -131,6 +131,18 @@ records = self._fetch_unified_records(period)
 # 不再需要按 token 比例均摊成本
 ```
 
+**时间分桶规则**（从 SQL 迁移到 Python，时区一致性要求见下）：
+
+| period | 粒度 | 分桶 key 格式 | 实现 |
+|--------|------|-------------|------|
+| day/24h | 小时 | `"YYYY-MM-DD HH:00"` | `request_ts[:13] + ":00"` |
+| week/7d | 天 | `"YYYY-MM-DD"` | `request_ts[:10]` |
+| month/30d | 天 | `"YYYY-MM-DD"` | `request_ts[:10]` |
+
+由于 `request_ts` 在 DAO 的 `query_raw()` 中已统一为字符串格式（SQLite 的 `datetime()` 返回
+localtime 字符串，与现有行为一致），Python 侧直接用字符串切片分桶，无需再做时区转换。
+这避免了原来三个 DAO 各自在 SQL 中做 `localtime` 转换的分散逻辑。
+
 ### fetch_requests(period, model, request_type, limit, offset) → dict
 
 ```python
@@ -144,7 +156,17 @@ return {"requests": records, "total": total, "limit": limit, "offset": offset}
 
 ### fetch_by_model_requests(model, period, limit, offset) → 删除
 
-功能与 `fetch_requests(period, model=model, ...)` 重复。前端 `/api/token_stats/by_model/{m}/requests` 内部改调 `fetch_requests()`。
+功能与 `fetch_requests(period, model=model, ...)` 重复。前端 `/api/token_stats/by_model/{m}/requests`
+端点内部改调 `fetch_requests()`，由 API 层补上 `"model"` 字段以保持返回格式兼容：
+
+```python
+# token_api.py 中 /api/token_stats/by_model/{m}/requests 的处理
+result = handler.stats_service.fetch_requests(
+    period=period, model=model, limit=limit, offset=offset
+)
+result["model"] = model  # 保持与旧 fetch_by_model_requests 返回一致的字段
+json_response(handler, result)
+```
 
 ---
 
@@ -165,25 +187,67 @@ return {"requests": records, "total": total, "limit": limit, "offset": offset}
 
 保留：
 - `_UpstreamResolver` — 调用方用于填充 upstream_name
-- `_CostCalculator` — 统一方法内部用于逐条算成本
+- `_CostCalculator` — 统一方法内部用于逐条算成本（需新增 `calculate_breakdown()` 方法）
+
+删除：
+- `_load_upstream_map()` — 无外部调用者
+- `_resolve_upstream()` — 无外部调用者
+
+### 字段归一化映射
+
+`_TokenStatsDao` 的 DB 列名是 `cached_read_tokens` / `cached_write_tokens`（带 `d`），
+需在 `query_raw()` 构造 dict 时主动重命名为 `cache_read_tokens` / `cache_write_tokens`。
+`_SessionDao` 和 `_OpenCodeDao` 的 `_row_to_record()` 已输出 `cache_*` 格式，无需改动。
+
+### _CostCalculator 新增 calculate_breakdown()
+
+```python
+def calculate_breakdown(
+    self,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+    cache_write_tokens: int,
+) -> dict:
+    """返回 4 项独立成本，不求和。
+
+    Returns:
+        {"input_cost_cny": float, "output_cost_cny": float,
+         "cache_read_cost_cny": float, "cache_write_cost_cny": float}
+        模型无定价时四项均为 0.0。
+    """
+```
+
+`_fetch_unified_records()` 对每条记录调一次 `calculate_breakdown()`，将返回的 4 个值直接赋给 record。
 
 ---
 
 ## API 兼容性
 
-`server/token_api.py` **零改动**。所有端点签名和返回 JSON 结构不变。
+`server/token_api.py` 改动 1 行：`/api/token_stats/by_model/{m}/requests` 内部从调
+`fetch_by_model_requests()` 改为调 `fetch_requests()`，并在返回 dict 上补 `"model"` 字段。
+其余端点完全不变。所有端点 JSON 结构保持兼容。
 
 ---
 
 ## 前端改动
 
-| 位置 | 改动 |
-|------|------|
-| 请求日志 `isSession` 判断 | `r.request_type === 'session'` → `r.upstream_id === 'hermes' \|\| r.upstream_id === 'opencode'` |
-| 模型详情展开行成本 | `r.estimated_cost_cny` → 4 项成本和 |
-| 其余 | 不变 |
+两处独立的 `isSession` 判断需改为 `upstream_id` 判断：
 
-前端改动量 < 10 行。
+| 位置 | 行号 | 当前 | 改为 |
+|------|------|------|------|
+| `renderModelTable` 展开行 | tokens.js:528 | `r.request_type === 'session'` | `r.upstream_id === 'hermes' \|\| r.upstream_id === 'opencode'` |
+| `renderRequestTable` 行渲染 | tokens.js:700 | `r.request_type === 'session'` | 同上 |
+
+**兼容性验证**：新统一记录中 sessions/opencode 来源的 `input_tokens` 等 4 项字段始终存在
+（当前 `_SessionDao._row_to_record()` 已包含这些字段），所以展开行 token 单元格的渲染逻辑无需改动。
+
+| 其他改动 | 说明 |
+|---------|------|
+| 模型详情展开行成本 | `r.estimated_cost_cny` 改为 `r.input_cost_cny + r.output_cost_cny + r.cache_read_cost_cny + r.cache_write_cost_cny` |
+
+前端改动量 ~8 行。
 
 ---
 
@@ -211,7 +275,7 @@ return {"requests": records, "total": total, "limit": limit, "offset": offset}
 
 | 文件 | 预计变动 |
 |------|---------|
-| `stats_service.py` | 删 ~400 行，增 ~150 行（净减 ~250） |
-| `server/token_api.py` | 不变 |
-| `static/js/pages/tokens.js` | < 10 行改动 |
+| `stats_service.py` | 删 ~400 行，增 ~180 行（净减 ~220） |
+| `server/token_api.py` | ~3 行改动 |
+| `static/js/pages/tokens.js` | ~8 行改动 |
 | `test/test_stats_service.py` | 重写测试方法，断言逻辑保持 |
