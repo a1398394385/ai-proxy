@@ -3156,3 +3156,85 @@ class TestOpenCodeDao(unittest.TestCase):
         self.assertEqual(summary["request_count"], 0)
         self.assertEqual(dao.aggregate_trend("week"), [])
         self.assertEqual(dao.query_messages_paged("week"), ([], 0))
+
+    # ─── _Merger 三源合并测试 ───
+
+    def test_merger_three_source_summary(self):
+        """merge_summary 三源求和正确：proxy + session + opencode 数值字段累加。"""
+        from stats_service import _Merger
+
+        p = {"period": "week", "request_count": 10, "input_tokens": 100,
+             "output_tokens": 50, "cached_read_tokens": 20, "cached_write_tokens": 5,
+             "total_tokens": 175, "avg_duration_ms": 300}
+        s = {"period": "week", "request_count": 3, "input_tokens": 30,
+             "output_tokens": 15, "cached_read_tokens": 10, "cached_write_tokens": 2,
+             "total_tokens": 57, "avg_duration_ms": 0}
+        o = {"period": "week", "request_count": 5, "input_tokens": 200,
+             "output_tokens": 100, "cached_read_tokens": 50, "cached_write_tokens": 10,
+             "total_tokens": 360, "avg_duration_ms": 250}
+
+        result = _Merger.merge_summary(p, s, o)
+        self.assertEqual(result["request_count"], 18)  # 10+3+5
+        self.assertEqual(result["input_tokens"], 330)  # 100+30+200
+        self.assertEqual(result["output_tokens"], 165)  # 50+15+100
+        # avg_duration_ms: proxy(300) > opencode(250) > session(0), 取 proxy
+        self.assertEqual(result["avg_duration_ms"], 300)
+
+    def test_merger_three_source_summary_empty_sources(self):
+        """merge_summary 部分源为空：健壮处理。"""
+        from stats_service import _Merger
+
+        p = {"period": "week", "request_count": 10, "input_tokens": 100,
+             "output_tokens": 50, "cached_read_tokens": 20, "cached_write_tokens": 5,
+             "total_tokens": 175, "avg_duration_ms": 300}
+        empty = {"period": "week", "request_count": 0, "input_tokens": 0,
+                 "output_tokens": 0, "cached_read_tokens": 0, "cached_write_tokens": 0,
+                 "total_tokens": 0, "avg_duration_ms": 0}
+
+        result = _Merger.merge_summary(p, empty, empty)
+        self.assertEqual(result["request_count"], 10)
+
+    def test_merger_three_source_model_lists(self):
+        """merge_model_lists 三源同名模型求和，不同模型独立保留。"""
+        from stats_service import _Merger
+
+        p = [{"model": "gpt-4", "request_count": 5, "input_tokens": 100,
+              "output_tokens": 50, "cached_read_tokens": 10, "cached_write_tokens": 5,
+              "avg_duration_ms": 200}]
+        s = [{"model": "gpt-4", "request_count": 3, "input_tokens": 60,
+              "output_tokens": 30, "cached_read_tokens": 5, "cached_write_tokens": 2,
+              "avg_duration_ms": 0}]
+        o = [{"model": "claude-sonnet", "request_count": 2, "input_tokens": 200,
+              "output_tokens": 100, "cached_read_tokens": 20, "cached_write_tokens": 10,
+              "avg_duration_ms": 0}]
+
+        result = _Merger.merge_model_lists(p, s, o)
+        self.assertEqual(len(result), 2)  # gpt-4 + claude-sonnet
+        models = {m["model"] for m in result}
+        self.assertIn("gpt-4", models)
+        self.assertIn("claude-sonnet", models)
+
+        gpt4 = next(m for m in result if m["model"] == "gpt-4")
+        self.assertEqual(gpt4["input_tokens"], 160)  # 100+60
+        self.assertEqual(gpt4["request_count"], 8)  # 5+3
+
+    def test_merger_three_source_trend_lists(self):
+        """merge_trend_lists 三源同时间桶求和。"""
+        from stats_service import _Merger
+
+        p = [{"time": "2026-05-10", "request_count": 2, "input_tokens": 100,
+              "output_tokens": 50, "cached_read_tokens": 10, "cached_write_tokens": 5}]
+        s = [{"time": "2026-05-10", "request_count": 1, "input_tokens": 30,
+              "output_tokens": 15, "cached_read_tokens": 5, "cached_write_tokens": 2}]
+        o = [{"time": "2026-05-12", "request_count": 3, "input_tokens": 200,
+              "output_tokens": 100, "cached_read_tokens": 20, "cached_write_tokens": 10}]
+
+        result = _Merger.merge_trend_lists(p, s, o)
+        self.assertEqual(len(result), 2)  # 05-10 + 05-12
+
+        day10 = next(r for r in result if r["date"] == "2026-05-10")
+        self.assertEqual(day10["input_tokens"], 130)  # 100+30
+        self.assertEqual(day10["request_count"], 3)  # 2+1
+
+        day12 = next(r for r in result if r["date"] == "2026-05-12")
+        self.assertEqual(day12["input_tokens"], 200)
