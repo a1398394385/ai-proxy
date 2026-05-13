@@ -1108,7 +1108,7 @@ class _OpenCodeDao:
 
 
 class _Merger:
-    """双数据源合并：按规范化模型名求和，字段名统一为 cache_*，趋势 key 统一为 date"""
+    """N 数据源合并：按规范化模型名求和，字段名统一为 cache_*，趋势 key 统一为 date"""
 
     _RENAME_MAP = {
         "cached_read_tokens": "cache_read_tokens",
@@ -1125,59 +1125,60 @@ class _Merger:
         return result
 
     @staticmethod
-    def merge_summary(proxy_summary: dict, session_summary: dict) -> dict:
-        """合并两个汇总 dict，各数值字段求和，字段重命名为 cache*。
-        不计算 estimated_cost_cny，由调用方处理。"""
-        p = _Merger._rename(proxy_summary) if proxy_summary else {}
-        s = _Merger._rename(session_summary) if session_summary else {}
-        return {
-            "period": p.get("period", s.get("period", "week")),
-            "request_count": p.get("request_count", 0) + s.get("request_count", 0),
-            "input_tokens": p.get("input_tokens", 0) + s.get("input_tokens", 0),
-            "output_tokens": p.get("output_tokens", 0) + s.get("output_tokens", 0),
-            "cache_read_tokens": p.get("cache_read_tokens", 0) + s.get("cache_read_tokens", 0),
-            "cache_write_tokens": p.get("cache_write_tokens", 0) + s.get("cache_write_tokens", 0),
-            "total_tokens": (p.get("input_tokens", 0) + s.get("input_tokens", 0)
-                             + p.get("output_tokens", 0) + s.get("output_tokens", 0)
-                             + p.get("cache_read_tokens", 0) + s.get("cache_read_tokens", 0)
-                             + p.get("cache_write_tokens", 0) + s.get("cache_write_tokens", 0)),
-            "avg_duration_ms": p.get("avg_duration_ms", 0),
-        }
+    def merge_summary(*summaries: dict) -> dict:
+        """合并 N 个汇总 dict，各数值字段求和，字段重命名为 cache*。
+        avg_duration_ms 优先级：proxy > opencode > session（取第一个非零值）。"""
+        result = {}
+        avg_duration = 0
+        for s in summaries:
+            s = _Merger._rename(s)
+            if not result:
+                result = {
+                    "period": s.get("period", "week"),
+                    "request_count": s.get("request_count", 0),
+                    "input_tokens": s.get("input_tokens", 0),
+                    "output_tokens": s.get("output_tokens", 0),
+                    "cache_read_tokens": s.get("cache_read_tokens", 0),
+                    "cache_write_tokens": s.get("cache_write_tokens", 0),
+                    "total_tokens": s.get("total_tokens", 0),
+                    "avg_duration_ms": s.get("avg_duration_ms", 0),
+                }
+                avg_duration = s.get("avg_duration_ms", 0)
+            else:
+                result["request_count"] += s.get("request_count", 0)
+                result["input_tokens"] += s.get("input_tokens", 0)
+                result["output_tokens"] += s.get("output_tokens", 0)
+                result["cache_read_tokens"] += s.get("cache_read_tokens", 0)
+                result["cache_write_tokens"] += s.get("cache_write_tokens", 0)
+                result["total_tokens"] = (result["input_tokens"] + result["output_tokens"]
+                                          + result["cache_read_tokens"] + result["cache_write_tokens"])
+                if avg_duration == 0 and s.get("avg_duration_ms", 0) > 0:
+                    result["avg_duration_ms"] = s["avg_duration_ms"]
+                    avg_duration = s["avg_duration_ms"]
+        return result
 
     @staticmethod
-    def merge_model_lists(proxy_models: list, session_models: list) -> list:
-        """合并两个 by_model 列表，同名模型 token 求和，字段重命名为 cache*"""
+    def merge_model_lists(*lists: list) -> list:
+        """合并 N 个 by_model 列表，同名模型 token 求和，字段重命名为 cache*"""
         merged: dict = {}
-        for item in proxy_models:
-            r = _Merger._rename(item)
-            model = _SessionDao._normalize_model_name(r["model"])
-            if model not in merged:
-                merged[model] = {"model": model, "request_count": 0,
-                                 "input_tokens": 0, "output_tokens": 0,
-                                 "cache_read_tokens": 0, "cache_write_tokens": 0,
-                                 "avg_duration_ms": 0}
-            m = merged[model]
-            m["request_count"] += r.get("request_count", 0)
-            m["input_tokens"] += r.get("input_tokens", 0)
-            m["output_tokens"] += r.get("output_tokens", 0)
-            m["cache_read_tokens"] += r.get("cache_read_tokens", 0)
-            m["cache_write_tokens"] += r.get("cache_write_tokens", 0)
-            m["avg_duration_ms"] = r.get("avg_duration_ms", 0)
-
-        for item in session_models:
-            r = _Merger._rename(item)
-            model = _SessionDao._normalize_model_name(r["model"])
-            if model not in merged:
-                merged[model] = {"model": model, "request_count": 0,
-                                 "input_tokens": 0, "output_tokens": 0,
-                                 "cache_read_tokens": 0, "cache_write_tokens": 0,
-                                 "avg_duration_ms": 0}
-            m = merged[model]
-            m["request_count"] += r.get("request_count", 0)
-            m["input_tokens"] += r.get("input_tokens", 0)
-            m["output_tokens"] += r.get("output_tokens", 0)
-            m["cache_read_tokens"] += r.get("cache_read_tokens", 0)
-            m["cache_write_tokens"] += r.get("cache_write_tokens", 0)
+        for items in lists:
+            for item in items:
+                r = _Merger._rename(item)
+                model = _SessionDao._normalize_model_name(r["model"])
+                if model not in merged:
+                    merged[model] = {"model": model, "request_count": 0,
+                                     "input_tokens": 0, "output_tokens": 0,
+                                     "cache_read_tokens": 0, "cache_write_tokens": 0,
+                                     "avg_duration_ms": 0}
+                m = merged[model]
+                m["request_count"] += r.get("request_count", 0)
+                m["input_tokens"] += r.get("input_tokens", 0)
+                m["output_tokens"] += r.get("output_tokens", 0)
+                m["cache_read_tokens"] += r.get("cache_read_tokens", 0)
+                m["cache_write_tokens"] += r.get("cache_write_tokens", 0)
+                avg = r.get("avg_duration_ms", 0)
+                if avg:
+                    m["avg_duration_ms"] = avg
 
         for m in merged.values():
             m["total_tokens"] = (m["input_tokens"] + m["output_tokens"]
@@ -1185,36 +1186,23 @@ class _Merger:
         return list(merged.values())
 
     @staticmethod
-    def merge_trend_lists(proxy_trend: list, session_trend: list) -> list:
-        """合并两个趋势列表，同时间点各指标求和，字段重命名为 cache*，key 统一为 date"""
+    def merge_trend_lists(*lists: list) -> list:
+        """合并 N 个趋势列表，同时间点各指标求和，字段重命名为 cache*，key 统一为 date"""
         merged: dict = {}
-        for item in proxy_trend:
-            r = _Merger._rename(item)
-            key = r.get("date", r.get("time", ""))
-            if key not in merged:
-                merged[key] = {"date": key, "request_count": 0,
-                               "input_tokens": 0, "output_tokens": 0,
-                               "cache_read_tokens": 0, "cache_write_tokens": 0}
-            m = merged[key]
-            m["request_count"] += r.get("request_count", 0)
-            m["input_tokens"] += r.get("input_tokens", 0)
-            m["output_tokens"] += r.get("output_tokens", 0)
-            m["cache_read_tokens"] += r.get("cache_read_tokens", 0)
-            m["cache_write_tokens"] += r.get("cache_write_tokens", 0)
-
-        for item in session_trend:
-            r = _Merger._rename(item)
-            key = r.get("date", r.get("time", ""))
-            if key not in merged:
-                merged[key] = {"date": key, "request_count": 0,
-                               "input_tokens": 0, "output_tokens": 0,
-                               "cache_read_tokens": 0, "cache_write_tokens": 0}
-            m = merged[key]
-            m["request_count"] += r.get("request_count", 0)
-            m["input_tokens"] += r.get("input_tokens", 0)
-            m["output_tokens"] += r.get("output_tokens", 0)
-            m["cache_read_tokens"] += r.get("cache_read_tokens", 0)
-            m["cache_write_tokens"] += r.get("cache_write_tokens", 0)
+        for items in lists:
+            for item in items:
+                r = _Merger._rename(item)
+                key = r.get("date", r.get("time", ""))
+                if key not in merged:
+                    merged[key] = {"date": key, "request_count": 0,
+                                   "input_tokens": 0, "output_tokens": 0,
+                                   "cache_read_tokens": 0, "cache_write_tokens": 0}
+                m = merged[key]
+                m["request_count"] += r.get("request_count", 0)
+                m["input_tokens"] += r.get("input_tokens", 0)
+                m["output_tokens"] += r.get("output_tokens", 0)
+                m["cache_read_tokens"] += r.get("cache_read_tokens", 0)
+                m["cache_write_tokens"] += r.get("cache_write_tokens", 0)
 
         for m in merged.values():
             m["total_tokens"] = (m["input_tokens"] + m["output_tokens"]
