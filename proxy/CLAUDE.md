@@ -9,6 +9,8 @@ proxy/
 ├── common.py                 # 共享 — CONFIG/模型解析/上游连接 (191行)
 ├── config_manager.py         # ConfigDB + ConfigCache TTL 5s + Migrations (1041行)
 ├── transform.py              # Re-export shim → 分发到具体转换模块 (41行)
+├── transform_router.py       # TransformRouter — 协议转换路由（新增）
+├── upstream_driver.py        # UpstreamDriver — openai SDK 上游驱动（新增）
 ├── transform_responses.py    # Responses API ↔ Chat Completions + 状态机 (931行)
 ├── transform_anthropic.py    # Anthropic Messages ↔ Chat Completions + 状态机 (536行)
 ├── sse_utils.py              # _format_sse_event() 共用格式化 (13行)
@@ -24,6 +26,8 @@ proxy/
 | **第 0 层** | `sse_utils` `token_stats` `response_store` `config_manager` `request_logger` | 零 |
 | **第 1 层** | `transform_responses` → `token_stats` `sse_utils` | 第 0 层 |
 | | `transform_anthropic` → `sse_utils` `transform_responses` | 第 0-1 层 |
+| **第 1.5 层** | `transform_router` → 第 1 层全部 | 第 0-1 层 |
+| | `upstream_driver` → 零内部依赖（外部 openai） | 无 |
 | **第 2 层** | `common` → `config_manager` `request_logger` `token_stats` | 第 0 层 |
 | | `transform` → 第 1 层全部 | 第 0-1 层 |
 | **第 3 层** | `handler` → `common` `transform` `request_logger` `token_stats` | 全依赖 |
@@ -64,7 +68,7 @@ request_type == upstream_cfg.format ?
 - **注释分隔**：`# ─── 标题 ───` 格式
 - **SSE**：所有事件通过 `_format_sse_event()` 生成，`event_type` 注入为 data JSON 顶层 `"type"` 字段
 - **工具调用延迟**：`output_item.added` 延迟到 `call_id + name` 均就绪
-- **无外部依赖**：纯 Python 标准库
+- **无外部依赖**：纯 Python 标准库（转换路径使用 openai SDK，在 `upstream_driver.py`）
 
 ## 反模式
 

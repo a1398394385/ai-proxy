@@ -38,4 +38,7 @@ from .transform import (  # noqa: F401 — re-export
 
 from .token_stats import record_token_stats  # noqa: F401 — re-export
 
-from .handler import ProxyHandler  # noqa: F401 — re-export
+from .handler import ProxyHandler  # noqa: F401
+
+from .transform_router import TransformRouter  # noqa: F401 — re-export
+from .upstream_driver import UpstreamDriver  # noqa: F401 — re-export — re-export

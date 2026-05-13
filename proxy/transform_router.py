@@ -19,12 +19,14 @@ class TransformRouter:
     _request_converters: dict[tuple[str, str], object] = {
         ("responses",        "chat_completions"): responses_to_chat,
         ("messages",         "chat_completions"): anthropic_to_chat,
+        ("chat_completions", "chat_completions"): lambda body, _model_cfg: body,
     }
 
     # 非流式响应转换：source（上游格式） → target（客户端格式）
     _response_converters: dict[tuple[str, str], object] = {
         ("chat_completions", "responses"):        chat_to_responses,
         ("chat_completions", "messages"):         chat_to_anthropic,
+        ("chat_completions", "chat_completions"): lambda resp: resp,
     }
 
     # 流式响应转换：source（上游 SSE 格式） → target（客户端 SSE 格式）

@@ -39,3 +39,6 @@ from .transform_responses import (  # noqa: F401 — re-export
 # Task 4-6 完成，激活 Anthropic re-export：
 from .transform_anthropic import anthropic_to_chat, chat_to_anthropic, create_anthropic_sse_stream  # noqa: F401
 
+# SDK 驱动和转换路由（Task 2-3 新增）
+from .transform_router import TransformRouter  # noqa: F401
+from .upstream_driver import UpstreamDriver  # noqa: F401

@@ -6,7 +6,7 @@
 
 ## 概述
 
-两个独立 HTTP 服务，由 `./server.sh` 统一管理，纯 Python 标准库（无外部依赖）。
+两个独立 HTTP 服务，由 `./server.sh` 统一管理，纯 Python 标准库 + openai SDK（转换路径）。
 
 | 服务 | 入口 | 端口 | 用途 |
 |------|------|------|------|
@@ -34,13 +34,15 @@
 │   ├── pricing_api.py          # pricing CRUD
 │   └── static_files.py         # 静态文件服务
 │
-├── proxy/                      # ★ AI Proxy 核心包 (13 文件)
+├── proxy/                      # ★ AI Proxy 核心包 (15 文件)
 │   ├── __init__.py             # 公共 API re-export
 │   ├── handler.py              # 统一 ProxyHandler (1112行)
 │   ├── common.py               # 配置/模型解析/上游连接
 │   ├── paths.py                # 统一路径管理 DATA_DB/DATA_DIR
 │   ├── config_manager.py       # ConfigDB + ConfigCache + Migrations (1171行)
 │   ├── transform.py            # Re-export shim
+│   ├── transform_router.py     # TransformRouter — 协议转换路由（新增）
+│   ├── upstream_driver.py      # UpstreamDriver — SDK 上游驱动（新增）
 │   ├── transform_responses.py  # Responses ↔ Chat Completions (1012行)
 │   ├── transform_anthropic.py  # Messages ↔ Chat Completions (536行)
 │   ├── sse_utils.py            # SSE 事件格式化
