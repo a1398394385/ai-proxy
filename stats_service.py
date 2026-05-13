@@ -181,57 +181,46 @@ class _TokenStatsDao:
         finally:
             conn.close()
 
-    def aggregate_by_upstream(self, period: str, upstream_map: dict) -> list:
-        """按 upstream 维度聚合统计数据。
+    def aggregate_by_upstream(self, period: str) -> list:
+        """按 upstream_id 维度聚合统计数据（直接 GROUP BY + LEFT JOIN）。
 
         Args:
             period: 时间周期
-            upstream_map: {target_model: upstream_name} 映射表
 
         Returns:
-            按上游分组的聚合数据列表
+            [{upstream_id, upstream_name, request_count, input_tokens,
+              output_tokens, cache_read_tokens, cache_write_tokens, total_tokens}]
         """
-        if not upstream_map:
-            return []
-
         time_condition = self._period_to_condition(period)
-
-        # 构建 CASE WHEN 表达式用于按 upstream 分组
-        case_parts = []
-        for _target_model, _upstream_name in upstream_map.items():
-            case_parts.append("WHEN target_model = ? THEN ?")
-
-        case_sql = "CASE " + " ".join(case_parts) + " ELSE 'Other' END"
-        case_params: list = []
-        for target_model, upstream_name in upstream_map.items():
-            case_params.extend([target_model, upstream_name])
 
         conn = self._get_conn()
         try:
             rows = conn.execute(
                 f"""
-                SELECT {case_sql} as upstream,
+                SELECT ts.upstream_id,
+                       COALESCE(u.base_url, '__unknown__') as upstream_name,
                        COUNT(*) as request_count,
-                       SUM(input_tokens) as total_input,
-                       SUM(output_tokens) as total_output,
-                       SUM(cached_read_tokens) as total_cache_read,
-                       SUM(cached_write_tokens) as total_cache_write
-                FROM token_stats
-                WHERE {time_condition}
-                GROUP BY upstream
+                       COALESCE(SUM(ts.input_tokens), 0) as total_input,
+                       COALESCE(SUM(ts.output_tokens), 0) as total_output,
+                       COALESCE(SUM(ts.cached_read_tokens), 0) as total_cache_read,
+                       COALESCE(SUM(ts.cached_write_tokens), 0) as total_cache_write
+                FROM token_stats ts
+                LEFT JOIN upstreams u ON ts.upstream_id = u.id
+                WHERE {time_condition} AND ts.upstream_id IS NOT NULL
+                GROUP BY ts.upstream_id
                 ORDER BY total_output DESC
                 """,
-                case_params,
             ).fetchall()
 
             return [
                 {
-                    "upstream": row["upstream"],
+                    "upstream_id": row["upstream_id"],
+                    "upstream_name": row["upstream_name"],
                     "request_count": row["request_count"],
                     "input_tokens": row["total_input"],
                     "output_tokens": row["total_output"],
-                    "cached_read_tokens": row["total_cache_read"],
-                    "cached_write_tokens": row["total_cache_write"],
+                    "cache_read_tokens": row["total_cache_read"],
+                    "cache_write_tokens": row["total_cache_write"],
                     "total_tokens": (
                         row["total_input"]
                         + row["total_output"]
