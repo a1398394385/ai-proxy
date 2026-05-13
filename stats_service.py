@@ -1506,6 +1506,76 @@ class StatsService:
         # 初始化上游解析器
         self._upstream_resolver = _UpstreamResolver(self.data_db_path)
 
+    # ─── 统一数据查询 ───
+
+    def _fetch_unified_records(
+        self,
+        period: str,
+        model: str | None = None,
+        request_type: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list | tuple[list, int]:
+        """统一原始数据查询 — 所有统计视图的唯一数据源。
+
+        依次从三源拉取原始行，转换为统一格式，逐条计算 4 项成本，
+        合并后按 request_ts DESC 排序。
+
+        Args:
+            period: "day"/"week"/"month"
+            model: 可选，内部完成规范化后对各源分别匹配
+            request_type: 可选，过滤请求类型
+            limit: 指定时启用分页，返回 (records, total)
+            offset: 分页偏移
+
+        Returns:
+            无分页: [record, ...]
+            有分页: ([record, ...], total_count)
+        """
+        # 1. 模型名规范化
+        normalized_model = _SessionDao._normalize_model_name(model) if model else None
+
+        # 2. 查询三源
+        records = []
+        try:
+            records.extend(self._get_dao().query_raw(period, normalized_model, request_type))
+        except Exception:
+            pass
+        try:
+            records.extend(self._get_session_dao().query_raw(period, normalized_model))
+        except Exception:
+            pass
+        opencode_dao = self._get_opencode_dao()
+        if opencode_dao:
+            try:
+                records.extend(opencode_dao.query_raw(period, normalized_model))
+            except Exception:
+                pass
+
+        # 3. 逐条计算 4 项成本
+        calculator = self._get_calculator()
+        for r in records:
+            breakdown = calculator.calculate_breakdown(
+                model=r["model"],
+                input_tokens=r["input_tokens"],
+                output_tokens=r["output_tokens"],
+                cache_read_tokens=r["cache_read_tokens"],
+                cache_write_tokens=r["cache_write_tokens"],
+            )
+            r["input_cost_cny"] = breakdown["input_cost_cny"]
+            r["output_cost_cny"] = breakdown["output_cost_cny"]
+            r["cache_read_cost_cny"] = breakdown["cache_read_cost_cny"]
+            r["cache_write_cost_cny"] = breakdown["cache_write_cost_cny"]
+
+        # 4. 按 request_ts DESC 排序
+        records.sort(key=lambda r: r["request_ts"], reverse=True)
+
+        # 5. 分页或全量返回
+        if limit is not None:
+            total = len(records)
+            return (records[offset:offset + limit], total)
+        return records
+
     # ─── TokenStatsDao 实例 ───
 
     def _get_dao(self) -> _TokenStatsDao:

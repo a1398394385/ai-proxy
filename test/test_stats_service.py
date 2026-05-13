@@ -3600,3 +3600,178 @@ class TestOpenCodeDao(unittest.TestCase):
 
         day12 = next(r for r in result if r["date"] == "2026-05-12")
         self.assertEqual(day12["input_tokens"], 200)
+
+
+class TestFetchUnifiedRecords(unittest.TestCase):
+    """_fetch_unified_records 集成测试 — 三源数据合并 + 成本计算 + 分页。"""
+
+    def setUp(self):
+        import json, time
+        self.tmpdir = tempfile.mkdtemp()
+        self.data_db = Path(self.tmpdir) / "access_log.db"
+        self.state_db = Path(self.tmpdir) / "state.db"
+        self.opencode_db = Path(self.tmpdir) / "opencode.db"
+
+        # ── data db: token_stats + upstreams + target_models + model_pricing ──
+        conn = sqlite3.connect(str(self.data_db))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""CREATE TABLE token_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL,
+            request_type TEXT NOT NULL, model TEXT NOT NULL, target_model TEXT NOT NULL,
+            request_ts TEXT NOT NULL, duration_ms INTEGER, input_tokens INTEGER DEFAULT 0,
+            output_tokens INTEGER DEFAULT 0, cached_read_tokens INTEGER DEFAULT 0,
+            cached_write_tokens INTEGER DEFAULT 0, upstream_id INTEGER,
+            status TEXT DEFAULT 'completed', created_at TEXT NOT NULL)""")
+        conn.execute("""CREATE TABLE upstreams (
+            id TEXT PRIMARY KEY, base_url TEXT, api_key TEXT, name TEXT,
+            timeout INTEGER, connect_timeout INTEGER, ssl_verify INTEGER,
+            retry INTEGER, is_active INTEGER, format TEXT)""")
+        conn.execute("""CREATE TABLE target_models (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, upstream_id TEXT,
+            multimodal INTEGER)""")
+        conn.execute("""CREATE TABLE model_pricing (
+            model_id TEXT PRIMARY KEY, display_name TEXT,
+            input_cost_per_million REAL DEFAULT 0, output_cost_per_million REAL DEFAULT 0,
+            cache_read_cost_per_million REAL DEFAULT 0, cache_creation_cost_per_million REAL DEFAULT 0,
+            currency TEXT DEFAULT 'RMB', multiplier REAL DEFAULT 1.0,
+            created_at TEXT, updated_at TEXT)""")
+
+        # 上游 + 模型映射
+        conn.execute("INSERT INTO upstreams (id, base_url, name, is_active, format) "
+                     "VALUES ('up-ds', 'https://api.deepseek.com', 'DeepSeek', 1, 'chat_completions')")
+        conn.execute("INSERT INTO target_models (name, upstream_id) VALUES ('deepseek-v4-flash', 'up-ds')")
+        # 定价
+        conn.execute("INSERT INTO model_pricing (model_id, display_name, input_cost_per_million, "
+                     "output_cost_per_million, cache_read_cost_per_million, cache_creation_cost_per_million, "
+                     "currency) VALUES ('deepseek-v4-flash', 'DeepSeek V4 Flash', 1.0, 2.0, 0.5, 0.25, 'RMB')")
+        # token_stats 数据
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("INSERT INTO token_stats (request_id, request_type, model, target_model, "
+                     "request_ts, duration_ms, input_tokens, output_tokens, cached_read_tokens, "
+                     "cached_write_tokens, upstream_id, status, created_at) "
+                     "VALUES ('req-001', 'responses', 'deepseek-v4-flash', 'deepseek-v4-flash', "
+                     "?, 500, 1000, 500, 100, 50, 'up-ds', 'completed', ?)", (now, now))
+        conn.commit()
+        conn.close()
+
+        # ── state db: sessions ──
+        sconn = sqlite3.connect(str(self.state_db))
+        sconn.execute("""CREATE TABLE sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT,
+            started_at REAL NOT NULL, input_tokens INTEGER, output_tokens INTEGER,
+            cache_read_tokens INTEGER DEFAULT 0, cache_write_tokens INTEGER DEFAULT 0,
+            message_count INTEGER DEFAULT 0)""")
+        sconn.execute("INSERT INTO sessions (model, started_at, input_tokens, output_tokens, "
+                      "cache_read_tokens, cache_write_tokens) VALUES (?, ?, ?, ?, ?, ?)",
+                      ("claude-sonnet-4-6[1m]", time.time(), 2000, 1000, 200, 100))
+        sconn.commit()
+        sconn.close()
+
+        # ── opencode db: message ──
+        oconn = sqlite3.connect(str(self.opencode_db))
+        oconn.execute("""CREATE TABLE session (id TEXT PRIMARY KEY, model TEXT, time_created INTEGER)""")
+        oconn.execute("""CREATE TABLE message (
+            id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL, data TEXT NOT NULL)""")
+        now_ms = int(time.time() * 1000)
+        msg_data = json.dumps({
+            "role": "assistant", "modelID": "mimo-v2.5-pro",
+            "tokens": {"input": 300, "output": 150, "reasoning": 0, "cache": {"read": 50, "write": 10}},
+            "time": {"created": now_ms - 86400000, "completed": now_ms - 86300000},
+        })
+        oconn.execute("INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)",
+                      ("msg-001", "ses-001", now_ms - 86400000, msg_data))
+        oconn.commit()
+        oconn.close()
+
+    def tearDown(self):
+        import os
+        for p in [self.data_db, self.state_db, self.opencode_db]:
+            if p.exists():
+                os.remove(str(p))
+                for s in ["-wal", "-shm"]:
+                    wp = Path(str(p) + s)
+                    if wp.exists():
+                        os.remove(str(wp))
+        os.rmdir(self.tmpdir)
+
+    def _create_service(self):
+        from stats_service import StatsService
+        return StatsService(
+            data_db_path=str(self.data_db),
+            state_db_path=str(self.state_db),
+            opencode_db_path=str(self.opencode_db),
+        )
+
+    def test_returns_all_records_from_three_sources(self):
+        """三源数据合并后应包含全部记录。"""
+        svc = self._create_service()
+        records = svc._fetch_unified_records("week")
+
+        # proxy: 1, session: 1, opencode: 1 → 共 3 条
+        self.assertEqual(len(records), 3)
+        upstream_ids = {r["upstream_id"] for r in records}
+        self.assertIn("up-ds", upstream_ids)
+        self.assertIn("hermes", upstream_ids)
+        self.assertIn("opencode", upstream_ids)
+
+    def test_cost_breakdown_fields_present(self):
+        """每条记录包含 4 项独立成本。"""
+        svc = self._create_service()
+        records = svc._fetch_unified_records("week")
+
+        for r in records:
+            self.assertIn("input_cost_cny", r)
+            self.assertIn("output_cost_cny", r)
+            self.assertIn("cache_read_cost_cny", r)
+            self.assertIn("cache_write_cost_cny", r)
+            self.assertGreaterEqual(r["input_cost_cny"], 0)
+            self.assertGreaterEqual(r["output_cost_cny"], 0)
+
+    def test_model_normalization_for_sessions(self):
+        """sessions 来源的 model 已去掉 [ctx] 后缀。"""
+        svc = self._create_service()
+        records = svc._fetch_unified_records("week")
+
+        session_recs = [r for r in records if r["upstream_id"] == "hermes"]
+        self.assertEqual(len(session_recs), 1)
+        self.assertEqual(session_recs[0]["model"], "claude-sonnet-4-6")
+
+    def test_field_rename_cached_to_cache(self):
+        """token_stats 来源的字段名为 cache_* 而非 cached_*。"""
+        svc = self._create_service()
+        records = svc._fetch_unified_records("week")
+
+        proxy_recs = [r for r in records if r["upstream_id"] == "up-ds"]
+        self.assertEqual(len(proxy_recs), 1)
+        r = proxy_recs[0]
+        self.assertNotIn("cached_read_tokens", r)
+        self.assertNotIn("cached_write_tokens", r)
+        self.assertIn("cache_read_tokens", r)
+        self.assertIn("cache_write_tokens", r)
+
+    def test_pagination_returns_slice_and_total(self):
+        """带分页参数时返回 (records, total) 元组。"""
+        svc = self._create_service()
+        result = svc._fetch_unified_records("week", limit=2, offset=0)
+
+        self.assertIsInstance(result, tuple)
+        records, total = result
+        self.assertEqual(total, 3)
+        self.assertEqual(len(records), 2)
+
+    def test_model_filter_across_sources(self):
+        """模型筛选跨三源生效。"""
+        svc = self._create_service()
+        records = svc._fetch_unified_records("week", model="deepseek-v4-flash")
+
+        # 应只匹配 token_stats 中那条 deepseek-v4-flash 记录
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["model"], "deepseek-v4-flash")
+
+    def test_no_source_field(self):
+        """不包含 _source 字段。"""
+        svc = self._create_service()
+        records = svc._fetch_unified_records("week")
+        for r in records:
+            self.assertNotIn("_source", r)
