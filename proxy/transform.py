@@ -36,7 +36,8 @@ from .transform_responses import (  # noqa: F401 — re-export
     output_items_to_messages,
 )
 
-# Task 4-6 完成，激活 Anthropic re-export：
+# 注意：此文件将在旧转换模块删除后变为纯 re-export。
+# 新代码请使用 proxy.adapters.get_adapter() + ProtocolAdapter 接口。
 from .transform_anthropic import anthropic_to_chat, chat_to_anthropic, create_anthropic_sse_stream  # noqa: F401
 
 # SDK 驱动和转换路由（Task 2-3 新增）
