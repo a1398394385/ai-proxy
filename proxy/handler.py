@@ -718,7 +718,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         logger = get_logger()
 
         parsed = urllib.parse.urlparse(base_url)
-        path = parsed.path.rstrip("/") + _UPSTREAM_PATHS.get(upstream_format, "/v1/chat/completions")
+        path = _UPSTREAM_PATHS.get(upstream_format, "/v1/chat/completions")
         port = parsed.port or (80 if parsed.scheme == "http" else 443)
 
         for attempt in range(retries):
@@ -839,52 +839,89 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def _forward_streaming(self, upstream_body, model_cfg, request_id, model_name,
                              target, request_ts, upstream_cfg, client_format,
                              upstream_format, store_enabled=True):
-        """流式转换请求：SDK 流式调用 + TransformRouter 逐事件转换。"""
-        from .upstream_driver import UpstreamDriver
-
-        driver = UpstreamDriver(upstream_cfg)
+        """流式：http.client 连上游 SSE → TransformRouter 逐事件转换。"""
+        base_url = upstream_cfg["base_url"]
+        api_key = upstream_cfg["api_key"]
+        timeout = upstream_cfg.get("timeout", 120)
         logger = get_logger()
 
-        import time as _time
-        _stream_start = _time.time()
-        try:
-            stream = driver.create_stream(upstream_format, upstream_body)
-        except Exception as e:
-            logging.exception(f"SDK 流式调用失败: model={model_name}, target={target}, "
-                              f"upstream_format={upstream_format}")
-            if logger:
-                logger.log_upstream_response(
-                    request_id, 0,
-                    json.dumps({"error": str(e)}),
-                    int((_time.time() - _stream_start) * 1000),
-                    model_name, target,
-                    request_type=client_format,
-                )
-            self._handle_sdk_error(e)
-            driver.close()
-            return
+        parsed = urllib.parse.urlparse(base_url)
+        path = _UPSTREAM_PATHS.get(upstream_format, "/v1/chat/completions")
+        port = parsed.port or (80 if parsed.scheme == "http" else 443)
 
-        # 发送 SSE 响应头
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("X-Accel-Buffering", "no")
-        self.end_headers()
+        conn = _create_upstream_conn(upstream_cfg, parsed, port)
+        conn.connect()
+        conn.sock.settimeout(timeout)
 
-        import time as _time
-        start = _time.time()
-        SSE_BUFFER_MAX = 200 * 1024
+        conn.request("POST", path, body=json.dumps(upstream_body), headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        })
+
+        start = time.time()
         sse_buffer = []
         sse_buffer_size = 0
+        SSE_BUFFER_MAX = 200 * 1024
         final_usage = None
+        upstream_status = None
 
-        try:
+        try:  # 外层 try: 包裹全部逻辑，finally 中关闭 conn
+            try:
+                resp = conn.getresponse()
+                upstream_status = resp.status
+            except Exception as e:
+                logging.exception(f"上游连接失败: model={model_name}, target={target}")
+                self._handle_upstream_error(e)
+                return
+
+            if resp.status != 200:
+                error_body = resp.read().decode("utf-8", errors="replace")
+                error_event = _format_sse_event("response.failed", {
+                    "response": {
+                        "id": generate_response_id(),
+                        "status": "failed",
+                        "output": [],
+                        "status_details": {
+                            "error": {"type": "server_error", "message": f"Upstream returned HTTP {resp.status}"},
+                        },
+                    },
+                })
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-Accel-Buffering", "no")
+                self.end_headers()
+                self.wfile.write(error_event.encode("utf-8"))
+                self.wfile.flush()
+                try:
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    self.wfile.flush()
+                except (BrokenPipeError, OSError):
+                    pass
+                if logger:
+                    logger.log_upstream_response(
+                        request_id, resp.status, error_body, 0,
+                        model_name, target,
+                        request_type=client_format,
+                    )
+                return
+
+            # 发送 SSE 响应头
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+
+            # 核心：TransformRouter 逐事件转换
             _rstore = (
                 getattr(self.server, "response_store", None)
                 if store_enabled else None
             )
+            from .transform_router import TransformRouter
             for sse_event in TransformRouter.stream_convert(
-                stream, upstream_format, client_format,
+                resp, upstream_format, client_format,
                 request_messages=upstream_body.get("messages") if _rstore else None,
                 response_store=_rstore,
             ):
@@ -894,10 +931,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     sse_buffer.append(sse_event)
                     sse_buffer_size += len(sse_event)
 
-                # 用 _parse_sse_event 做结构化解析
                 if "response.completed" in sse_event or "message_delta" in sse_event:
-                    parsed = _parse_sse_event(sse_event)
-                    data = parsed.get("data")
+                    parsed_evt = _parse_sse_event(sse_event)
+                    data = parsed_evt.get("data")
                     if data:
                         usage = (
                             data.get("response", {}).get("usage")
@@ -916,10 +952,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         "status": "failed",
                         "output": [],
                         "status_details": {
-                            "error": {
-                                "type": "server_error",
-                                "message": str(e),
-                            },
+                            "error": {"type": "server_error", "message": str(e)},
                         },
                     },
                 })
@@ -930,13 +963,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-        duration_ms = int((_time.time() - start) * 1000)
+        duration_ms = int((time.time() - start) * 1000)
         full_sse = "".join(sse_buffer) if sse_buffer else "(buffer overflow)"
 
-        # 日志
         if logger:
             logger.log_upstream_response(
-                request_id, 200, full_sse, duration_ms,
+                request_id, upstream_status, full_sse, duration_ms,
                 model_name, target,
                 request_type=client_format,
             )
@@ -946,7 +978,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 request_type=client_format,
             )
 
-        # Token 统计
         if final_usage:
             ctx = {
                 "request_id": request_id,
@@ -965,45 +996,23 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 f"model={model_name}, target={target}"
             )
 
-        driver.close()
-        self.close_connection = True
-
-    def _handle_sdk_error(self, e: Exception):
-        """统一 SDK 异常 → HTTP 错误映射。
-
-        使用 isinstance 按继承链从具体到通用依次检查，避免遗漏子类。
-        """
-        import httpx
-
-        logging.exception(f"SDK 调用异常: {type(e).__name__}: {e}")
-
         try:
-            from openai import (
-                APIError, APIConnectionError, APITimeoutError,
-                RateLimitError, BadRequestError,
-            )
-            if isinstance(e, APITimeoutError):
-                self._send_json(504, {"error": {"type": "timeout_error", "message": str(e)}})
-                return
-            if isinstance(e, RateLimitError):
-                self._send_json(429, {"error": {"type": "rate_limit_error", "message": str(e)}})
-                return
-            if isinstance(e, BadRequestError):
-                self._send_json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
-                return
-            if isinstance(e, APIConnectionError):
-                self._send_json(502, {"error": {"type": "connection_error", "message": str(e)}})
-                return
-            if isinstance(e, APIError):
-                self._send_json(502, {"error": {"type": "upstream_error", "message": str(e)}})
-                return
-        except ImportError:
+            conn.close()
+        except Exception:
             pass
 
-        if isinstance(e, httpx.HTTPError):
+    def _handle_upstream_error(self, e: Exception):
+        """统一 http.client 异常 → HTTP 错误映射。"""
+        logging.exception(f"上游请求异常: {type(e).__name__}: {e}")
+
+        if isinstance(e, socket.timeout):
+            self._send_json(504, {"error": {"type": "timeout_error", "message": str(e)}})
+        elif isinstance(e, (socket.gaierror, ssl.SSLError)):
+            self._send_json(502, {"error": {"type": "connection_error", "message": str(e)}})
+        elif isinstance(e, (http.client.HTTPException, ConnectionError, OSError)):
             self._send_json(502, {"error": {"type": "connection_error", "message": str(e)}})
         else:
-            self._send_json(502, {"error": {"type": "upstream_error", "message": str(e)}})
+            self._send_json(500, {"error": {"type": "internal_error", "message": str(e)}})
 
         # ── 工具方法 ─────────────────────────────────────────────────
 
