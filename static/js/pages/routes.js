@@ -1,12 +1,116 @@
 import { api, escHtml, showModal, closeModal, bus } from '../core.js';
 
-// ===== 路由管理 (独立页面) =====
+// ===== 路由管理 =====
 
 let currentRequestType = 'chat_completions';
 
+const FORMAT_LABELS = { responses: 'Responses', messages: 'Messages', chat_completions: 'Chat' };
+const FORMAT_COLORS = { responses: 'badge-blue', messages: 'badge-purple', chat_completions: 'badge-green' };
+
+const RT_CONFIG = {
+  responses: { icon: '🔌', label: 'Responses' },
+  messages: { icon: '✉️', label: 'Messages' },
+  chat_completions: { icon: '🔗', label: 'Chat Completions' }
+};
+
+// ─── Custom Select 组件 ───
+const CS_CHEVRON = '<svg class="cs-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>';
+
+function buildTriggerDisplay(opt) {
+  return escHtml(opt.label) + (opt.hint ? `<span class="cs-hint-inline" style="${opt.hintStyle || ''}">${opt.hint}</span>` : '');
+}
+
+function customSelectHtml(id, opts, placeholder) {
+  const sel = opts.find(o => o.selected && o.value) || opts.find(o => o.value) || null;
+  const display = sel ? buildTriggerDisplay(sel) : escHtml(placeholder);
+  const allDisabled = opts.every(o => !o.value || o.disabled);
+
+  const optionsHtml = opts.map(o => {
+    const cls = ['cs-option'];
+    if (o.selected) cls.push('selected');
+    if (o.disabled) cls.push('disabled');
+    if (!o.value) cls.push('cs-empty');
+    return `<div class="${cls.join(' ')}" data-value="${escHtml(o.value)}" ${o.disabled ? 'data-disabled="1"' : ''}>
+      <span class="cs-option-text">${escHtml(o.label)}</span>${o.hint ? `<span class="cs-option-hint" style="${o.hintStyle || ''}">${o.hint}</span>` : ''}
+    </div>`;
+  }).join('');
+
+  return `<input type="hidden" id="${id}" value="${sel ? escHtml(sel.value) : ''}">
+    <div class="custom-select${allDisabled ? ' disabled' : ''}" data-cs="${id}">
+      <button type="button" class="cs-trigger"><span class="cs-text">${display}</span>${CS_CHEVRON}</button>
+      <div class="cs-dropdown">${optionsHtml}</div>
+    </div>`;
+}
+
+function wireCustomSelect(id) {
+  const cs = document.querySelector(`[data-cs="${id}"]`);
+  if (!cs || cs.dataset.wired) return;
+  cs.dataset.wired = '1';
+  const trigger = cs.querySelector('.cs-trigger');
+  const dropdown = cs.querySelector('.cs-dropdown');
+  const hidden = document.getElementById(id);
+
+  trigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (cs.classList.contains('disabled')) return;
+    document.querySelectorAll('.custom-select.open').forEach(el => el !== cs && el.classList.remove('open'));
+    cs.classList.toggle('open');
+  });
+
+  dropdown.addEventListener('click', (e) => {
+    const opt = e.target.closest('.cs-option');
+    if (!opt || opt.dataset.disabled || opt.classList.contains('cs-empty')) return;
+    e.stopPropagation();
+    const val = opt.dataset.value;
+    hidden.value = val;
+    const optText = opt.querySelector('.cs-option-text').textContent;
+    const optHint = opt.querySelector('.cs-option-hint');
+    trigger.querySelector('.cs-text').innerHTML = escHtml(optText) + (optHint ? `<span class="cs-hint-inline" style="${optHint.style.cssText}">${optHint.textContent}</span>` : '');
+    dropdown.querySelectorAll('.cs-option').forEach(o => o.classList.toggle('selected', o === opt));
+    cs.classList.remove('open');
+    hidden.dispatchEvent(new Event('change'));
+  });
+}
+
+function updateCustomSelect(id, opts, placeholder) {
+  const cs = document.querySelector(`[data-cs="${id}"]`);
+  if (!cs) return;
+  const hidden = document.getElementById(id);
+  const dropdown = cs.querySelector('.cs-dropdown');
+  const textSpan = cs.querySelector('.cs-text');
+
+  const sel = opts.find(o => o.selected && o.value) || opts.find(o => o.value);
+  hidden.value = sel ? sel.value : '';
+  textSpan.innerHTML = sel ? buildTriggerDisplay(sel) : escHtml(placeholder || '--');
+
+  dropdown.innerHTML = opts.map(o => {
+    const cls = ['cs-option'];
+    if (o.selected) cls.push('selected');
+    if (o.disabled) cls.push('disabled');
+    if (!o.value) cls.push('cs-empty');
+    return `<div class="${cls.join(' ')}" data-value="${escHtml(o.value)}" ${o.disabled ? 'data-disabled="1"' : ''}>
+      <span class="cs-option-text">${escHtml(o.label)}</span>${o.hint ? `<span class="cs-option-hint" style="${o.hintStyle || ''}">${o.hint}</span>` : ''}
+    </div>`;
+  }).join('');
+
+  cs.classList.toggle('disabled', opts.every(o => !o.value || o.disabled));
+  cs.classList.remove('open');
+}
+
+function closeAllCustomSelects() {
+  document.querySelectorAll('.custom-select.open').forEach(el => el.classList.remove('open'));
+}
+
+// 全局点击/ESC 关闭下拉
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.custom-select')) closeAllCustomSelects();
+});
+
+// ─── 页面逻辑 ───
+
 function switchRequestType(rt) {
   currentRequestType = rt;
-  document.querySelectorAll('.proxy-tab').forEach(b => b.classList.toggle('active', b.dataset.pt === rt));
+  document.querySelectorAll('.route-type-card').forEach(b => b.classList.toggle('active', b.dataset.pt === rt));
   loadRouteTable(rt);
 }
 
@@ -14,71 +118,87 @@ async function loadRouteTable(requestType) {
   let url = '/api/routes';
   if (requestType) url += '?request_type=' + encodeURIComponent(requestType);
   const data = await api(url);
-  document.querySelector('#route-table tbody').innerHTML = data.routes.map(r =>
-    `<tr style="${r.source === '*' ? 'background:hsl(var(--primary) / 0.05);' : ''} ${r.upstream_active ? '' : 'opacity:0.5'}">
-      <td><span class="badge badge-purple">${escHtml(r.source)}${r.source === '*' ? ' (★ fallback)' : ''}</span></td>
-      <td>→ <span class="badge badge-green">${escHtml(r.target_name)}</span></td>
-      <td><span class="badge" style="background:hsl(var(--muted));color:hsl(var(--muted-foreground))">${escHtml(r.upstream_id)}</span></td>
-      <td><span class="badge badge-blue">${escHtml(r.request_type || 'chat_completions')}</span></td>
-      <td>${r.upstream_active ? '<span style="color:hsl(var(--green))">活跃</span>' : '<span style="color:hsl(var(--red))">上游已禁用</span>'}</td>
+  const tbody = document.querySelector('#route-table tbody');
+  if (tbody) tbody.innerHTML = data.routes.map(r => {
+    const isFallback = r.source === '*';
+    const isDisabled = !r.upstream_active;
+    const rowClass = [isFallback ? 'route-fallback' : '', isDisabled ? 'route-disabled' : ''].filter(Boolean).join(' ');
+    return `<tr class="${rowClass}">
+      <td>${isFallback
+        ? '<span class="badge badge-purple">★ fallback</span>'
+        : '<span class="badge badge-purple">' + escHtml(r.source) + '</span>'}</td>
+      <td><span class="badge badge-green">${escHtml(r.target_name)}</span></td>
+      <td><span class="badge" style="background:hsl(var(--muted) / 0.7);color:hsl(var(--muted-foreground))">${escHtml(r.upstream_name || r.upstream_id)}</span></td>
+      <td><span class="badge ${FORMAT_COLORS[r.upstream_format] || ''}">${FORMAT_LABELS[r.upstream_format] || r.upstream_format || '-'}</span></td>
+      <td><span class="route-status"><span class="route-status-dot ${r.upstream_active ? 'active' : 'inactive'}"></span>${r.upstream_active ? '活跃' : '已禁用'}</span></td>
       <td>
-        <button class="btn btn-secondary btn-sm" onclick="showRouteModal(${r.id})">编辑</button>
-        <button class="btn btn-danger btn-sm" onclick="confirmDeleteRoute(${r.id}, '${escHtml(r.source)}')">删除</button>
+        <div class="route-actions">
+          <button class="btn btn-secondary btn-sm" onclick="showRouteModal(${r.id})">编辑</button>
+          <button class="btn btn-danger btn-sm" onclick="confirmDeleteRoute(${r.id}, '${escHtml(r.source)}')">删除</button>
+        </div>
       </td>
-    </tr>`
-  ).join('') || '<tr><td colspan="6" class="empty-state">暂无路由</td></tr>';
+    </tr>`;
+  }).join('') || '<tr><td colspan="6" class="empty-state"><div class="empty-state-icon">🔀</div>暂无路由配置</td></tr>';
 }
 
 // ─── 级联选择：上游 → 模型 ───
-function buildCascadingModelSelect(upstreams, models, selectedUpstreamId, selectedModelId) {
+function buildCascadingSelect(upstreams, models, selectedUpstreamId, selectedModelId) {
   const fmtLabel = { responses: 'Resp', messages: 'Msg', chat_completions: 'Chat' };
-  let upOpts = '<option value="">-- 选择上游 --</option>';
-  upstreams.upstreams.forEach(u => {
-    const fmt = fmtLabel[u.format] || u.format;
-    const label = escHtml(u.name) + (fmt ? ' (' + fmt + ')' : '');
-    upOpts += `<option value="${u.id}"${u.id === selectedUpstreamId ? ' selected' : ''}${u.is_active ? '' : ' disabled'}>${label}</option>`;
-  });
-  let modelOpts, modelDisabled = 'disabled';
+  const fmtStyle = {
+    responses: 'background:hsl(var(--purple) / 0.15);color:hsl(var(--purple))',
+    messages: 'background:hsl(var(--blue) / 0.15);color:hsl(var(--blue))',
+    chat_completions: 'background:hsl(var(--green) / 0.15);color:hsl(var(--green))'
+  };
+
+  const upOpts = upstreams.upstreams.map(u => ({
+    value: u.id,
+    label: u.name,
+    hint: fmtLabel[u.format] || u.format,
+    hintStyle: fmtStyle[u.format] || '',
+    selected: u.id === selectedUpstreamId,
+    disabled: !u.is_active
+  }));
+
+  let modelOpts;
   if (!selectedUpstreamId) {
-    modelOpts = '<option value="">-- 请先选择上游 --</option>';
+    modelOpts = [{ value: '', label: '-- 请先选择上游 --', selected: true }];
   } else if (!upstreams.upstreams.find(u => u.id === selectedUpstreamId)) {
-    modelOpts = '<option value="">上游不存在或已变更</option>';
+    modelOpts = [{ value: '', label: '上游不存在或已变更', selected: true }];
   } else {
     const mlist = models.models.filter(m => m.upstream_id === selectedUpstreamId);
-    if (mlist.length === 0) {
-      modelOpts = '<option value="">暂无模型</option>';
-    } else {
-      modelDisabled = '';
-      modelOpts = mlist.map(m => `<option value="${m.id}"${m.id === selectedModelId ? ' selected' : ''}>${escHtml(m.name)}</option>`).join('');
-    }
+    modelOpts = mlist.length === 0
+      ? [{ value: '', label: '暂无模型', selected: true }]
+      : mlist.map(m => ({ value: m.id, label: m.name, selected: m.id === selectedModelId }));
   }
-  return `
-    <div class="form-group"><label class="form-label">上游</label><select class="form-input" id="r-upstream">${upOpts}</select></div>
-    <div class="form-group"><label class="form-label">目标模型</label><select class="form-input" id="r-target" ${modelDisabled}>${modelOpts}</select></div>`;
+
+  return `<div class="form-group"><label class="form-label">上游</label>${customSelectHtml('r-upstream', upOpts, '-- 选择上游 --')}</div>
+    <div class="form-group"><label class="form-label">目标模型</label>${customSelectHtml('r-target', modelOpts, '-- 请先选择上游 --')}</div>`;
 }
 
 function bindCascadeModelSelect() {
-  const upSelect = document.getElementById('r-upstream');
-  const modelSelect = document.getElementById('r-target');
-  if (!upSelect || !modelSelect) return;
-  upSelect.addEventListener('change', async () => {
-    const upstreamId = upSelect.value;
+  const upHidden = document.getElementById('r-upstream');
+  if (!upHidden) return;
+
+  wireCustomSelect('r-upstream');
+  wireCustomSelect('r-target');
+
+  upHidden.addEventListener('change', async () => {
+    const upstreamId = upHidden.value;
     if (!upstreamId) {
-      modelSelect.innerHTML = '<option value="">-- 请先选择上游 --</option>';
-      modelSelect.disabled = true;
+      updateCustomSelect('r-target', [{ value: '', label: '-- 请先选择上游 --', selected: true }], '-- 请先选择上游 --');
       return;
     }
-    modelSelect.disabled = true;
-    modelSelect.innerHTML = '<option value="">加载中…</option>';
+    updateCustomSelect('r-target', [{ value: '', label: '加载中…', selected: true }], '加载中…');
     try {
       const data = await api('/api/models?upstream_id=' + encodeURIComponent(upstreamId));
       const mlist = data.models || [];
-      modelSelect.innerHTML = mlist.length === 0
-        ? '<option value="">暂无模型</option>'
-        : mlist.map(m => `<option value="${m.id}">${escHtml(m.name)}</option>`).join('');
-      modelSelect.disabled = false;
+      updateCustomSelect('r-target',
+        mlist.length === 0
+          ? [{ value: '', label: '暂无模型', selected: true }]
+          : mlist.map(m => ({ value: m.id, label: m.name, selected: false })),
+        mlist.length === 0 ? '暂无模型' : '选择模型');
     } catch (_) {
-      modelSelect.innerHTML = '<option value="">加载失败</option>';
+      updateCustomSelect('r-target', [{ value: '', label: '加载失败', selected: true }], '加载失败');
     }
   });
 }
@@ -107,15 +227,19 @@ async function showRouteModal(editId) {
     alert('加载数据失败，请检查服务是否正常运行');
     return;
   }
-  const cascadingHtml = buildCascadingModelSelect(upstreams, models, routeUpstreamId, routeModelId);
+  const cascadingHtml = buildCascadingSelect(upstreams, models, routeUpstreamId, routeModelId);
   const sourceField = data.source === '*'
-    ? `<input type="text" class="form-input" value="* (fallback)" readonly style="background:hsl(var(--muted));color:hsl(var(--muted-foreground));cursor:not-allowed"><input type="hidden" id="r-source" value="*">`
-    : `<input type="text" class="form-input" id="r-source" value="${escHtml(data.source)}" placeholder="如 gpt-4o">`;
+    ? `<input type="text" class="form-input" value="* (fallback)" readonly><input type="hidden" id="r-source" value="*">`
+    : `<input type="text" class="form-input" id="r-source" value="${escHtml(data.source)}" placeholder="如 gpt-4o">
+       <div class="form-hint">客户端请求的模型名称，路由会将其转发到目标模型</div>`;
   showModal(title,
     `<div class="form-group"><label class="form-label">源模型名</label>${sourceField}</div>
+     <hr class="form-divider">
      ${cascadingHtml}
      <input type="hidden" id="r-proxy" value="${escHtml(data.request_type)}">`,
-    `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveRoute(${editId || 0})">保存</button>`);
+    `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveRoute(${editId || 0})">保存路由</button>`);
+  const modal = document.querySelector('.modal');
+  if (modal) modal.classList.add('route-modal');
   bindCascadeModelSelect();
 }
 
@@ -128,13 +252,15 @@ async function showFallbackModal() {
     alert('加载数据失败，请检查服务是否正常运行');
     return;
   }
-  const cascadingHtml = buildCascadingModelSelect(upstreams, models, null, null);
+  const cascadingHtml = buildCascadingSelect(upstreams, models, null, null);
   showModal('新增回退路由',
-    `<div class="form-group"><label class="form-label">源模型名</label><input type="text" class="form-input" value="* (fallback)" readonly style="background:hsl(var(--muted));color:hsl(var(--muted-foreground));cursor:not-allowed"></div>
-     <input type="hidden" id="r-source" value="*">
+    `<div class="form-group"><label class="form-label">源模型名</label><input type="text" class="form-input" value="* (fallback)" readonly><input type="hidden" id="r-source" value="*"></div>
+     <hr class="form-divider">
      ${cascadingHtml}
      <input type="hidden" id="r-proxy" value="${escHtml(data.request_type)}">`,
-    `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveRoute(0, true)">保存</button>`);
+    `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveRoute(0, true)">保存路由</button>`);
+  const modal = document.querySelector('.modal');
+  if (modal) modal.classList.add('route-modal');
   bindCascadeModelSelect();
 }
 
@@ -145,7 +271,7 @@ async function saveRoute(editId, allowFallback = false) {
     request_type: document.getElementById('r-proxy').value,
   };
   if (!data.source) { alert('源模型名不能为空'); return; }
-  if (!editId && data.source === '*' && !allowFallback) { alert('❌ 不能通过此按钮添加回退路由，请使用「新增回退路由」按钮'); return; }
+  if (!editId && data.source === '*' && !allowFallback) { alert('不能通过此按钮添加回退路由，请使用「新增回退路由」按钮'); return; }
   if (editId) {
     await api('/api/routes/' + editId, { method: 'PUT', body: JSON.stringify(data) });
   } else {
@@ -160,33 +286,39 @@ async function confirmDeleteRoute(id, source) {
   if (source === '*') {
     const routes = await api('/api/routes');
     const starCount = routes.routes.filter(r => r.source === '*').length;
-    if (starCount <= 1) { alert('❌ 不能删除最后一条 * fallback 路由'); return; }
+    if (starCount <= 1) { alert('不能删除最后一条 * fallback 路由'); return; }
   }
   if (!confirm('确认删除路由 "' + source + '"？')) return;
   const result = await api('/api/routes/' + id, { method: 'DELETE' });
-  if (result.error) { alert('❌ ' + result.error); }
+  if (result.error) { alert(result.error); }
   else { bus.emit('config:route-changed', {}); loadRouteTable(currentRequestType); }
 }
 
 // ===== Page Loader =====
 async function loadRoutePage() {
+  const typeCards = Object.entries(RT_CONFIG).map(([key, cfg]) =>
+    `<button class="route-type-card${key === 'chat_completions' ? ' active' : ''}" data-pt="${key}" onclick="switchRequestType('${key}')">
+      <span class="rtc-icon">${cfg.icon}</span>
+      <span class="rtc-label">${cfg.label}</span>
+    </button>`
+  ).join('');
+
   document.getElementById('page-routes').innerHTML = `
-    <div class="proxy-tabs" style="display:flex;gap:8px;margin-bottom:16px;">
-      <button class="proxy-tab btn btn-sm active" data-pt="responses" onclick="switchRequestType('responses')">🔌 Responses</button>
-      <button class="proxy-tab btn btn-sm" data-pt="messages" onclick="switchRequestType('messages')">✉️ Messages</button>
-      <button class="proxy-tab btn btn-sm" data-pt="chat_completions" onclick="switchRequestType('chat_completions')">🔗 Chat Completions</button>
-    </div>
-    <div class="table-card" style="margin-bottom:20px">
-      <div class="table-header">
-        <span class="table-title">🔀 路由映射</span>
-        <div style="display:flex;gap:8px;">
-          <button class="btn btn-primary btn-sm" onclick="showRouteModal()">+ 新增路由</button>
-          <button class="btn btn-secondary btn-sm" onclick="showFallbackModal()">+ 新增回退路由</button>
-        </div>
+    <div class="page-header">
+      <div class="page-title">
+        <span class="page-title-icon">🔀</span>
+        路由映射
       </div>
+      <div class="page-actions">
+        <button class="btn btn-secondary btn-sm" onclick="showFallbackModal()">+ 回退路由</button>
+        <button class="btn btn-primary btn-sm" onclick="showRouteModal()">+ 新增路由</button>
+      </div>
+    </div>
+    <div class="route-type-cards">${typeCards}</div>
+    <div class="table-card">
       <div class="table-scroll">
         <table id="route-table">
-          <thead><tr><th>源模型</th><th>→ 目标模型</th><th>上游</th><th>Request</th><th>状态</th><th>操作</th></tr></thead>
+          <thead><tr><th>源模型</th><th>目标模型</th><th>上游</th><th>请求格式</th><th>状态</th><th>操作</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -194,9 +326,7 @@ async function loadRoutePage() {
   loadRouteTable('chat_completions');
 }
 
-function initRoutePage() {
-  // No-op — HTML injected dynamically
-}
+function initRoutePage() {}
 
 // ===== Exports =====
 export { loadRoutePage, initRoutePage, loadRouteTable, showRouteModal, showFallbackModal, saveRoute, confirmDeleteRoute, switchRequestType };

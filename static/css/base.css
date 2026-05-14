@@ -28,18 +28,18 @@
 
 /* 亮色模式 */
 [data-theme="light"] {
-  --background: 0 0% 100%;
+  --background: 120 18% 94%;
   --foreground: 240 10% 3.9%;
-  --card: 0 0% 100%;
+  --card: 120 12% 97%;
   --card-foreground: 240 10% 3.9%;
   --primary: 210 100% 54%;
   --primary-foreground: 0 0% 100%;
-  --secondary: 240 5% 96%;
+  --secondary: 120 12% 90%;
   --secondary-foreground: 240 5% 10%;
-  --muted: 240 5% 96%;
+  --muted: 120 10% 92%;
   --muted-foreground: 240 4% 46%;
-  --border: 240 6% 90%;
-  --input: 240 6% 90%;
+  --border: 120 8% 82%;
+  --input: 120 8% 85%;
   --ring: 210 100% 54%;
   
   /* 功能色 */

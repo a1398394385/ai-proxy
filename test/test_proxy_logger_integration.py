@@ -211,7 +211,8 @@ class TestFullRequestFlow(unittest.TestCase):
 
         stats = _query_token_stats(self.db_path)
         self.assertEqual(len(stats), 1)
-        self.assertEqual(stats[0]["input_tokens"], 100)
+        # Chat 格式 prompt_tokens 包含 cached_tokens，扣除后入库
+        self.assertEqual(stats[0]["input_tokens"], 80)  # 100 - 20
         self.assertEqual(stats[0]["output_tokens"], 50)
         self.assertEqual(stats[0]["cached_read_tokens"], 20)
         self.assertEqual(stats[0]["status"], "completed")
@@ -386,7 +387,8 @@ class TestStreamingFlow(unittest.TestCase):
         # token_stats 应有正确的值
         stats = _query_token_stats(self.db_path)
         self.assertEqual(len(stats), 1)
-        self.assertEqual(stats[0]["input_tokens"], 100)
+        # Chat 格式 prompt_tokens 包含 cached_tokens，扣除后入库
+        self.assertEqual(stats[0]["input_tokens"], 80)  # 100 - 20
         self.assertEqual(stats[0]["output_tokens"], 50)
         self.assertEqual(stats[0]["cached_read_tokens"], 20)
         self.assertEqual(stats[0]["status"], "completed")

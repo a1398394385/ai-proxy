@@ -254,8 +254,10 @@
   opacity: 0.8;
 }
 
-.legend-item.hidden {
-  opacity: 0.4;
+.legend-item.off {
+  opacity: 0.35;
+  text-decoration: line-through;
+  text-decoration-color: hsl(var(--muted-foreground) / 0.4);
 }
 
 .legend-dot {
@@ -857,11 +859,17 @@
 .req-table tbody tr:hover {
   background: hsl(var(--primary) / 0.025);
 }
-.req-table tbody tr[data-type="session"] {
+.req-table tbody tr[data-type="hermes"] {
   border-left-color: hsl(var(--purple) / 0.3);
 }
-.req-table tbody tr[data-type="session"]:hover {
+.req-table tbody tr[data-type="hermes"]:hover {
   border-left-color: hsl(var(--purple) / 0.65);
+}
+.req-table tbody tr[data-type="opencode"] {
+  border-left-color: hsl(160 70% 45% / 0.3);
+}
+.req-table tbody tr[data-type="opencode"]:hover {
+  border-left-color: hsl(160 70% 45% / 0.65);
 }
 .req-table tbody tr[data-type="proxy"] {
   border-left-color: hsl(190 80% 50% / 0.3);
@@ -885,10 +893,15 @@
   border-color: hsl(190 80% 50% / 0.3);
   background: hsl(190 80% 50% / 0.06);
 }
-.type-badge-term.session {
+.type-badge-term.hermes {
   color: hsl(var(--purple));
   border-color: hsl(var(--purple) / 0.3);
   background: hsl(var(--purple) / 0.06);
+}
+.type-badge-term.opencode {
+  color: hsl(160 70% 45%);
+  border-color: hsl(160 70% 45% / 0.3);
+  background: hsl(160 70% 45% / 0.06);
 }
 
 /* 成本药片 */

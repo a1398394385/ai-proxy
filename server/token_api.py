@@ -60,6 +60,7 @@ def handle_get(path, qs, handler) -> bool:
             return True
         model = qs.get("model", [None])[0]
         request_type = qs.get("request_type", [None])[0]
+        source = qs.get("source", [None])[0]
         try:
             limit = int(qs.get("limit", ["50"])[0])
             offset = int(qs.get("offset", ["0"])[0])
@@ -73,6 +74,7 @@ def handle_get(path, qs, handler) -> bool:
             period=period,
             model=model,
             request_type=request_type,
+            source=source,
             limit=limit,
             offset=offset,
         )

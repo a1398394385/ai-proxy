@@ -584,7 +584,7 @@ class TestMigrations(unittest.TestCase):
         m = Migrations(self.db_path)
         result = m.migrate()
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["version"], 5)
+        self.assertEqual(result["version"], 6)
 
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row

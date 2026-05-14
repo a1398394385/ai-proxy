@@ -663,6 +663,7 @@ class StatsService:
         period: str,
         model: str | None = None,
         request_type: str | None = None,
+        source: str | None = None,
         limit: int | None = None,
         offset: int = 0,
     ) -> list | tuple[list, int]:
@@ -675,6 +676,7 @@ class StatsService:
             period: "day"/"week"/"month"
             model: 可选，内部完成规范化后对各源分别匹配
             request_type: 可选，过滤请求类型
+            source: 可选，过滤数据来源 (hermes/opencode/proxy)
             limit: 指定时启用分页，返回 (records, total)
             offset: 分页偏移
 
@@ -717,10 +719,16 @@ class StatsService:
             r["cache_read_cost_cny"] = breakdown["cache_read_cost_cny"]
             r["cache_write_cost_cny"] = breakdown["cache_write_cost_cny"]
 
-        # 4. 按 request_ts DESC 排序
+        # 4. 按 source 过滤数据来源
+        if source and source in ("hermes", "opencode"):
+            records = [r for r in records if r["upstream_id"] == source]
+        elif source == "proxy":
+            records = [r for r in records if r["upstream_id"] not in ("hermes", "opencode")]
+
+        # 5. 按 request_ts DESC 排序
         records.sort(key=lambda r: r["request_ts"], reverse=True)
 
-        # 5. 分页或全量返回
+        # 6. 分页或全量返回
         if limit is not None:
             total = len(records)
             return (records[offset:offset + limit], total)
@@ -908,13 +916,14 @@ class StatsService:
         period: str,
         model: str | None = None,
         request_type: str | None = None,
+        source: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> dict:
         """获取请求详情列表（分页）。"""
         records, total = self._fetch_unified_records(
             period=period, model=model, request_type=request_type,
-            limit=limit, offset=offset,
+            source=source, limit=limit, offset=offset,
         )
         return {
             "requests": records,

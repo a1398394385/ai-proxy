@@ -4,7 +4,12 @@ const EXCHANGE_RATE = 7;
 
 function formatCny(value, currency) {
   const rmb = currency === 'RMB' ? Number(value) : Number(value) * EXCHANGE_RATE;
-  return '¥' + rmb.toFixed(6);
+  let s = rmb.toFixed(6);
+  const dot = s.indexOf('.');
+  let dec = s.slice(dot + 1).replace(/0+$/, '');
+  if (dec.length < 2) dec = dec.padEnd(2, '0');
+  s = s.slice(0, dot) + '.' + dec;
+  return '¥' + s;
 }
 
 /* ─── 统计计算 ─── */
@@ -44,94 +49,90 @@ function renderSummary(summary) {
       </div>
     </div>
     <div class="pricing-stat-card">
-      <div class="pricing-stat-icon" style="background:hsl(160 60% 45% / 0.1);border-color:hsl(160 60% 45% / 0.15)">📈</div>
+      <div class="pricing-stat-icon" style="background:hsla(220,80%,60%,0.12);border-color:hsla(220,80%,60%,0.18)">📈</div>
       <div class="pricing-stat-label">平均输入（¥/1M）</div>
       <div class="pricing-stat-value">¥${summary.avgInput.toFixed(6)}</div>
       <div class="pricing-stat-sub">每百万 Tokens 均价</div>
     </div>
     <div class="pricing-stat-card">
-      <div class="pricing-stat-icon" style="background:hsl(var(--purple) / 0.1);border-color:hsl(var(--purple) / 0.15)">📊</div>
+      <div class="pricing-stat-icon" style="background:hsla(160,60%,45%,0.12);border-color:hsla(160,60%,45%,0.18)">📊</div>
       <div class="pricing-stat-label">平均输出（¥/1M）</div>
       <div class="pricing-stat-value">¥${summary.avgOutput.toFixed(6)}</div>
       <div class="pricing-stat-sub">每百万 Tokens 均价</div>
     </div>
     <div class="pricing-stat-card">
-      <div class="pricing-stat-icon" style="background:hsl(35 90% 55% / 0.1);border-color:hsl(35 90% 55% / 0.15)">🏆</div>
+      <div class="pricing-stat-icon" style="background:hsla(35,90%,55%,0.12);border-color:hsla(35,90%,55%,0.18)">🏆</div>
       <div class="pricing-stat-label">最贵模型</div>
       <div class="pricing-stat-value" style="font-size:18px;font-weight:500">${summary.maxModel ? escHtml(summary.maxModel) : '—'}</div>
       <div class="pricing-stat-sub">${summary.maxTotal > 0 ? '¥' + summary.maxTotal.toFixed(6) + ' / 1M' : '每百万 Tokens 成本'}</div>
     </div>`;
 }
 
-/* ─── 渲染表格 ─── */
-function renderTable(items) {
-  const tbody = document.getElementById('pricing-tbody');
+/* ─── 渲染卡片网格 ─── */
+function renderCards(items) {
+  const grid = document.getElementById('pricing-grid');
   const countEl = document.getElementById('pricing-count');
-  countEl.textContent = items.length + ' 条';
+  countEl.textContent = items.length;
 
   if (items.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8"><div class="pricing-empty">
+    grid.innerHTML = `<div class="pricing-empty">
       <div class="pricing-empty-icon">💰</div>
       <div class="pricing-empty-text">暂无定价数据</div>
       <div class="pricing-empty-sub">点击上方"新增定价"按钮添加</div>
-    </div></td></tr>`;
+    </div>`;
     return;
   }
 
-  /* 计算各列最大值（统一转人民币）用于条形图比例 */
-  const maxIn = Math.max(...items.map(p =>
-    Number(p.input_cost_per_million) * (p.currency === 'RMB' ? 1 : EXCHANGE_RATE)
-  ), 0.000001);
-  const maxOut = Math.max(...items.map(p =>
-    Number(p.output_cost_per_million) * (p.currency === 'RMB' ? 1 : EXCHANGE_RATE)
-  ), 0.000001);
-  const maxCR = Math.max(...items.map(p =>
-    Number(p.cache_read_cost_per_million) * (p.currency === 'RMB' ? 1 : EXCHANGE_RATE)
-  ), 0.000001);
-  const maxCW = Math.max(...items.map(p =>
-    Number(p.cache_creation_cost_per_million) * (p.currency === 'RMB' ? 1 : EXCHANGE_RATE)
-  ), 0.000001);
-
-  tbody.innerHTML = items.map((p, idx) => {
+  grid.innerHTML = items.map((p, idx) => {
     const mid = escHtml(p.model_id).replace(/'/g, "\\'");
-    const cny = p.currency === 'RMB' ? 1 : EXCHANGE_RATE;
-    const inCny = Number(p.input_cost_per_million) * cny;
-    const outCny = Number(p.output_cost_per_million) * cny;
-    const crCny = Number(p.cache_read_cost_per_million) * cny;
-    const cwCny = Number(p.cache_creation_cost_per_million) * cny;
-
-    const badge = p.currency === 'RMB'
-      ? '<span class="badge-currency badge-rmb">CNY</span>'
-      : '<span class="badge-currency badge-usd">USD</span>';
-
-    return `<tr style="animation-delay:${(idx * 0.025).toFixed(3)}s">
-      <td class="cell-model">
-        <span class="model-id">${escHtml(p.model_id)}</span>
-        <span class="model-name">${escHtml(p.display_name)}</span>
-      </td>
-      <td class="cell-price">
-        <span class="price-bar-bg" style="width:${(inCny / maxIn * 100).toFixed(1)}%;background:hsl(var(--blue))"></span>
-        <span class="price-value">${formatCny(p.input_cost_per_million, p.currency)}</span>
-      </td>
-      <td class="cell-price">
-        <span class="price-bar-bg" style="width:${(outCny / maxOut * 100).toFixed(1)}%;background:hsl(160 60% 45%)"></span>
-        <span class="price-value">${formatCny(p.output_cost_per_million, p.currency)}</span>
-      </td>
-      <td class="cell-price">
-        <span class="price-bar-bg" style="width:${(crCny / maxCR * 100).toFixed(1)}%;background:hsl(var(--purple))"></span>
-        <span class="price-value">${formatCny(p.cache_read_cost_per_million, p.currency)}</span>
-      </td>
-      <td class="cell-price">
-        <span class="price-bar-bg" style="width:${(cwCny / maxCW * 100).toFixed(1)}%;background:hsl(var(--orange))"></span>
-        <span class="price-value">${formatCny(p.cache_creation_cost_per_million, p.currency)}</span>
-      </td>
-      <td class="cell-multiplier">${Number(p.multiplier || 1).toFixed(2)}×</td>
-      <td>${badge}</td>
-      <td class="cell-actions">
-        <button class="btn-icon btn-edit" title="编辑" onclick="editPricing('${mid}')">✎</button>
-        <button class="btn-icon btn-delete" title="删除" onclick="deletePricing('${mid}')">✕</button>
-      </td>
-    </tr>`;
+    return `<div class="pricing-card-item" style="animation-delay:${(idx * 0.04).toFixed(3)}s">
+      <div class="card-top">
+        <div class="card-title-area">
+          <span class="card-display-name">${escHtml(p.display_name)}</span>
+          <span class="card-model-id">${escHtml(p.model_id)}</span>
+        </div>
+        <div class="card-actions">
+          <button class="card-btn card-btn-edit" title="编辑" onclick="editPricing('${mid}')">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 10.5V12h1.5l6.5-6.5-1.5-1.5L2 10.5zM11.5 4.5c.3-.3.3-.8 0-1.1l-.4-.4c-.3-.3-.8-.3-1.1 0L9 3.5l1.5 1.5 1-1z" fill="currentColor"/></svg>
+          </button>
+          <button class="card-btn card-btn-delete" title="删除" onclick="deletePricing('${mid}')">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M4 3V1.5c0-.3.2-.5.5-.5h5c.3 0 .5.2.5.5V3h3v1h-1v8c0 .6-.4 1-1 1H3c-.6 0-1-.4-1-1V4H1V3h3zm1-1v1h4V2H5zM3 4v8h8V4H3z" fill="currentColor"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="card-costs">
+        <div class="cost-row">
+          <div class="cost-cell" data-type="input">
+            <span class="cost-label">Input</span>
+            <span class="cost-value">${formatCny(p.input_cost_per_million, p.currency)}</span>
+            <span class="cost-unit">/1M</span>
+          </div>
+          <div class="cost-cell" data-type="output">
+            <span class="cost-label">Output</span>
+            <span class="cost-value">${formatCny(p.output_cost_per_million, p.currency)}</span>
+            <span class="cost-unit">/1M</span>
+          </div>
+        </div>
+        <div class="cost-row">
+          <div class="cost-cell" data-type="cache-read">
+            <span class="cost-label">Cache Read</span>
+            <span class="cost-value">${formatCny(p.cache_read_cost_per_million, p.currency)}</span>
+            <span class="cost-unit">/1M</span>
+          </div>
+          <div class="cost-cell" data-type="cache-write">
+            <span class="cost-label">Cache Create</span>
+            <span class="cost-value">${formatCny(p.cache_creation_cost_per_million, p.currency)}</span>
+            <span class="cost-unit">/1M</span>
+          </div>
+        </div>
+      </div>
+      <div class="card-footer">
+        <span class="card-meta"><span class="meta-label">倍率</span> ${Number(p.multiplier || 1).toFixed(2)}×</span>
+        <span class="card-currency">
+          <span class="currency-badge ${p.currency === 'RMB' ? 'curr-rmb' : 'curr-usd'}">${p.currency}</span>
+        </span>
+      </div>
+    </div>`;
   }).join('');
 }
 
@@ -139,7 +140,7 @@ function renderTable(items) {
 export async function loadPricingPage() {
   const container = document.getElementById('page-pricing');
   if (!container) return;
-  if (container.dataset.loaded) { await loadPricingTable(); return; }
+  if (container.dataset.loaded) { await loadPricingData(); return; }
   container.dataset.loaded = '1';
 
   container.innerHTML = `
@@ -149,6 +150,7 @@ export async function loadPricingPage() {
         <div class="pricing-header-left">
           <h2 class="pricing-header-title">💰 定价配置</h2>
           <span class="pricing-header-count" id="pricing-count"></span>
+          <span class="pricing-header-subtitle">每百万 Tokens</span>
         </div>
         <div class="pricing-header-right">
           <div class="search-box" style="max-width:220px">
@@ -157,40 +159,24 @@ export async function loadPricingPage() {
           <button class="btn btn-primary" onclick="showPricingModal()">＋ 新增定价</button>
         </div>
       </div>
-      <div class="pricing-table-wrap">
-        <table id="pricing-table">
-          <thead>
-            <tr>
-              <th style="min-width:180px">模型</th>
-              <th class="th-price">输入 <span class="price-unit">¥/1M</span></th>
-              <th class="th-price">输出 <span class="price-unit">¥/1M</span></th>
-              <th class="th-price">缓存读 <span class="price-unit">¥/1M</span></th>
-              <th class="th-price">缓存写 <span class="price-unit">¥/1M</span></th>
-              <th style="width:72px">倍率</th>
-              <th style="width:72px">币种</th>
-              <th style="width:80px">操作</th>
-            </tr>
-          </thead>
-          <tbody id="pricing-tbody"></tbody>
-        </table>
-      </div>
+      <div class="pricing-grid" id="pricing-grid"></div>
     </div>`;
 
-  document.getElementById('pricing-search').addEventListener('keyup', loadPricingTable);
-  await loadPricingTable();
+  document.getElementById('pricing-search').addEventListener('keyup', loadPricingData);
+  await loadPricingData();
 }
 
 export function initPricingPage() {}
 
 /* ─── 加载数据 ─── */
-async function loadPricingTable() {
+async function loadPricingData() {
   const search = document.getElementById('pricing-search')?.value?.trim() || '';
   const url = search ? `/api/pricing?search=${encodeURIComponent(search)}` : '/api/pricing';
   const data = await api(url);
   const items = data.pricings || [];
 
   renderSummary(computeSummary(items));
-  renderTable(items);
+  renderCards(items);
 }
 
 /* ─── 编辑 / 删除 / 新增 ─── */
@@ -205,7 +191,7 @@ async function deletePricing(modelId) {
   if (!confirm(`确定删除模型 ${modelId} 的定价？`)) return;
   const result = await api(`/api/pricing/${encodeURIComponent(modelId)}`, { method: 'DELETE' });
   if (result.error) return alert(result.error);
-  await loadPricingTable();
+  await loadPricingData();
 }
 
 function showPricingModal(existing = null) {
@@ -289,7 +275,7 @@ async function savePricing(editModelId) {
   const result = await api(url, { method, body: JSON.stringify(payload) });
   if (result.error) { alert(result.error); return; }
   closeModal();
-  await loadPricingTable();
+  await loadPricingData();
 }
 
 /* 挂载到 window（ES Module onclick 需要） */

@@ -341,7 +341,9 @@ class ConfigDB:
                 params.append(request_type)
             rows = conn.execute(
                 f"""SELECT mr.*, tm.name as target_name, tm.upstream_id,
-                          u.is_active as upstream_active
+                          u.name as upstream_name,
+                          u.is_active as upstream_active,
+                          u.format as upstream_format
                    FROM model_routes mr
                    JOIN target_models tm ON mr.target_model_id = tm.id
                    JOIN upstreams u ON tm.upstream_id = u.id
@@ -515,6 +517,7 @@ class ConfigDB:
                     "connect_timeout": d["connect_timeout"],
                     "ssl_verify": bool(d["ssl_verify"]),
                     "retry": d["retry"],
+                    "format": d["format"],
                 },
             }
         finally:
@@ -641,6 +644,22 @@ class Migrations:
                     "version": 4,
                     "details": "需要执行迁移: upstreams.id 需要改为 INTEGER，新增 name 列",
                 }
+            if version == 5:
+                # 检查 model_routes 的 FK 是否错误地引用了 target_models_old
+                row = conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='model_routes'"
+                ).fetchone()
+                if row and "target_models_old" in row["sql"]:
+                    return {
+                        "migrated": False,
+                        "version": 5,
+                        "details": "需要执行迁移: model_routes 外键修复",
+                    }
+                return {
+                    "migrated": True,
+                    "version": 5,
+                    "details": "已迁移到 v5: model_routes 外键正确",
+                }
             return {
                 "migrated": True,
                 "version": version,
@@ -675,10 +694,12 @@ class Migrations:
             self._migrate_v3_to_v4(backup_path)
         if version <= 4:
             self._migrate_v4_to_v5(backup_path)
+        if version <= 5:
+            self._migrate_v5_to_v6(backup_path)
 
         return {
             "status": "ok",
-            "version": 5,
+            "version": 6,
             "backup_path": str(backup_path),
         }
 
@@ -1206,6 +1227,75 @@ class Migrations:
             finally:
                 conn.execute("PRAGMA foreign_keys = ON")
         finally:
+            conn.close()
+
+
+    # ─── v5→v6: 修复 model_routes 外键 ───
+
+
+    def _migrate_v5_to_v6(self, backup_path: Path):
+        """执行 v5 → v6 迁移（修复 model_routes 的 FK 到 target_models_old 的问题）。"""
+        conn = self._connect()
+        try:
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.execute("BEGIN TRANSACTION")
+            try:
+                old_count = conn.execute(
+                    "SELECT COUNT(*) FROM model_routes"
+                ).fetchone()[0]
+                logging.info(
+                    f"[Migrations] v5→v6 STEP 1: 原始 model_routes 记录数 = {old_count}"
+                )
+
+                conn.execute("""
+                    CREATE TABLE model_routes_new (
+                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source          TEXT NOT NULL CHECK(length(source) > 0),
+                        target_model_id INTEGER NOT NULL REFERENCES target_models(id) ON DELETE RESTRICT,
+                        request_type    TEXT NOT NULL DEFAULT 'responses'
+                                        CHECK(request_type IN ('responses', 'messages', 'chat_completions')),
+                        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                        UNIQUE(source, request_type)
+                    );
+                """)
+                logging.info("[Migrations] v5→v6 STEP 2: model_routes_new 表创建完成")
+
+                conn.execute("""
+                    INSERT INTO model_routes_new
+                        (id, source, target_model_id, request_type, created_at, updated_at)
+                    SELECT id, source, target_model_id, request_type, created_at, updated_at
+                    FROM model_routes;
+                """)
+                logging.info("[Migrations] v5→v6 STEP 3: 数据复制完成")
+
+                conn.execute("DROP TABLE model_routes;")
+                conn.execute("ALTER TABLE model_routes_new RENAME TO model_routes;")
+                logging.info("[Migrations] v5→v6 STEP 4: 表替换完成")
+
+                new_count = conn.execute(
+                    "SELECT COUNT(*) FROM model_routes"
+                ).fetchone()[0]
+                if new_count < old_count:
+                    raise sqlite3.OperationalError(
+                        f"迁移验证失败: 原有 {old_count} 条记录, 现有 {new_count} 条记录"
+                    )
+                logging.info(
+                    f"[Migrations] v5→v6 STEP 5: 验证通过, {new_count} 条记录"
+                )
+
+                conn.execute("DELETE FROM schema_version;")
+                conn.execute("INSERT INTO schema_version (version) VALUES (6);")
+                logging.info("[Migrations] v5→v6 STEP 6: schema_version 更新为 6")
+
+                conn.commit()
+                logging.info("[Migrations] v5→v6 迁移成功")
+            except Exception:
+                conn.rollback()
+                logging.error("[Migrations] v5→v6 迁移失败，已回滚", exc_info=True)
+                raise
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
             conn.close()
 
 

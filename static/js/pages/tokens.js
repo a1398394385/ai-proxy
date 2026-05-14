@@ -340,7 +340,7 @@ function renderTrendChart(trends) {
   }
 
   document.querySelectorAll('.legend-item').forEach(item => {
-    item.classList.toggle('hidden', hiddenSeries.has(item.dataset.series));
+    item.classList.toggle('off', hiddenSeries.has(item.dataset.series));
   });
   
   const overlay = document.getElementById('chart-overlay');
@@ -424,7 +424,6 @@ function renderModelTable(models) {
 
   document.getElementById('model-count').textContent = `${filtered.length} 个模型`;
 
-  const totalTokens = filtered.reduce((sum, m) => sum + m.total_tokens, 0) || 1;
   const tbody = document.querySelector('#model-table tbody');
 
   if (!filtered.length) {
@@ -447,14 +446,11 @@ function renderModelTable(models) {
   tbody.innerHTML = filtered.map((m, idx) => {
     const rank = rankMap[m.model] || 99;
     const rankClass = rank === 1 ? 'model-rank-1' : rank === 2 ? 'model-rank-2' : rank === 3 ? 'model-rank-3' : 'model-rank-default';
-    const pct = ((m.total_tokens / totalTokens) * 100).toFixed(1);
     const dotColor = dotColors[idx % dotColors.length];
 
     const modelLabel = m.display_name || m.model;
-    const inputPct = (m.input_tokens / totalTokens * 100);
-    const outputPct = (m.output_tokens / totalTokens * 100);
-    const cacheReadPct = (m.cache_read_tokens / totalTokens * 100);
-    const cacheWritePct = (m.cache_write_tokens / totalTokens * 100);
+    const cacheBase = m.input_tokens + m.cache_read_tokens;
+    const cacheRate = cacheBase > 0 ? (m.cache_read_tokens / cacheBase * 100) : 0;
 
     return `<tr data-model="${escHtml(m.model)}" class="model-row">
       <td>
@@ -473,12 +469,9 @@ function renderModelTable(models) {
       <td>
         <div class="pct-cell">
           <div class="pct-bar-track">
-            <div class="pct-bar-segment input" style="width:${inputPct}%"></div>
-            <div class="pct-bar-segment output" style="width:${outputPct}%"></div>
-            <div class="pct-bar-segment cache-read" style="width:${cacheReadPct}%"></div>
-            <div class="pct-bar-segment cache-write" style="width:${cacheWritePct}%"></div>
+            <div class="pct-bar-segment cache-read" style="width:${cacheRate}%"></div>
           </div>
-          <span class="pct-value">${pct}%</span>
+          <span class="pct-value">${cacheRate.toFixed(1)}%</span>
         </div>
       </td>
       <td class="cell-cost">¥${m.estimated_cost_cny.toFixed(6)}</td>
@@ -525,16 +518,15 @@ function expandModelRow(model, rowElement) {
       }
 
       const rows = requests.slice(0, limit).map(r => {
-        const isSession = r.upstream_id === 'hermes' || r.upstream_id === 'opencode';
-        const typeBadge = isSession
-          ? '<span class="type-badge-term session">[session]</span>'
-          : '<span class="type-badge-term proxy">>_proxy</span>';
+        const typeBadge = r.upstream_id === 'hermes'
+          ? '<span class="type-badge-term hermes">[hermes]</span>'
+          : r.upstream_id === 'opencode'
+            ? '<span class="type-badge-term opencode">[opencode]</span>'
+            : '<span class="type-badge-term proxy">>_proxy</span>';
         const timeStr = r.created_at || r.request_ts || r.timestamp || '-';
         const costStr = ((r.input_cost_cny || 0) + (r.output_cost_cny || 0) + (r.cache_read_cost_cny || 0) + (r.cache_write_cost_cny || 0)).toFixed(6);
 
-        const tokenCells = isSession
-          ? '<td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-total">-</td><td class="cell-number">-</td><td class="cell-cost"><span class="cost-badge">-</span></td>'
-          : `<td class="cell-number">${formatTokens(r.input_tokens || 0)}</td>
+        const tokenCells = `<td class="cell-number">${formatTokens(r.input_tokens || 0)}</td>
              <td class="cell-number">${formatTokens(r.output_tokens || 0)}</td>
              <td class="cell-number">${formatTokens(r.cache_read_tokens || 0)}</td>
              <td class="cell-number">${formatTokens(r.cache_write_tokens || 0)}</td>
@@ -629,7 +621,7 @@ async function loadRequestLog() {
 
   let url = `/api/token_stats/requests?period=${period}&limit=${limit}&offset=${offset}`;
   if (model) url += `&model=${encodeURIComponent(model)}`;
-  if (requestType) url += `&request_type=${encodeURIComponent(requestType)}`;
+  if (requestType) url += `&source=${encodeURIComponent(requestType)}`;
 
   try {
     const data = await api(url);
@@ -658,7 +650,8 @@ function renderRequestTable(requests) {
         <select id="req-filter-type">
           <option value="">All</option>
           <option value="proxy" ${requestFilters.requestType === 'proxy' ? 'selected' : ''}>Proxy</option>
-          <option value="session" ${requestFilters.requestType === 'session' ? 'selected' : ''}>Session</option>
+          <option value="hermes" ${requestFilters.requestType === 'hermes' ? 'selected' : ''}>Hermes</option>
+          <option value="opencode" ${requestFilters.requestType === 'opencode' ? 'selected' : ''}>OpenCode</option>
         </select>
         <button class="btn btn-secondary btn-sm" id="req-filter-clear">Clear</button>
       </div>
@@ -697,17 +690,16 @@ function renderRequestTable(requests) {
   }
 
   tbody.innerHTML = requests.map(r => {
-    const isSession = r.upstream_id === 'hermes' || r.upstream_id === 'opencode';
-    const typeAttr = isSession ? 'session' : 'proxy';
-    const typeBadge = isSession
-      ? '<span class="type-badge-term session">[session]</span>'
-      : '<span class="type-badge-term proxy">>_proxy</span>';
+    const typeAttr = r.upstream_id === 'hermes' ? 'hermes' : r.upstream_id === 'opencode' ? 'opencode' : 'proxy';
+    const typeBadge = r.upstream_id === 'hermes'
+      ? '<span class="type-badge-term hermes">[hermes]</span>'
+      : r.upstream_id === 'opencode'
+        ? '<span class="type-badge-term opencode">[opencode]</span>'
+        : '<span class="type-badge-term proxy">>_proxy</span>';
     const timeStr = r.created_at || r.request_ts || r.timestamp || '-';
     const costStr = ((r.input_cost_cny || 0) + (r.output_cost_cny || 0) + (r.cache_read_cost_cny || 0) + (r.cache_write_cost_cny || 0)).toFixed(6);
 
-    const tokenCells = isSession
-      ? '<td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-number">-</td><td class="cell-total">-</td><td class="cell-number">-</td><td class="cell-cost"><span class="cost-badge">-</span></td>'
-      : `<td class="cell-number">${formatTokens(r.input_tokens || 0)}</td>
+    const tokenCells = `<td class="cell-number">${formatTokens(r.input_tokens || 0)}</td>
          <td class="cell-number">${formatTokens(r.output_tokens || 0)}</td>
          <td class="cell-number">${formatTokens(r.cache_read_tokens || 0)}</td>
          <td class="cell-number">${formatTokens(r.cache_write_tokens || 0)}</td>
@@ -945,7 +937,7 @@ export function initTokenPage() {
       } else {
         hiddenSeries.add(series);
       }
-      item.classList.toggle('hidden', hiddenSeries.has(series));
+      item.classList.toggle('off', hiddenSeries.has(series));
       renderTrendChart(chartData);
     });
   });

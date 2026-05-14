@@ -54,7 +54,8 @@ class TestExtractTokens(unittest.TestCase):
             "prompt_tokens_details": {"cached_tokens": 20},
         }
         result = _extract_tokens(usage)
-        self.assertEqual(result["input_tokens"], 100)
+        # Chat 的 prompt_tokens 包含 cached_tokens，需扣除
+        self.assertEqual(result["input_tokens"], 80)  # 100 - 20
         self.assertEqual(result["output_tokens"], 50)
         self.assertEqual(result["cached_read"], 20)
         self.assertEqual(result["cached_write"], 0)
@@ -69,7 +70,8 @@ class TestExtractTokens(unittest.TestCase):
             "input_tokens_details": {"cached_tokens": 30},
         }
         result = _extract_tokens(usage)
-        self.assertEqual(result["input_tokens"], 200)
+        # Responses 的 input_tokens 包含 cached_tokens，需扣除
+        self.assertEqual(result["input_tokens"], 170)  # 200 - 30
         self.assertEqual(result["output_tokens"], 80)
         self.assertEqual(result["cached_read"], 30)
         self.assertEqual(result["cached_write"], 0)
@@ -193,19 +195,26 @@ class TestRecordTokenStats(unittest.TestCase):
             "target_model": "qwen3.6-plus",
             "request_ts": "2026-04-27 10:00:00",
             "duration_ms": 1234,
+            "response_type": "chat_completions",
         }
         record_token_stats(usage, context)
 
         rows = self._query()
         self.assertEqual(len(rows), 1)
         r = rows[0]
-        self.assertEqual(r[1], "req-001")           # request_id
-        self.assertEqual(r[2], "codex")             # request_type
-        self.assertEqual(r[8], 100)                 # input_tokens
-        self.assertEqual(r[9], 50)                  # output_tokens
-        self.assertEqual(r[10], 20)                 # cached_read_tokens
-        self.assertEqual(r[11], 0)                  # cached_write_tokens
-        self.assertEqual(r[12], "completed")        # status
+        self.assertEqual(r[1], "req-001")                   # request_id
+        self.assertEqual(r[2], "gpt-5.1-codex-max")        # model
+        self.assertEqual(r[3], "qwen3.6-plus")             # target_model
+        self.assertEqual(r[4], 80)                          # input_tokens = 100 - 20
+        self.assertEqual(r[5], 50)                          # output_tokens
+        self.assertEqual(r[6], 20)                          # cached_read_tokens
+        self.assertEqual(r[7], 0)                           # cached_write_tokens
+        self.assertEqual(r[8], "codex")                     # request_type
+        self.assertEqual(r[9], "chat_completions")          # response_type = 上游 format
+        self.assertEqual(r[10], "2026-04-27 10:00:00")     # request_ts
+        self.assertEqual(r[11], 1234)                       # duration_ms
+        self.assertEqual(r[12], "completed")                # status
+        self.assertEqual(r[13], None)                       # upstream_id
 
     def test_empty_usage_does_not_write(self):
         from proxy.token_stats import record_token_stats

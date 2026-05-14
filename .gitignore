@@ -22,6 +22,8 @@ __pycache__/
 
 # SuperPowers cache
 .superpowers/
+docs/superpowers/
+
 
 # Claude Code local state (not CLAUDE.md which is tracked)
 # .claude/skills/ 共享到仓库，其余本地状态忽略
@@ -33,7 +35,6 @@ __pycache__/
 .claude/projects/
 
 # Working docs
-docs/superpowers/
 task_plan.md
 progress.md
 findings.md

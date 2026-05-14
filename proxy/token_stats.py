@@ -64,12 +64,16 @@ def _extract_tokens(usage: dict) -> dict:
     input_details = usage.get("input_tokens_details") or {}
 
     cached_read = 0
+    input_includes_cache = False  # OpenAI Chat/Responses: input 包含 cache
     if "cache_read_input_tokens" in usage and usage["cache_read_input_tokens"] is not None:
         cached_read = usage["cache_read_input_tokens"]
+        # Anthropic 格式：input_tokens 不包含 cache_read，无需扣除
     elif "cached_tokens" in prompt_details and prompt_details["cached_tokens"] is not None:
         cached_read = prompt_details["cached_tokens"]
+        input_includes_cache = True  # Chat: prompt_tokens 包含 cached_tokens
     elif "cached_tokens" in input_details and input_details["cached_tokens"] is not None:
         cached_read = input_details["cached_tokens"]
+        input_includes_cache = True  # Responses: input_tokens 包含 cached_tokens
 
     cached_write = 0
     if "cache_creation_input_tokens" in usage and usage["cache_creation_input_tokens"] is not None:
@@ -77,8 +81,15 @@ def _extract_tokens(usage: dict) -> dict:
     elif "cache_creation_input_tokens" in input_details and input_details["cache_creation_input_tokens"] is not None:
         cached_write = input_details["cache_creation_input_tokens"]
 
+    input_tokens = _find_first(usage, ["prompt_tokens", "input_tokens"])
+
+    # OpenAI Chat/Responses 的 input_tokens 已包含 cached_tokens，
+    # 扣除以免计费时双重计算（input_cost + cache_read_cost 都参与求和）
+    if input_includes_cache and cached_read > 0:
+        input_tokens = max(0, input_tokens - cached_read)
+
     return {
-        "input_tokens": _find_first(usage, ["prompt_tokens", "input_tokens"]),
+        "input_tokens": input_tokens,
         "output_tokens": _find_first(usage, ["completion_tokens", "output_tokens"]),
         "cached_read": cached_read,
         "cached_write": cached_write,
@@ -117,26 +128,28 @@ def record_token_stats(usage: dict, context: dict) -> None:
                 CREATE TABLE IF NOT EXISTS token_stats (
                     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
                     request_id          TEXT NOT NULL,
-                    request_type        TEXT NOT NULL,
                     model               TEXT NOT NULL,
                     target_model        TEXT NOT NULL,
-                    upstream_id         INTEGER,
-                    request_ts          TEXT NOT NULL,
-                    duration_ms         INTEGER,
                     input_tokens        INTEGER DEFAULT 0,
                     output_tokens       INTEGER DEFAULT 0,
                     cached_read_tokens  INTEGER DEFAULT 0,
                     cached_write_tokens INTEGER DEFAULT 0,
+                    request_type        TEXT NOT NULL,
+                    response_type       TEXT,
+                    request_ts          TEXT NOT NULL,
+                    duration_ms         INTEGER,
                     status              TEXT DEFAULT 'completed',
+                    upstream_id         INTEGER,
                     created_at          TEXT NOT NULL
                 )
             """)
 
-            # ─── 兼容旧表：确保 upstream_id 列存在 ───
-            try:
-                conn.execute("ALTER TABLE token_stats ADD COLUMN upstream_id INTEGER")
-            except Exception:
-                pass  # 列已存在
+            # ─── 兼容旧表：确保后续新增列存在 ───
+            for col, col_type in [("upstream_id", "INTEGER"), ("response_type", "TEXT")]:
+                try:
+                    conn.execute(f"ALTER TABLE token_stats ADD COLUMN {col} {col_type}")
+                except Exception:
+                    pass  # 列已存在
 
             # ─── 性能索引 ───
             conn.execute("CREATE INDEX IF NOT EXISTS idx_token_stats_request_ts ON token_stats(request_ts)")
@@ -147,23 +160,24 @@ def record_token_stats(usage: dict, context: dict) -> None:
 
             conn.execute(
                 "INSERT INTO token_stats "
-                "(request_id, request_type, model, target_model, upstream_id, "
-                "request_ts, duration_ms, "
+                "(request_id, model, target_model, "
                 "input_tokens, output_tokens, cached_read_tokens, cached_write_tokens, "
-                "status, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)",
+                "request_type, response_type, request_ts, duration_ms, "
+                "status, upstream_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?)",
                 (
                     request_id,
-                    context.get("request_type", "unknown"),
                     context.get("model", "unknown"),
                     context.get("target_model", "unknown"),
-                    context.get("upstream_id"),
-                    context.get("request_ts", ""),
-                    context.get("duration_ms", 0),
                     tokens["input_tokens"],
                     tokens["output_tokens"],
                     tokens["cached_read"],
                     tokens["cached_write"],
+                    context.get("request_type", "unknown"),
+                    context.get("response_type"),
+                    context.get("request_ts", ""),
+                    context.get("duration_ms", 0),
+                    context.get("upstream_id"),
                     now,
                 ),
             )

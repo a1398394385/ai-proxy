@@ -349,6 +349,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                 "target_model": target,
                                 "request_ts": request_ts,
                                 "duration_ms": duration_ms,
+                                "response_type": upstream_cfg.get("format", "chat_completions"),
                             }
                             if upstream_cfg.get("id") is not None:
                                 ctx["upstream_id"] = upstream_cfg["id"]
@@ -513,7 +514,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         request_type=request_type,
                     )
 
-                # Token 统计（透传流式路径）
                 if final_usage:
                     ctx = {
                         "request_id": request_id,
@@ -522,6 +522,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         "target_model": target,
                         "request_ts": request_ts,
                         "duration_ms": duration_ms,
+                        "response_type": upstream_cfg.get("format", "chat_completions"),
                     }
                     if upstream_cfg.get("id") is not None:
                         ctx["upstream_id"] = upstream_cfg["id"]
@@ -776,6 +777,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             "target_model": target,
                             "request_ts": request_ts,
                             "duration_ms": duration_ms,
+                            "response_type": upstream_cfg.get("format", "chat_completions"),
                         }
                         if upstream_cfg.get("id") is not None:
                             ctx["upstream_id"] = upstream_cfg["id"]
@@ -1060,6 +1062,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         "target_model": target,
                         "request_ts": request_ts,
                         "duration_ms": duration_ms,
+                        "response_type": upstream_cfg.get("format", "chat_completions"),
                     }
                     if upstream_cfg.get("id") is not None:
                         ctx["upstream_id"] = upstream_cfg["id"]

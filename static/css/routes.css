@@ -1,78 +1,148 @@
-/* ===== 路由映射页面 — 精致仪表盘风格 ===== */
+/* ===== 路由映射页面 ===== */
 
-/* Proxy 类型切换 Tab */
-#page-routes .proxy-tabs {
-  display: flex;
-  gap: 6px;
+/* ─── 请求类型切换 — 大卡片 ─── */
+.route-type-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
   margin-bottom: 20px;
-  padding: 4px;
+}
+
+.route-type-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 28px 16px 22px;
   background: hsl(var(--card));
-  border: 1px solid hsl(var(--border));
-  border-radius: var(--radius);
-  box-shadow: 0 2px 12px -4px rgba(0, 0, 0, 0.2),
-              inset 0 1px 0 hsl(var(--foreground) / 0.02);
-}
-
-#page-routes .proxy-tab {
-  padding: 8px 18px;
-  border-radius: calc(var(--radius) - 2px);
-  border: none;
-  background: transparent;
-  color: hsl(var(--muted-foreground));
-  font-size: 13px;
-  font-weight: 500;
+  border: 1.5px solid hsl(var(--border) / 0.5);
+  border-radius: 12px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.25s ease;
+  font-family: inherit;
+  color: hsl(var(--muted-foreground));
   position: relative;
+  overflow: hidden;
 }
 
-#page-routes .proxy-tab:hover {
+.route-type-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: hsl(var(--primary) / 0.04);
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.route-type-card:hover {
+  border-color: hsl(var(--primary) / 0.35);
+  transform: translateY(-2px);
   color: hsl(var(--foreground));
-  background: hsl(var(--muted) / 0.5);
 }
 
-#page-routes .proxy-tab.active {
-  background: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(220 80% 48%) 100%);
-  color: white;
-  box-shadow: 0 2px 8px hsl(var(--primary) / 0.3);
+.route-type-card:hover::before {
+  opacity: 1;
+}
+
+.route-type-card.active {
+  border-color: hsl(var(--primary) / 0.5);
+  color: hsl(var(--foreground));
+  box-shadow: 0 0 0 1px hsl(var(--primary) / 0.15), 0 4px 20px rgba(0, 0, 0, 0.15);
+  background: linear-gradient(180deg, hsl(var(--primary) / 0.06), transparent);
+}
+
+.route-type-card.active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 20%;
+  right: 20%;
+  height: 3px;
+  background: hsl(var(--primary));
+  border-radius: 3px 3px 0 0;
+}
+
+.rtc-icon {
+  font-size: 32px;
+  line-height: 1;
+  position: relative;
+  z-index: 1;
+}
+
+.rtc-label {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  position: relative;
+  z-index: 1;
+}
+
+/* 页面标题栏 */
+#page-routes .page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+#page-routes .page-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#page-routes .page-title-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, hsl(var(--purple) / 0.15), hsl(var(--blue) / 0.15));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+
+#page-routes .page-actions {
+  display: flex;
+  gap: 8px;
 }
 
 /* 路由表格卡片 */
 #page-routes .table-card {
-  background: linear-gradient(160deg, hsl(var(--card)) 0%, hsl(var(--secondary) / 0.6) 100%);
+  background: hsl(var(--card));
   border: 1px solid hsl(var(--border));
   border-radius: var(--radius);
-  box-shadow: 0 4px 24px -4px rgba(0, 0, 0, 0.25),
-              0 0 0 1px hsl(var(--foreground) / 0.02);
   overflow: hidden;
-  position: relative;
 }
 
-#page-routes .table-card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent 0%, hsl(var(--purple) / 0.4) 50%, transparent 100%);
-}
-
-/* 表头区域 */
 #page-routes .table-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 24px;
-  border-bottom: 1px solid hsl(var(--border) / 0.6);
-  background: linear-gradient(180deg, hsl(var(--foreground) / 0.02) 0%, transparent 100%);
+  padding: 14px 20px;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--secondary) / 0.3);
 }
 
 #page-routes .table-title {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.3px;
   color: hsl(var(--foreground));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#page-routes .table-count {
+  font-size: 11px;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--muted));
+  padding: 2px 8px;
+  border-radius: 10px;
 }
 
 /* 表格 */
@@ -85,34 +155,85 @@
 
 #page-routes th {
   text-align: left;
-  padding: 12px 20px;
+  padding: 10px 20px;
   font-weight: 600;
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.8px;
+  letter-spacing: 0.6px;
   color: hsl(var(--muted-foreground));
-  background: hsl(var(--secondary) / 0.5);
-  border-bottom: 1px solid hsl(var(--border) / 0.8);
+  background: hsl(var(--secondary) / 0.4);
+  border-bottom: 1px solid hsl(var(--border));
 }
 
 #page-routes td {
-  padding: 14px 20px;
-  border-bottom: 1px solid hsl(var(--border) / 0.4);
+  padding: 12px 20px;
+  border-bottom: 1px solid hsl(var(--border) / 0.5);
   color: hsl(var(--foreground));
-  transition: background 0.2s ease;
+  vertical-align: middle;
+}
+
+#page-routes tbody tr {
+  transition: background 0.15s ease;
 }
 
 #page-routes tbody tr:hover td {
-  background: hsl(var(--primary) / 0.05);
+  background: hsl(var(--primary) / 0.04);
 }
 
 #page-routes tbody tr:last-child td {
   border-bottom: none;
 }
 
-/* fallback 行高亮 */
-#page-routes tbody tr[style*="primary"] td {
-  border-left: 2px solid hsl(var(--primary) / 0.3);
+/* fallback 行 */
+#page-routes tr.route-fallback td {
+  background: hsl(var(--purple) / 0.04);
+}
+
+#page-routes tr.route-fallback:hover td {
+  background: hsl(var(--purple) / 0.07);
+}
+
+/* 已禁用行 */
+#page-routes tr.route-disabled td {
+  opacity: 0.5;
+}
+
+/* 路由箭头 */
+.route-arrow {
+  color: hsl(var(--muted-foreground));
+  font-size: 14px;
+  margin: 0 2px;
+}
+
+/* 状态指示 */
+.route-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.route-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.route-status-dot.active {
+  background: hsl(var(--green));
+  box-shadow: 0 0 6px hsl(var(--green) / 0.4);
+}
+
+.route-status-dot.inactive {
+  background: hsl(var(--red));
+}
+
+/* 操作按钮组 */
+.route-actions {
+  display: flex;
+  gap: 4px;
 }
 
 /* 滚动条 */
@@ -129,6 +250,238 @@
   border-radius: 2px;
 }
 
-#page-routes .table-scroll::-webkit-scrollbar-thumb:hover {
-  background: hsl(var(--muted-foreground));
+/* ===== 路由编辑弹窗 ===== */
+.route-modal {
+  overflow: visible !important;
+}
+
+.route-modal .form-group {
+  margin-bottom: 20px;
+  overflow: visible;
+}
+
+.route-modal .form-group:last-child {
+  margin-bottom: 0;
+}
+
+.route-modal .form-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: hsl(var(--foreground) / 0.8);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.route-modal .form-input {
+  width: 100%;
+  padding: 10px 14px;
+  background: hsl(var(--secondary) / 0.5);
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+.route-modal .form-input:focus {
+  border-color: hsl(var(--primary) / 0.5);
+  box-shadow: 0 0 0 3px hsl(var(--primary) / 0.1);
+  background: hsl(var(--secondary));
+}
+
+.route-modal .form-input[readonly] {
+  background: hsl(var(--muted));
+  color: hsl(var(--muted-foreground));
+  cursor: not-allowed;
+  border-style: dashed;
+}
+
+/* 表单提示文字 */
+.route-modal .form-hint {
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  margin-top: 4px;
+}
+
+/* 分隔线 */
+.route-modal .form-divider {
+  border: none;
+  border-top: 1px solid hsl(var(--border));
+  margin: 20px 0;
+}
+
+/* ===== Custom Select Dropdown ===== */
+.custom-select {
+  position: relative;
+}
+
+.cs-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  background: hsl(var(--secondary) / 0.5);
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: left;
+}
+
+.cs-trigger:hover {
+  border-color: hsl(var(--foreground) / 0.15);
+}
+
+.custom-select.open .cs-trigger {
+  border-color: hsl(var(--primary) / 0.5);
+  box-shadow: 0 0 0 3px hsl(var(--primary) / 0.1);
+  background: hsl(var(--secondary));
+}
+
+.cs-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cs-hint-inline {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  letter-spacing: 0.3px;
+}
+
+.cs-chevron {
+  flex-shrink: 0;
+  color: hsl(var(--muted-foreground));
+  transition: transform 0.2s ease;
+}
+
+.custom-select.open .cs-chevron {
+  transform: rotate(180deg);
+}
+
+.custom-select.disabled .cs-trigger {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 下拉面板 */
+.cs-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  box-shadow: 0 12px 36px -4px rgba(0, 0, 0, 0.5),
+              0 0 0 1px hsl(var(--foreground) / 0.03);
+  z-index: 300;
+  padding: 4px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-6px);
+  transition: all 0.15s ease;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.custom-select.open .cs-dropdown {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.cs-dropdown::-webkit-scrollbar {
+  width: 4px;
+}
+
+.cs-dropdown::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.cs-dropdown::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 2px;
+}
+
+/* 选项 */
+.cs-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background 0.1s ease;
+  font-size: 13px;
+  color: hsl(var(--foreground));
+}
+
+.cs-option:hover:not(.disabled):not(.cs-empty) {
+  background: hsl(var(--primary) / 0.08);
+}
+
+.cs-option.selected {
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+  font-weight: 500;
+}
+
+.cs-option.disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.cs-option.cs-empty {
+  color: hsl(var(--muted-foreground));
+  cursor: default;
+}
+
+.cs-option-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cs-option-hint {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 5px;
+  flex-shrink: 0;
+  letter-spacing: 0.3px;
+}
+
+/* ===== 空状态 ===== */
+#page-routes .empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: hsl(var(--muted-foreground));
+}
+
+#page-routes .empty-state-icon {
+  font-size: 40px;
+  margin-bottom: 12px;
+  opacity: 0.4;
 }

@@ -197,14 +197,17 @@ class PricingDB:
                     cache_creation_cost_per_million TEXT NOT NULL DEFAULT '0',
                     currency                        TEXT NOT NULL DEFAULT 'USD'
                                                     CHECK(currency IN ('USD', 'RMB')),
-                    multiplier                      TEXT NOT NULL DEFAULT '1.0'
+                    multiplier                      TEXT NOT NULL DEFAULT '1.0',
+                    created_at                      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
                 )
             """)
-            # 兼容旧库：确保 multiplier 列存在
-            try:
-                conn.execute("ALTER TABLE model_pricing ADD COLUMN multiplier TEXT NOT NULL DEFAULT '1.0'")
-            except Exception:
-                pass
+            # 兼容旧库：确保必要列存在
+            for col, col_type in [("multiplier", "TEXT NOT NULL DEFAULT '1.0'"),
+                                   ("created_at", "TEXT")]:
+                try:
+                    conn.execute(f"ALTER TABLE model_pricing ADD COLUMN {col} {col_type}")
+                except Exception:
+                    pass
             # 只在表为空时导入种子数据
             count = conn.execute("SELECT COUNT(*) FROM model_pricing").fetchone()[0]
             if count == 0:
@@ -230,12 +233,12 @@ class PricingDB:
                 rows = conn.execute(
                     "SELECT * FROM model_pricing "
                     "WHERE model_id LIKE ? OR display_name LIKE ? "
-                    "ORDER BY model_id",
+                    "ORDER BY created_at DESC, model_id",
                     (f"%{search}%", f"%{search}%"),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT * FROM model_pricing ORDER BY model_id"
+                    "SELECT * FROM model_pricing ORDER BY created_at DESC, model_id"
                 ).fetchall()
             return [dict(r) for r in rows]
         finally:
@@ -283,8 +286,8 @@ class PricingDB:
                 "INSERT INTO model_pricing (model_id, display_name, "
                 "input_cost_per_million, output_cost_per_million, "
                 "cache_read_cost_per_million, cache_creation_cost_per_million, "
-                "currency, multiplier) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "currency, multiplier, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))",
                 (
                     model_id,
                     data["display_name"],

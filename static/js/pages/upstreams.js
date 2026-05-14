@@ -151,7 +151,7 @@ async function showUpstreamModal(editId) {
     title = '编辑上游: ' + escHtml(data.name || editId);
   }
   showModal(title,
-    `<div class="form-group"><label class="form-label">名称</label><input type="text" class="form-input" id="up-name" value="${escHtml(data.name || data.id)}" ${editId ? 'readonly' : ''}></div>
+    `<div class="form-group"><label class="form-label">名称</label><input type="text" class="form-input" id="up-name" value="${escHtml(data.name || data.id)}"></div>
      <div class="form-group"><label class="form-label">Base URL</label><input type="text" class="form-input" id="up-url" value="${escHtml(data.base_url)}"></div>
      <div class="form-group"><label class="form-label">API Key</label><input type="text" class="form-input" id="up-key" value="${escHtml(data.api_key)}"></div>
      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
@@ -176,7 +176,7 @@ async function saveUpstream(editId) {
     retry: parseInt(document.getElementById('up-retry').value) || 1,
     format: document.getElementById('up-format').value,
   };
-  if (!editId) data.name = document.getElementById('up-name').value.trim();
+  data.name = document.getElementById('up-name').value.trim();
   if (!data.base_url) { alert('Base URL 不能为空'); return; }
   if (editId) {
     await api('/api/upstreams/' + editId, { method: 'PUT', body: JSON.stringify(data) });
