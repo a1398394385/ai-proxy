@@ -27,12 +27,6 @@ from .common import (
 
 from .transform import (
     generate_response_id,
-    responses_to_chat,
-    chat_to_responses,
-    create_codex_sse_stream,
-    anthropic_to_chat,
-    chat_to_anthropic,
-    create_anthropic_sse_stream,
     _format_sse_event,
 )
 
@@ -588,41 +582,40 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
     # ── 转换路径 (_handle_convert) ───────────────────────────────
 
-    def _handle_convert(self, request_type, model_name, model_cfg, body,
+    def _handle_convert(self, client_format, model_name, model_cfg, body,
                         request_id, request_ts, target):
         """转换路径：TransformRouter 路由 → SDK 调上游 → 响应转换。
 
-        替代旧的硬编码 responses_to_chat / anthropic_to_chat 分发。
+        client_format: 客户端协议 (responses / messages / chat_completions)
+        upstream_format: 上游协议（取自 upstream_cfg.format）
         """
         is_stream = body.get("stream", False)
         upstream_cfg = model_cfg.get("upstream") or CONFIG.get("upstream", {})
-        target_format = upstream_cfg.get("format", "chat_completions")
+        upstream_format = upstream_cfg.get("format", "chat_completions")
         logger = get_logger()
 
-        # 请求格式转换：始终通过 chat_completions 中间格式
-        # do_POST 已确保 request_type != upstream.format 才进入此路径
-        intermediate = "chat_completions"
+        # 请求格式转换
         try:
-            chat_body = TransformRouter.convert_request(
-                body, request_type, intermediate, model_cfg
+            upstream_body = TransformRouter.convert_request(
+                body, client_format, upstream_format, model_cfg
             )
         except KeyError:
             logging.error(
-                f"不支持的转换对: {request_type} → {target_format}"
+                f"不支持的转换对: {client_format} → {upstream_format}"
             )
             self._send_json(400, {
                 "error": {
                     "type": "invalid_request_error",
-                    "message": f"不支持的格式转换: {request_type} → {target_format}"
+                    "message": f"不支持的格式转换: {client_format} → {upstream_format}"
                 }
             })
             return
         except Exception as e:
-            logging.exception(f"请求转换失败 ({request_type})")
+            logging.exception(f"请求转换失败 ({client_format})")
             if logger:
                 logger.log_converted_request(
                     request_id, model_name, target,
-                    {"error": str(e)}, request_type=request_type,
+                    {"error": str(e)}, request_type=client_format,
                 )
             self._send_json(500, {
                 "error": {"type": "internal_error", "message": str(e)}
@@ -635,13 +628,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
             upstream_url = upstream_cfg["base_url"].rstrip("/") + "/v1/chat/completions"
         if logger:
             logger.log_converted_request(
-                request_id, model_name, target, chat_body,
-                request_type=request_type,
+                request_id, model_name, target, upstream_body,
+                request_type=client_format,
                 request_path=upstream_url,
             )
 
         # previous_response_id：仅 responses 路径支持多轮对话
-        if request_type == REQUEST_TYPE_RESPONSES:
+        if client_format == REQUEST_TYPE_RESPONSES:
             prev_id = body.get("previous_response_id")
             if prev_id:
                 response_store = getattr(self.server, "response_store", None)
@@ -649,14 +642,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     record = response_store.get(prev_id)
                     if record:
                         system_msgs = [
-                            m for m in chat_body["messages"]
+                            m for m in upstream_body["messages"]
                             if m.get("role") == "system"
                         ]
                         non_system_msgs = [
-                            m for m in chat_body["messages"]
+                            m for m in upstream_body["messages"]
                             if m.get("role") != "system"
                         ]
-                        chat_body["messages"] = (
+                        upstream_body["messages"] = (
                             system_msgs + record.conversation + non_system_msgs
                         )
                     else:
@@ -665,10 +658,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         )
 
         # 设置回调
-        if request_type == REQUEST_TYPE_RESPONSES:
+        if client_format == REQUEST_TYPE_RESPONSES:
             store_enabled = body.get("store", True)
             is_responses_api = True
-        elif request_type == REQUEST_TYPE_MESSAGES:
+        elif client_format == REQUEST_TYPE_MESSAGES:
             store_enabled = False
             is_responses_api = False
         else:
@@ -677,29 +670,29 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         logging.info(
             f"转换: model={model_name}, stream={is_stream}, target={target}, "
-            f"source={request_type}, target_format={target_format}"
+            f"client={client_format}, upstream={upstream_format}"
         )
 
         if is_stream:
             self._forward_streaming(
-                chat_body, model_cfg, request_id, model_name, target, request_ts,
-                upstream_cfg, request_type, intermediate,
+                upstream_body, model_cfg, request_id, model_name, target, request_ts,
+                upstream_cfg, client_format, upstream_format,
                 store_enabled=store_enabled,
             )
         else:
             self._forward_non_streaming(
-                chat_body, request_id, model_name, target, request_ts,
-                upstream_cfg, request_type, intermediate,
+                upstream_body, request_id, model_name, target, request_ts,
+                upstream_cfg, client_format, upstream_format,
                 store_enabled=store_enabled,
                 is_responses_api=is_responses_api,
             )
 
     # ── 转换路径内部方法（v2 SDK 驱动） ──────────────────────────
 
-    def _forward_non_streaming(self, chat_body, request_id, model, target,
-                                   request_ts, upstream_cfg, request_type,
-                                   target_format, store_enabled=True,
-                                   is_responses_api=False):
+    def _forward_non_streaming(self, upstream_body, request_id, model, target,
+                                 request_ts, upstream_cfg, client_format,
+                                 upstream_format, store_enabled=True,
+                                 is_responses_api=False):
         """非流式转换请求：SDK 调用 + 响应转换 + Token 统计。"""
         from .upstream_driver import UpstreamDriver
 
@@ -709,7 +702,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         import time as _time
         _request_start = _time.time()
         try:
-            raw_response = driver.create(target_format, chat_body)
+            raw_response = driver.create(upstream_format, upstream_body)
             chat_response = raw_response.model_dump()
         except Exception as e:
             self._handle_sdk_error(e)
@@ -723,25 +716,25 @@ class ProxyHandler(BaseHTTPRequestHandler):
             logger.log_upstream_response(
                 request_id, 200, chat_response, 0,
                 model, target,
-                request_type=request_type,
+                request_type=client_format,
             )
 
         # 阶段 4：转换响应 + Token 统计
         try:
             output = TransformRouter.convert_response(
-                chat_response, "chat_completions", request_type
+                chat_response, upstream_format, client_format
             )
             if logger:
                 logger.log_converted_response(
                     request_id, model, target, output,
-                    request_type=request_type,
+                    request_type=client_format,
                 )
 
             usage = chat_response.get("usage", {})
             if usage:
                 ctx = {
                     "request_id": request_id,
-                    "request_type": request_type,
+                    "request_type": client_format,
                     "model": model,
                     "target_model": target,
                     "request_ts": request_ts_for_stats,
@@ -756,7 +749,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             if logger:
                 logger.log_converted_response(
                     request_id, model, target,
-                    {"error": str(e)}, request_type=request_type,
+                    {"error": str(e)}, request_type=client_format,
                 )
             self._send_json(500, {
                 "error": {"type": "internal_error", "message": str(e)}
@@ -769,7 +762,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             from .transform_responses import output_items_to_messages as _oitm
             assistant_msgs = _oitm(output.get("output", []))
             messages_for_conv = [
-                m for m in chat_body.get("messages", [])
+                m for m in upstream_body.get("messages", [])
                 if m.get("role") != "system"
             ] + assistant_msgs
             _store_response(self.server, output, messages_for_conv)
@@ -777,9 +770,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self._send_json(200, output)
         driver.close()
 
-    def _forward_streaming(self, chat_body, model_cfg, request_id, model_name,
-                               target, request_ts, upstream_cfg, request_type,
-                               target_format, store_enabled=True):
+    def _forward_streaming(self, upstream_body, model_cfg, request_id, model_name,
+                             target, request_ts, upstream_cfg, client_format,
+                             upstream_format, store_enabled=True):
         """流式转换请求：SDK 流式调用 + TransformRouter 逐事件转换。"""
         from .upstream_driver import UpstreamDriver
 
@@ -787,7 +780,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         logger = get_logger()
 
         try:
-            stream = driver.create_stream(target_format, chat_body)
+            stream = driver.create_stream(upstream_format, upstream_body)
         except Exception as e:
             self._handle_sdk_error(e)
             driver.close()
@@ -813,8 +806,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 if store_enabled else None
             )
             for sse_event in TransformRouter.stream_convert(
-                stream, "chat_completions", request_type,
-                request_messages=chat_body.get("messages") if _rstore else None,
+                stream, upstream_format, client_format,
+                request_messages=upstream_body.get("messages") if _rstore else None,
                 response_store=_rstore,
             ):
                 self.wfile.write(sse_event.encode("utf-8"))
@@ -867,19 +860,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
             logger.log_upstream_response(
                 request_id, 200, full_sse, duration_ms,
                 model_name, target,
-                request_type=request_type,
+                request_type=client_format,
             )
             logger.log_converted_response(
                 request_id, model_name, target,
                 {"streaming": True, "note": "SDK 流式响应"},
-                request_type=request_type,
+                request_type=client_format,
             )
 
         # Token 统计
         if final_usage:
             ctx = {
                 "request_id": request_id,
-                "request_type": request_type,
+                "request_type": client_format,
                 "model": model_name,
                 "target_model": target,
                 "request_ts": request_ts,

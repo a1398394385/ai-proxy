@@ -231,12 +231,12 @@ class TestHandlerPassthrough(unittest.TestCase):
 
     def test_convert_when_format_mismatch(self):
         """request_type != upstream.format → 转换。"""
-        handler = self._run_do_post("/v1/responses", "messages")
+        handler = self._run_do_post("/v1/responses", "chat_completions")
         handler._forward_non_streaming.assert_called_once()
 
     def test_convert_when_no_format(self):
-        """upstream.format 为空 → 转换路径（chat→chat 无转换）。"""
-        handler = self._run_do_post("/v1/chat/completions", "")
+        """upstream.format 为空 → 转换路径（responses→chat 默认）。"""
+        handler = self._run_do_post("/v1/responses", "chat_completions")
         handler._forward_non_streaming.assert_called_once()
 
     def test_passthrough_log_stage2_mark(self):
@@ -388,8 +388,8 @@ class TestHandlerConvert(unittest.TestCase):
 
     def test_convert_logging_stages(self):
         """转换模式: 阶段 1/2 日志记录。"""
-        body = {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}
-        handler = self._run_convert("/v1/chat/completions", body, "responses")
+        body = {"model": "gpt-4o", "input": [{"type": "message", "role": "user", "content": "hi"}]}
+        handler = self._run_convert("/v1/responses", body, "chat_completions")
 
         # 阶段 1: (request_id, model_name, target, body, ...)
         self.logger.log_raw_request.assert_called()
@@ -514,7 +514,7 @@ class TestHandlerEndToEnd(unittest.TestCase):
         self.logger.log_converted_response.assert_called()
     def test_full_flow_convert(self):
         """转换全流程: do_POST → convert → SDK 驱动 → 4 阶段日志。"""
-        upstream = _resolve_result(format_type="messages")  # mismatch
+        upstream = _resolve_result(format_type="chat_completions")  # mismatch
         chat_resp = {
             "id": "chatcmpl-1", "model": "gpt-4o",
             "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
