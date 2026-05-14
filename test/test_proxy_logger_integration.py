@@ -148,16 +148,7 @@ class TestUpstream500Error(unittest.TestCase):
         mock_conn.getresponse.return_value = mock_resp
         mock_conn.sock = MagicMock()
 
-        with patch("http.client.HTTPConnection", return_value=mock_conn),\
-             patch("proxy.upstream_driver.OpenAI") as mock_openai:
-            mock_client = MagicMock()
-            # 模拟 SDK 遇到上游 500 错误
-            import httpx
-            from openai import APIError
-            mock_client.chat.completions.create.side_effect = APIError(
-                "upstream 500", request=httpx.Request("POST", "http://fake/"), body={"error": "server error"}
-            )
-            mock_openai.return_value = mock_client
+        with patch("http.client.HTTPConnection", return_value=mock_conn):
             body = json.dumps({
                 "model": "gpt-4o",
                 "input": [{"type": "message", "role": "user", "content": "Hi"}],
@@ -205,13 +196,7 @@ class TestFullRequestFlow(unittest.TestCase):
         mock_conn.getresponse.return_value = mock_resp
         mock_conn.sock = MagicMock()
 
-        with patch("http.client.HTTPConnection", return_value=mock_conn),\
-             patch("proxy.upstream_driver.OpenAI") as mock_openai:
-            mock_client = MagicMock()
-            mock_chat = MagicMock()
-            mock_chat.model_dump.return_value = chat_resp
-            mock_client.chat.completions.create.return_value = mock_chat
-            mock_openai.return_value = mock_client
+        with patch("http.client.HTTPConnection", return_value=mock_conn):
             body = json.dumps({
                 "model": "gpt-4o",
                 "input": [{"type": "message", "role": "user", "content": "Hi"}],
@@ -262,13 +247,7 @@ class TestConversionException(unittest.TestCase):
 
         from proxy.adapters import get_adapter
         adapter = get_adapter("responses")
-        with patch("http.client.HTTPConnection", return_value=mock_conn),\
-             patch("proxy.upstream_driver.OpenAI") as mock_openai:
-            mock_client = MagicMock()
-            mock_chat = MagicMock()
-            mock_chat.model_dump.return_value = {"id": "chatcmpl-ok", "model": "qwen3.6-plus", "choices": [{"message": {"content": "OK"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
-            mock_client.chat.completions.create.return_value = mock_chat
-            mock_openai.return_value = mock_client
+        with patch("http.client.HTTPConnection", return_value=mock_conn):
             with patch.object(adapter, "response_from", side_effect=RuntimeError("conversion failed")):
                 body = json.dumps({
                     "model": "gpt-4o",
@@ -322,13 +301,7 @@ class TestMessagesIntegration(unittest.TestCase):
         mock_conn.getresponse.return_value = mock_resp
         mock_conn.sock = MagicMock()
 
-        with patch("http.client.HTTPConnection", return_value=mock_conn),\
-             patch("proxy.upstream_driver.OpenAI") as mock_openai:
-            mock_client = MagicMock()
-            mock_chat = MagicMock()
-            mock_chat.model_dump.return_value = chat_resp
-            mock_client.chat.completions.create.return_value = mock_chat
-            mock_openai.return_value = mock_client
+        with patch("http.client.HTTPConnection", return_value=mock_conn):
             body = json.dumps({
                 "model": "claude-sonnet-4-6",
                 "messages": [{"role": "user", "content": "Hi"}],
@@ -390,15 +363,11 @@ class TestStreamingFlow(unittest.TestCase):
 
         from proxy.adapters import get_adapter
         adapter = get_adapter("responses")
-        with patch("http.client.HTTPConnection") as mock_conn_cls,\
-             patch("proxy.upstream_driver.OpenAI") as mock_openai:
+        with patch("http.client.HTTPConnection") as mock_conn_cls:
             mock_conn = MagicMock()
             mock_conn.getresponse.return_value = mock_resp
             mock_conn.sock = MagicMock()
             mock_conn_cls.return_value = mock_conn
-            mock_client = MagicMock()
-            mock_client.chat.completions.create.return_value = iter([1])
-            mock_openai.return_value = mock_client
 
             with patch.object(adapter, "stream_from", return_value=iter(sse_events)):
                 body = json.dumps({
@@ -442,15 +411,11 @@ class TestStreamingFlow(unittest.TestCase):
 
         from proxy.adapters import get_adapter
         adapter = get_adapter("responses")
-        with patch("http.client.HTTPConnection") as mock_conn_cls,\
-             patch("proxy.upstream_driver.OpenAI") as mock_openai:
+        with patch("http.client.HTTPConnection") as mock_conn_cls:
             mock_conn = MagicMock()
             mock_conn.getresponse.return_value = mock_resp
             mock_conn.sock = MagicMock()
             mock_conn_cls.return_value = mock_conn
-            mock_client = MagicMock()
-            mock_client.chat.completions.create.return_value = iter([1])
-            mock_openai.return_value = mock_client
 
             with patch.object(adapter, "stream_from", return_value=iter(sse_events)):
                 body = json.dumps({

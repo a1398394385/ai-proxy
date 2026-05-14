@@ -514,15 +514,18 @@ class TestHandlerEndToEnd(unittest.TestCase):
         self.logger.log_upstream_response.assert_called()
         self.logger.log_converted_response.assert_called()
     def test_full_flow_convert(self):
-        """转换全流程: do_POST → convert → SDK 驱动 → 4 阶段日志。"""
+        """转换全流程: do_POST → convert → http.client 驱动 → 4 阶段日志。"""
         upstream = _resolve_result(format_type="chat_completions")  # mismatch
         chat_resp = {
             "id": "chatcmpl-1", "model": "gpt-4o",
             "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         }
-        mock_chat = MagicMock()
-        mock_chat.model_dump.return_value = chat_resp
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = json.dumps(chat_resp).encode()
+        mock_conn = MagicMock()
+        mock_conn.getresponse.return_value = mock_resp
 
         body = {
             "model": "gpt-4o",
@@ -535,13 +538,11 @@ class TestHandlerEndToEnd(unittest.TestCase):
              patch("proxy.handler.get_logger") as mock_gl,\
              patch("proxy.handler.CONFIG") as mock_cfg,\
              patch("proxy.handler.record_token_stats"),\
-             patch("proxy.upstream_driver.OpenAI") as mock_openai_cls:
+             patch("proxy.handler._create_upstream_conn") as mock_conn_fn:
             mock_cc.resolve.return_value = upstream
             mock_gl.return_value = self.logger
             mock_cfg.get.return_value = _default_upstream_cfg()
-            mock_client = MagicMock()
-            mock_client.chat.completions.create.return_value = mock_chat
-            mock_openai_cls.return_value = mock_client
+            mock_conn_fn.return_value = mock_conn
 
             handler.do_POST()
 
