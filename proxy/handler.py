@@ -910,6 +910,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             )
 
         driver.close()
+        self.close_connection = True
 
     def _handle_sdk_error(self, e: Exception):
         """统一 SDK 异常 → HTTP 错误映射。

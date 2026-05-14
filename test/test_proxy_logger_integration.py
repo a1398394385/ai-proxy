@@ -169,7 +169,7 @@ class TestUpstream500Error(unittest.TestCase):
         stages = [r["stage"] for r in _query_debug_log(self.db_path)]
         self.assertIn("raw_request", stages)
         self.assertIn("converted_request", stages)
-        self.assertNotIn("upstream_response", stages)
+        self.assertIn("upstream_response", stages)  # SDK 错误也记录 upstream_response
         self.assertNotIn("converted_response", stages)
 
 
