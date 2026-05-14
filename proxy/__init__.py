@@ -44,6 +44,7 @@ from .transform import (  # noqa: F401
 
 from .token_stats import record_token_stats  # noqa: F401 — re-export
 
+from .agent_detector import detect_subagent  # noqa: F401
 from .handler import ProxyHandler  # noqa: F401
 
 from .transform_router import TransformRouter  # noqa: F401 — re-export
