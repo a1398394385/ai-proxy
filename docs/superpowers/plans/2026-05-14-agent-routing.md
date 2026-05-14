@@ -836,7 +836,7 @@ from .agent_detector import detect_subagent
 
 - [ ] **Step 2: 修改 do_POST 中的路由解析逻辑**
 
-在 `handler.py` 的 `do_POST()` 方法中，找到这段代码（约第 155-158 行）：
+在 `handler.py` 的 `do_POST()` 方法中，找到这段代码（第 155-160 行）：
 
 ```python
         # 解析模型路由：先查 config_cache.resolve 获取完整信息（含 format）

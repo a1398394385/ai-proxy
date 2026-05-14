@@ -258,9 +258,9 @@ config_cache.resolve_agent(model, request_type)
 
 ## 7. 迁移可靠性
 
-v5→v6 迁移仅包含：
+v6→v7 迁移仅包含：
 1. `CREATE TABLE IF NOT EXISTS agent_routes (...)` — DDL，SQLite 原子执行
-2. `UPDATE schema_version SET version = 6` — 单行更新
+2. `UPDATE schema_version SET version = 7` — 单行更新
 
 两步在 `_migrate_v6_to_v7()` 中顺序执行。DDL 失败时不会修改 schema_version，数据库保持 v6 一致状态。无需回滚 SQL。
 
