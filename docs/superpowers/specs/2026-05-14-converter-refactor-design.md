@@ -51,6 +51,13 @@ proxy/
 ### ProtocolAdapter 抽象基类
 
 ```python
+# proxy/adapters/base.py
+
+class UnsupportedFormat(Exception):
+    """不支持的转换格式组合。"""
+    pass
+
+
 class ProtocolAdapter(ABC):
     """一个客户端协议的双向转换器。
 
@@ -66,24 +73,63 @@ class ProtocolAdapter(ABC):
         ...
 
     @abstractmethod
-    def request_to(self, target_format: str, body: dict, model_cfg: dict) -> dict:
+    def request_to(self, upstream_format: str, body: dict, model_cfg: dict) -> dict:
         """客户端请求体 → 目标上游格式的请求体。
 
         model_cfg: {"target": str, "multimodal": bool, "upstream": dict}
+        不支持的 upstream_format → raise UnsupportedFormat
         """
         ...
 
     @abstractmethod
-    def response_from(self, source_format: str, response: dict) -> dict:
-        """上游响应 dict → 客户端协议格式的响应 dict。"""
+    def response_from(self, upstream_format: str, response: dict) -> dict:
+        """上游响应 dict → 客户端协议格式的响应 dict。
+
+        不支持的 upstream_format → raise UnsupportedFormat
+        """
         ...
 
     @abstractmethod
-    def stream_from(self, source_format: str, chunks, *,
+    def stream_from(self, upstream_format: str, chunks, *,
                     request_messages=None, response_store=None):
-        """上游 SSE 流 → 客户端协议格式的 SSE 事件生成器。"""
+        """上游 SSE 流 → 客户端协议格式的 SSE 事件生成器。
+
+        不支持的 upstream_format → raise UnsupportedFormat
+        """
         ...
 ```
+
+### Adapter 内部分发逻辑
+
+以 ResponsesAdapter 为例，展示 `request_to` / `response_from` 内部实现模式：
+
+```python
+# proxy/adapters/responses.py
+
+class ResponsesAdapter(ProtocolAdapter):
+    protocol = "responses"
+
+    def request_to(self, upstream_format: str, body: dict, model_cfg: dict) -> dict:
+        if upstream_format == "chat_completions":
+            return self._responses_to_chat(body, model_cfg)
+        raise UnsupportedFormat(f"responses → {upstream_format} 尚未实现")
+
+    def response_from(self, upstream_format: str, response: dict) -> dict:
+        if upstream_format == "chat_completions":
+            return self._chat_to_responses(response)
+        raise UnsupportedFormat(f"{upstream_format} → responses 尚未实现")
+
+    def stream_from(self, upstream_format: str, chunks, *,
+                    request_messages=None, response_store=None):
+        if upstream_format == "chat_completions":
+            yield from self._chat_stream_to_responses(chunks,
+                request_messages=request_messages,
+                response_store=response_store)
+            return
+        raise UnsupportedFormat(f"{upstream_format} → responses (stream) 尚未实现")
+```
+
+MessagesAdapter 同理，只实现 `chat_completions` 作为请求/响应目标格式。未来扩展新链路时，只需在对应 Adapter 中新增 `if upstream_format == "..."` 分支。
 
 与 Hermes `ProviderTransport` 的区别:
 
@@ -96,7 +142,7 @@ class ProtocolAdapter(ABC):
 
 ### N×M 转换矩阵
 
-每个 Adapter 内部按 target_format / source_format 分发:
+采用**枢纽格式**策略：chat_completions 作为通用中间格式，所有协议先转到 chat_completions，再从 chat_completions 转到目标协议。N×M 问题退化为 N×1 + 1×M。
 
 ```
                     upstream_format
@@ -106,6 +152,8 @@ client_format
  messages             ✅              🔜         🔜
  chat_completions     (透传)          🔜         🔜
 ```
+
+初期实现：每个 Adapter 只支持与 `chat_completions` 的双向转换。未来如果需要 `responses → messages` 直接转换（不经 chat 中转），只需在 `ResponsesAdapter.request_to("messages", ...)` 中添加分支。
 
 - `client_format == upstream_format` → Router 层透传，不经过 Adapter
 - Adapter 内部若收到不支持的 format 组合 → raise `UnsupportedFormat`
@@ -185,8 +233,50 @@ class UpstreamDriver:
         self._openai: OpenAI | None = None
         self._anthropic: Anthropic | None = None
 
-    # 统一入口
+    # ── SDK 客户端懒初始化 ──
+
+    @property
+    def openai(self) -> OpenAI:
+        """按需创建 OpenAI 客户端。"""
+        if self._openai is None:
+            timeout = self._cfg.get("timeout", 120)
+            connect_timeout = self._cfg.get("connect_timeout", 10)
+            ssl_verify = self._cfg.get("ssl_verify", True)
+            self._openai = OpenAI(
+                base_url=self._cfg["base_url"],
+                api_key=self._cfg["api_key"],
+                timeout=httpx.Timeout(
+                    connect=connect_timeout,
+                    read=timeout, write=timeout, pool=connect_timeout,
+                ),
+                max_retries=self._cfg.get("retry", 0),
+                http_client=httpx.Client(verify=ssl_verify),
+            )
+        return self._openai
+
+    @property
+    def anthropic(self) -> Anthropic:
+        """按需创建 Anthropic 客户端。"""
+        if self._anthropic is None:
+            timeout = self._cfg.get("timeout", 120)
+            connect_timeout = self._cfg.get("connect_timeout", 10)
+            ssl_verify = self._cfg.get("ssl_verify", True)
+            self._anthropic = Anthropic(
+                base_url=self._cfg["base_url"],
+                api_key=self._cfg["api_key"],
+                timeout=httpx.Timeout(
+                    connect=connect_timeout,
+                    read=timeout, write=timeout, pool=connect_timeout,
+                ),
+                max_retries=self._cfg.get("retry", 0),
+                http_client=httpx.Client(verify=ssl_verify),
+            )
+        return self._anthropic
+
+    # ── 统一入口 ──
+
     def create(self, format: str, body: dict):
+        """按 format 路由到对应 SDK 的非流式调用。"""
         if format == "chat_completions":
             return self.openai.chat.completions.create(**body)
         if format == "responses":
@@ -196,15 +286,21 @@ class UpstreamDriver:
         raise ValueError(f"不支持的上游格式: {format}")
 
     def create_stream(self, format: str, body: dict):
-        # 同上，stream=True
-        ...
+        """按 format 路由到对应 SDK 的流式调用。"""
+        if format == "chat_completions":
+            return self.openai.chat.completions.create(stream=True, **body)
+        if format == "responses":
+            return self.openai.responses.create(stream=True, **body)
+        if format == "messages":
+            return self.anthropic.messages.create(stream=True, **body)
+        raise ValueError(f"不支持的上游格式: {format}")
 
     def close(self):
         if self._openai: self._openai.close()
         if self._anthropic: self._anthropic.close()
 ```
 
-两个 SDK 客户端: `openai` (chat_completions + responses)、`anthropic` (messages)，均懒初始化。
+两个 SDK 客户端懒初始化：实际只使用一个时不会创建另一个。
 
 ### Handler 简化
 
@@ -262,13 +358,55 @@ TransformRouter.convert_response(raw_response_dict, "messages", "responses")
 - SDK 异常 → `_handle_sdk_error` 保持不变 (isinstance 链映射 HTTP 状态码)
 - `close()` 确保连接在 finally 中释放
 
+## 迁移步骤
+
+1. 创建 `proxy/adapters/` 目录 + `base.py`（ProtocolAdapter 抽象基类 + UnsupportedFormat 异常）
+2. 创建 `proxy/adapters/__init__.py`（注册表 + 惰性发现）
+3. 创建 `proxy/adapters/responses.py`（ResponsesAdapter，仅支持 chat_completions 双向转换，逻辑来自 transform_responses.py）
+4. 创建 `proxy/adapters/messages.py`（MessagesAdapter，仅支持 chat_completions 双向转换，逻辑来自 transform_anthropic.py）
+5. 重写 `proxy/transform_router.py`（委托注册表取代函数字典）
+6. 重写 `proxy/upstream_driver.py`（三格式 support + 懒初始化 SDK 客户端）
+7. 修改 `proxy/handler.py` — 消除硬编码 intermediate，改用 client_format/upstream_format
+8. 更新 `proxy/__init__.py` re-export
+9. 更新 `proxy/transform.py` — 删除或极简 shim
+10. 新建 `test/test_adapters.py` — 覆盖 ResponsesAdapter、MessagesAdapter 的 request_to/response_from/stream_from
+11. 适配 `test/test_handler.py` — 新 Router 接口
+12. 删除 `test/test_transform.py`、`test/test_transform_anthropic.py`
+13. 删除 `proxy/transform_responses.py`、`proxy/transform_anthropic.py`
+14. 全量 `python3 -m pytest test/ -q` 通过后 commit
+
 ## 测试
 
-- 新建 `test/test_adapters.py` — ResponsesAdapter、MessagesAdapter 的 request_to / response_from / stream_from
-- `test/test_transform.py` — 迁移到 adapter 测试，旧文件删除
-- `test/test_transform_anthropic.py` — 迁移到 adapter 测试，旧文件删除
-- `test/test_handler.py` — 适配新的 Router 接口
-- 其余测试不变 (test_config_manager, test_sse_utils, test_token_stats, test_pricing_manager 等)
+### test_adapters.py（新建）
+
+每个 Adapter 至少覆盖:
+
+```
+ResponsesAdapter:
+  request_to("chat_completions", ...) → 等价于旧 responses_to_chat 行为
+  request_to("messages", ...) → raise UnsupportedFormat
+  response_from("chat_completions", ...) → 等价于旧 chat_to_responses 行为
+  stream_from("chat_completions", ...) → 等价于旧 create_codex_sse_stream 行为
+
+MessagesAdapter:
+  request_to("chat_completions", ...) → 等价于旧 anthropic_to_chat 行为
+  request_to("responses", ...) → raise UnsupportedFormat
+  response_from("chat_completions", ...) → 等价于旧 chat_to_anthropic 行为
+  stream_from("chat_completions", ...) → 等价于旧 create_anthropic_sse_stream 行为
+```
+
+### 迁移的测试
+
+- `test_transform.py`（138 tests）→ `test_adapters.py` 中 ResponsesAdapter 测试
+- `test_transform_anthropic.py`（44 tests）→ `test_adapters.py` 中 MessagesAdapter 测试
+
+### 适配的测试
+
+- `test/test_handler.py`（20 tests）— 适配新的 Router 接口签名（参数名从 source/target 改为 client_format/upstream_format）
+
+### 不变的测试
+
+其余全部: test_config_manager, test_sse_utils, test_token_stats, test_pricing_manager, test_request_logger, test_response_store, test_e2e_smoke, test_stats_service 等
 
 ## 兼容性
 
