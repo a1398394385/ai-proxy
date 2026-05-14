@@ -1661,12 +1661,13 @@ class TestProxyErrorPathsDone(unittest.TestCase):
         self.assertIn("[DONE]", segment,
             "流式转换异常路径缺少 data: [DONE]")
 
-    def test_sdk_error_path_calls_handle_sdk_error(self):
-        """SDK 调用异常由 _handle_sdk_error 处理。"""
+    def test_upstream_error_path_calls_handle_upstream_error(self):
+        """http.client 异常由 _handle_upstream_error 处理。"""
         src = self._read_forward_streaming_source()
-        idx = src.index("stream = driver.create_stream")
-        segment = src[idx:idx+700]
-        self.assertIn("_handle_sdk_error", segment)
+        # 外层 try 注释是 _forward_streaming 特有标记
+        idx = src.index("外层 try: 包裹全部逻辑")
+        segment = src[idx:idx+1500]
+        self.assertIn("_handle_upstream_error", segment)
 
     def test_iter_sse_buffer_size(self):
         """iter_sse_events 读缓冲区应为 4096 字节。"""
