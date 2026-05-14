@@ -72,6 +72,70 @@ class TestDetectSubagent(unittest.TestCase):
         ])
         self.assertFalse(detect_subagent(body))
 
+    # ─── Codex subagent 检测 ───
+
+    def test_codex_main_session_not_subagent(self):
+        from proxy.agent_detector import detect_subagent
+        body = {
+            "model": "gpt-5.4-mini",
+            "client_metadata": {"x-codex-installation-id": "abc-123"},
+            "tools": [
+                {"type": "function", "name": "spawn_agent"},
+                {"type": "function", "name": "exec_command"},
+            ],
+        }
+        self.assertFalse(detect_subagent(body))
+
+    def test_codex_subagent_no_spawn_agent(self):
+        from proxy.agent_detector import detect_subagent
+        body = {
+            "model": "gpt-5.4-mini",
+            "client_metadata": {"x-codex-installation-id": "abc-123"},
+            "tools": [
+                {"type": "function", "name": "exec_command"},
+                {"type": "function", "name": "apply_patch"},
+            ],
+        }
+        self.assertTrue(detect_subagent(body))
+
+    def test_codex_subagent_with_mcp_tools(self):
+        from proxy.agent_detector import detect_subagent
+        body = {
+            "model": "gpt-5.5",
+            "client_metadata": {"x-codex-installation-id": "def-456"},
+            "tools": [
+                {"type": "function", "name": "exec_command"},
+                {"type": "function", "name": "mcp__context7__"},
+                {"type": "function", "name": "apply_patch"},
+            ],
+        }
+        self.assertTrue(detect_subagent(body))
+
+    def test_non_codex_without_spawn_agent_not_detected(self):
+        from proxy.agent_detector import detect_subagent
+        body = {
+            "model": "gpt-5.4-mini",
+            "tools": [{"type": "function", "name": "exec_command"}],
+        }
+        self.assertFalse(detect_subagent(body))
+
+    def test_codex_empty_tools(self):
+        from proxy.agent_detector import detect_subagent
+        body = {
+            "model": "gpt-5.4-mini",
+            "client_metadata": {"x-codex-installation-id": "abc-123"},
+            "tools": [],
+        }
+        self.assertTrue(detect_subagent(body))
+
+    def test_codex_no_tools_key(self):
+        from proxy.agent_detector import detect_subagent
+        body = {
+            "model": "gpt-5.4-mini",
+            "client_metadata": {"x-codex-installation-id": "abc-123"},
+        }
+        self.assertTrue(detect_subagent(body))
+
 
 if __name__ == "__main__":
     unittest.main()

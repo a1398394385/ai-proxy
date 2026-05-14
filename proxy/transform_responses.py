@@ -263,17 +263,22 @@ def _fix_tool_message_order(messages: list) -> list:
             if merged_reasoning:
                 merged["reasoning_content"] = merged_reasoning
 
-            # 收集对应的 tool 消息
+            # 收集对应的 tool 消息（允许中间穿插 user/system 等非 tool 消息）
             tool_call_ids = {tc.get("id") for tc in all_tool_calls}
             tool_msgs = []
-            while i < len(messages):
+            while i < len(messages) and tool_call_ids:
                 m = messages[i]
-                if m.get("role") == "tool" and m.get("tool_call_id") in tool_call_ids:
-                    tool_msgs.append(m)
-                    tool_call_ids.discard(m.get("tool_call_id"))
-                    i += 1
+                if m.get("role") == "tool":
+                    if m.get("tool_call_id") in tool_call_ids:
+                        tool_msgs.append(m)
+                        tool_call_ids.discard(m.get("tool_call_id"))
+                    else:
+                        break  # 不属于当前 tool_calls 的 tool 消息，停止
+                elif m.get("role") == "assistant" and m.get("tool_calls"):
+                    break  # 新的 assistant+tool_calls 块，停止
                 else:
-                    break
+                    deferred.append(m)  # user/system 等消息推迟
+                i += 1
 
             # 中间夹着的 assistant 纯文本消息推迟
             while i < len(messages):

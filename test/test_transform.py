@@ -2118,6 +2118,42 @@ class TestFixToolMessageOrder(unittest.TestCase):
         last_tool_idx = max(i for i, m in enumerate(result) if m.get("role") == "tool")
         self.assertTrue(text_idx > last_tool_idx)
 
+    def test_user_between_tool_calls_and_tool(self):
+        """复现 ce91a35cdad14ffa：Anthropic user 消息夹在 assistant+tool_calls 和 tool 之间。"""
+        from proxy.transform_responses import _fix_tool_message_order
+        messages = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "帮我提交者 3 个文件"},
+            {"role": "assistant", "tool_calls": [
+                {"id": "call_00", "type": "function"},
+                {"id": "call_01", "type": "function"},
+                {"id": "call_02", "type": "function"},
+            ]},
+            {"role": "user", "content": "用户补充内容"},  # 夹在 tool_calls 和 tool 之间
+            {"role": "tool", "tool_call_id": "call_00"},
+            {"role": "tool", "tool_call_id": "call_01"},
+            {"role": "tool", "tool_call_id": "call_02"},
+        ]
+        result = _fix_tool_message_order(messages)
+
+        # 验证：assistant+tool_calls 后紧跟 tool 消息，user 被推迟
+        roles = [(m["role"], m.get("tool_call_id") or bool(m.get("tool_calls"))) for m in result]
+        expected_roles = [
+            ("system", False),
+            ("user", False),
+            ("assistant", True),   # tool_calls
+            ("tool", "call_00"),
+            ("tool", "call_01"),
+            ("tool", "call_02"),
+            ("user", False),       # 推迟到最后
+        ]
+        self.assertEqual(roles, expected_roles)
+
+        # 验证：assistant+tool_calls 后面紧跟的是 tool，不是 user
+        for i, m in enumerate(result):
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                self.assertEqual(result[i + 1]["role"], "tool")
+
     def test_consecutive_tool_calls_merged(self):
         """复现 d71205a904704afc 场景：连续多条 assistant+tool_calls 合并为单条。"""
         from proxy.transform_responses import _fix_tool_message_order
