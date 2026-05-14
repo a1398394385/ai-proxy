@@ -152,7 +152,7 @@ async function showUpstreamModal(editId) {
   }
   showModal(title,
     `<div class="form-group"><label class="form-label">名称</label><input type="text" class="form-input" id="up-name" value="${escHtml(data.name || data.id)}"></div>
-     <div class="form-group"><label class="form-label">Base URL</label><input type="text" class="form-input" id="up-url" value="${escHtml(data.base_url)}"></div>
+     <div class="form-group"><label class="form-label">Base URL</label><input type="text" class="form-input" id="up-url" value="${escHtml(data.base_url)}"><small id="up-url-hint" class="form-hint" style="color:var(--warning,#e5a00d);display:${data.format === 'chat_completions' ? 'block' : 'none'}">Chat 类型上游的 Base URL 需以版本路径结尾，如 /v1、/v4 等</small></div>
      <div class="form-group"><label class="form-label">API Key</label><input type="text" class="form-input" id="up-key" value="${escHtml(data.api_key)}"></div>
      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
        <div class="form-group"><label class="form-label">响应超时 (s)</label><input type="number" class="form-input" id="up-timeout" value="${data.timeout}" min="1"></div>
@@ -162,7 +162,7 @@ async function showUpstreamModal(editId) {
        <div class="form-group"><label class="form-label">SSL</label><select class="form-input" id="up-ssl"><option value="1" ${data.ssl_verify ? 'selected' : ''}>开启</option><option value="0" ${!data.ssl_verify ? 'selected' : ''}>关闭</option></select></div>
        <div class="form-group"><label class="form-label">重试</label><input type="number" class="form-input" id="up-retry" value="${data.retry}" min="0"></div>
      </div>
-     <div class="form-group"><label class="form-label">请求格式</label><select class="form-input" id="up-format"><option value="chat_completions" ${data.format === 'chat_completions' ? 'selected' : ''}>Chat</option><option value="responses" ${data.format === 'responses' ? 'selected' : ''}>Responses</option><option value="messages" ${data.format === 'messages' ? 'selected' : ''}>Messages</option></select></div>`,
+     <div class="form-group"><label class="form-label">请求格式</label><select class="form-input" id="up-format" onchange="document.getElementById('up-url-hint').style.display=this.value==='chat_completions'?'block':'none'"><option value="chat_completions" ${data.format === 'chat_completions' ? 'selected' : ''}>Chat</option><option value="responses" ${data.format === 'responses' ? 'selected' : ''}>Responses</option><option value="messages" ${data.format === 'messages' ? 'selected' : ''}>Messages</option></select></div>`,
     `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveUpstream('${editId || ''}')">保存</button>`);
 }
 
