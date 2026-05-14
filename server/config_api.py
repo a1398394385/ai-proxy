@@ -457,24 +457,6 @@ def handle_put(path, handler) -> bool:
         _reload_proxies()
         json_response(handler, {"message": "Updated"})
         return True
-    m = re.match(r"/api/agent-routes/(\d+)$", path)
-    if m:
-        rid = int(m.group(1))
-        with config_db() as db:
-            route = db.get_agent_route(rid)
-            if not route:
-                json_response(handler, {"error": "Not found"}, 404)
-                return True
-            try:
-                db.delete_agent_route(rid)
-            except sqlite3.IntegrityError as e:
-                json_response(handler, {"error": str(e)}, 409)
-                return True
-        _reload_proxies()
-        json_response(handler, {"message": "Deleted"})
-        return True
-
-
     return False
 
 
@@ -536,6 +518,23 @@ def handle_delete(path, handler) -> bool:
                     return True
             try:
                 db.delete_route(rid)
+            except sqlite3.IntegrityError as e:
+                json_response(handler, {"error": str(e)}, 409)
+                return True
+        _reload_proxies()
+        json_response(handler, {"message": "Deleted"})
+        return True
+
+    m = re.match(r"/api/agent-routes/(\d+)$", path)
+    if m:
+        rid = int(m.group(1))
+        with config_db() as db:
+            route = db.get_agent_route(rid)
+            if not route:
+                json_response(handler, {"error": "Not found"}, 404)
+                return True
+            try:
+                db.delete_agent_route(rid)
             except sqlite3.IntegrityError as e:
                 json_response(handler, {"error": str(e)}, 409)
                 return True

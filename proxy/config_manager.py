@@ -1504,13 +1504,6 @@ class Migrations:
                 ''')
                 logging.info("[Migrations] v6\u2192v7 STEP 1: agent_routes \u8868\u521b\u5efa\u5b8c\u6210")
 
-                old_count = conn.execute("SELECT COUNT(*) FROM agent_routes").fetchone()[0]
-                new_count = conn.execute("SELECT COUNT(*) FROM agent_routes").fetchone()[0]
-                if new_count < old_count:
-                    raise sqlite3.OperationalError(
-                        "agent_routes \u9a8c\u8bc1\u5931\u8d25: \u539f\u6709 %d \u6761\u8bb0\u5f55, \u73b0\u6709 %d \u6761\u8bb0\u5f55" % (old_count, new_count)
-                    )
-
                 conn.execute("DELETE FROM schema_version;")
                 conn.execute("INSERT INTO schema_version (version) VALUES (7);")
                 logging.info("[Migrations] v6\u2192v7 STEP 2: schema_version \u66f4\u65b0\u4e3a 7")
