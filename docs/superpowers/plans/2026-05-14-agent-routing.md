@@ -808,14 +808,16 @@ git commit -m "feat: config_api agent-routes CRUD 端点"
 
 ### Task 5: server/handler.py 分发表注册
 
-**Files:**
-- Modify: `server/handler.py`
+**Files:** 无变更
 
-无需修改 — `config_api.handle_get/post/put/delete` 已在分发表中，新路径由 config_api 内部正则匹配处理。
+无需修改 — `config_api.handle_get/post/put/delete` 已在分发表中，新 `/api/agent-routes` 路径由 config_api 内部正则匹配处理。
 
-- [ ] **Step 1: 确认无需修改**
+- [ ] **Step 1: 验证分发表已包含 config_api**
 
-验证 `server/handler.py` 的 `_GET_HANDLERS` 等已包含 `config_api.handle_get`，新端点由 config_api 内部路由处理。
+Run: `grep -n "config_api.handle" server/handler.py`
+Expected: 4 行输出（handle_get, handle_post, handle_put, handle_delete）
+
+确认新端点 `/api/agent-routes` 由 config_api 内部路由处理，无需修改 handler.py 分发表。
 
 ---
 
@@ -834,7 +836,18 @@ from .agent_detector import detect_subagent
 
 - [ ] **Step 2: 修改 do_POST 中的路由解析逻辑**
 
-在 `handler.py` 的 `do_POST()` 方法中，找到 `raw_cfg = config_cache.resolve(model_name, request_type)` 这一行，将其及后续的 `if raw_cfg is None:` 分支替换为：
+在 `handler.py` 的 `do_POST()` 方法中，找到这段代码（约第 155-158 行）：
+
+```python
+        # 解析模型路由：先查 config_cache.resolve 获取完整信息（含 format）
+        raw_cfg = config_cache.resolve(model_name, request_type)
+        if raw_cfg is None:
+            model_cfg = {"target": model_name, "multimodal": False}
+            upstream_cfg = CONFIG.get("upstream", {})
+            upstream_format = ""
+```
+
+替换 `raw_cfg = config_cache.resolve(model_name, request_type)` 和 `if raw_cfg is None:` 之间的部分为：
 
 ```python
         # Agent 检测：子 agent 优先查 agent_routes，未命中回退主路由
@@ -844,9 +857,10 @@ from .agent_detector import detect_subagent
             raw_cfg = config_cache.resolve_agent(model_name, request_type)
         if raw_cfg is None:
             raw_cfg = config_cache.resolve(model_name, request_type)
+        if raw_cfg is None:
 ```
 
-后续的 `if raw_cfg is None:` 分支保持不变。
+注意：第二个 `if raw_cfg is None:` 是原有的分支，保持不变。
 
 - [ ] **Step 3: 运行全量测试确认无 regression**
 
@@ -891,12 +905,10 @@ def log_raw_request(self, request_id: str, model: str, target: str, body: str | 
                     data = body
                 else:
                     log_body = dict(body) if isinstance(body, dict) else body
-                    if isinstance(log_body, dict):
-                        log_body["_is_agent"] = is_agent
-                    data = json.dumps(log_body)
+                    data = json.dumps({"_log_meta": {"is_agent": is_agent}, "body": log_body})
 ```
 
-这样 `is_agent` 信息会被写入 `data` JSON 列，不影响原始请求体。
+这样 `is_agent` 信息被隔离在 `_log_meta` 命名空间下，不污染原始请求体字段。`body` 保留完整的原始请求内容。
 
 - [ ] **Step 2: 修改 handler.py 调用，传入 is_agent**
 
@@ -1001,11 +1013,12 @@ function switchRequestType(rt) {
 async function loadAgentRouteTable(requestType) {
   let url = '/api/agent-routes';
   if (requestType) url += '?request_type=' + encodeURIComponent(requestType);
-  const data = await api(url);
   const tbody = document.querySelector('#agent-route-table tbody');
   const countEl = document.getElementById('agent-route-count');
-  if (countEl) countEl.textContent = '覆盖层 · ' + (data.routes ? data.routes.length : 0);
-  if (tbody) tbody.innerHTML = data.routes.map(r => {
+  try {
+    const data = await api(url);
+    if (countEl) countEl.textContent = '覆盖层 · ' + (data.routes ? data.routes.length : 0);
+    if (tbody) tbody.innerHTML = (data.routes || []).map(r => {
     const isDisabled = !r.upstream_active;
     const rowClass = isDisabled ? 'route-disabled' : '';
     return `<tr class="${rowClass}">
@@ -1023,6 +1036,10 @@ async function loadAgentRouteTable(requestType) {
       </td>
     </tr>`;
   }).join('') || '<tr><td colspan="6" class="empty-state"><div class="empty-state-icon">🤖</div>暂无 Agent 路由配置<br><span style="font-size:11px">子 agent 请求将使用主路由表</span></td></tr>';
+  } catch (e) {
+    if (countEl) countEl.textContent = '覆盖层 · ?';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="empty-state">加载失败</td></tr>';
+  }
 }
 ```
 
@@ -1287,6 +1304,83 @@ class TestAgentRouting(unittest.TestCase):
         from proxy.agent_detector import detect_subagent
         body = {"messages": [{"role": "user", "content": "normal request"}]}
         self.assertFalse(detect_subagent(body))
+
+    def test_handler_agent_detection_with_route_override(self):
+        """验证完整的 agent 检测 → 路由覆盖流程（不启动 HTTP 服务，仅测试逻辑）。"""
+        from proxy.agent_detector import detect_subagent
+        # 场景：子 agent 请求有 agent 路由 → resolve_agent 命中
+        agent_up_id = self.db.add_upstream({
+            "name": "agent-only", "base_url": "http://agent-only:8003",
+            "api_key": "sk-agent-only", "format": "chat_completions"
+        })
+        agent_model_id = self.db.add_model({
+            "name": "cheap-model", "upstream_id": agent_up_id
+        })
+        self.db.add_agent_route({
+            "source": "claude-sonnet-4-6", "target_model_id": agent_model_id,
+            "request_type": "chat_completions"
+        })
+        self.cache.reload()
+
+        # 模拟 handler 逻辑：检测 → 选择路由
+        body = {"messages": [{"role": "user", "content": '{"__SUBAGENT_MARKER__": {}}'}]}
+        is_agent = detect_subagent(body)
+        self.assertTrue(is_agent)
+
+        raw_cfg = None
+        if is_agent:
+            raw_cfg = self.cache.resolve_agent("claude-sonnet-4-6", "chat_completions")
+        if raw_cfg is None:
+            raw_cfg = self.cache.resolve("claude-sonnet-4-6", "chat_completions")
+        self.assertIsNotNone(raw_cfg)
+        self.assertEqual(raw_cfg["target_name"], "cheap-model")
+
+    def test_handler_normal_request_ignores_agent_route(self):
+        """验证普通请求不查 agent_routes，直接走主路由。"""
+        from proxy.agent_detector import detect_subagent
+        agent_up_id = self.db.add_upstream({
+            "name": "agent-only", "base_url": "http://agent-only:8003",
+            "api_key": "sk-agent-only", "format": "chat_completions"
+        })
+        agent_model_id = self.db.add_model({
+            "name": "cheap-model", "upstream_id": agent_up_id
+        })
+        self.db.add_agent_route({
+            "source": "claude-sonnet-4-6", "target_model_id": agent_model_id,
+            "request_type": "chat_completions"
+        })
+        self.cache.reload()
+
+        # 普通请求
+        body = {"messages": [{"role": "user", "content": "hello"}]}
+        is_agent = detect_subagent(body)
+        self.assertFalse(is_agent)
+
+        raw_cfg = None
+        if is_agent:
+            raw_cfg = self.cache.resolve_agent("claude-sonnet-4-6", "chat_completions")
+        if raw_cfg is None:
+            raw_cfg = self.cache.resolve("claude-sonnet-4-6", "chat_completions")
+        self.assertIsNotNone(raw_cfg)
+        self.assertEqual(raw_cfg["target_name"], "main-target")
+
+    def test_handler_agent_fallback_to_main(self):
+        """验证子 agent 请求无 agent 路由时回退主路由。"""
+        from proxy.agent_detector import detect_subagent
+        self.cache.reload()
+
+        body = {"messages": [{"role": "user", "content": '{"__SUBAGENT_MARKER__": {}}'}]}
+        is_agent = detect_subagent(body)
+        self.assertTrue(is_agent)
+
+        # 无 agent 路由 → resolve_agent 返回 None → 回退主路由
+        raw_cfg = None
+        if is_agent:
+            raw_cfg = self.cache.resolve_agent("claude-sonnet-4-6", "chat_completions")
+        if raw_cfg is None:
+            raw_cfg = self.cache.resolve("claude-sonnet-4-6", "chat_completions")
+        self.assertIsNotNone(raw_cfg)
+        self.assertEqual(raw_cfg["target_name"], "main-target")
 ```
 
 - [ ] **Step 2: 运行集成测试**
@@ -1328,15 +1422,41 @@ Run: `./server.sh restart`
 7. 删除 Agent 路由 → 确认后删除成功
 8. 尝试输入 `*` 作为 source → 提示不支持
 
-- [ ] **Step 3: 验证迁移**
+- [ ] **Step 3: 验证迁移幂等性**
 
-对生产数据库执行迁移：
+对生产数据库执行迁移两次，确认无副作用：
 
-Run: `python3 -c "from proxy.paths import DATA_DB; from proxy.config_manager import Migrations; print(Migrations(DATA_DB).migrate())"`
+Run:
+```bash
+python3 -c "from proxy.paths import DATA_DB; from proxy.config_manager import Migrations; print(Migrations(DATA_DB).migrate())"
+python3 -c "from proxy.paths import DATA_DB; from proxy.config_manager import Migrations; print(Migrations(DATA_DB).migrate())"
+```
 
-Expected: `{"status": "already_migrated", ...}` 或 `{"status": "migrated", "from": 6, "to": 7, ...}`
+Expected: 第二次返回 `{"status": "already_migrated", ...}`
 
-- [ ] **Step 4: 最终全量测试**
+- [ ] **Step 4: 验证代理请求行为**
+
+先配置一条 agent 路由（通过 UI 或 API），然后用 curl 测试：
+
+1. 普通请求（无 SUBAGENT_MARKER）→ 应走主路由：
+
+```bash
+curl -s -X POST http://localhost:48743/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "你的测试模型", "messages": [{"role": "user", "content": "hello"}]}' | python3 -m json.tool
+```
+
+2. 子 agent 请求（含 SUBAGENT_MARKER）→ 应走 agent 路由：
+
+```bash
+curl -s -X POST http://localhost:48743/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "你的测试模型", "messages": [{"role": "user", "content": "__SUBAGENT_MARKER__ test"}]}' | python3 -m json.tool
+```
+
+检查 proxy.log 确认两条请求分别走了不同的目标模型。
+
+- [ ] **Step 5: 最终全量测试**
 
 Run: `python3 -m pytest test/ -q`
 Expected: 全部通过，0 failures

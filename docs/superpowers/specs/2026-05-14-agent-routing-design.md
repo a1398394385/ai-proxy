@@ -40,9 +40,9 @@ CREATE TABLE IF NOT EXISTS agent_routes (
 
 ### 迁移
 
-`Migrations` 新增 v5→v6：`CREATE TABLE agent_routes` + `UPDATE schema_version SET version = 6`。
+`Migrations` 新增 v6→v7：`CREATE TABLE IF NOT EXISTS agent_routes` + `UPDATE schema_version SET version = 7`。
 
-迁移是两条独立 DDL/DML 语句，SQLite 中每条语句原子执行，不存在中间不一致状态。如需回滚，`DROP TABLE agent_routes` + `UPDATE schema_version SET version = 5` 即可。
+迁移是两条独立 DDL/DML 语句，SQLite 中每条语句原子执行，不存在中间不一致状态。如需回滚，`DROP TABLE agent_routes` + `UPDATE schema_version SET version = 6` 即可。
 
 ### ConfigDB 新增方法
 
@@ -262,14 +262,14 @@ v5→v6 迁移仅包含：
 1. `CREATE TABLE IF NOT EXISTS agent_routes (...)` — DDL，SQLite 原子执行
 2. `UPDATE schema_version SET version = 6` — 单行更新
 
-两步在 `_migrate_v5_to_v6()` 中顺序执行。DDL 失败时不会修改 schema_version，数据库保持 v5 一致状态。无需回滚 SQL。
+两步在 `_migrate_v6_to_v7()` 中顺序执行。DDL 失败时不会修改 schema_version，数据库保持 v6 一致状态。无需回滚 SQL。
 
 ## 变更文件清单
 
 | 文件 | 变更类型 | 说明 |
 |------|----------|------|
 | `proxy/agent_detector.py` | 新增 | 子 agent 检测模块（`detect_subagent` + `_contains_marker`） |
-| `proxy/config_manager.py` | 修改 | 新增 `agent_routes` 表 + ConfigDB 方法 + ConfigCache 方法 + v6 迁移 |
+| `proxy/config_manager.py` | 修改 | 新增 `agent_routes` 表 + ConfigDB 方法 + ConfigCache 方法 + v6→v7 迁移 |
 | `proxy/handler.py` | 修改 | 集成 agent 检测 + agent 路由查找 |
 | `proxy/__init__.py` | 修改 | re-export `detect_subagent` |
 | `proxy/request_logger.py` | 修改 | `data` JSON 新增 `is_agent` 字段 |
