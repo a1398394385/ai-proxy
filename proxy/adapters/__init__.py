@@ -27,4 +27,4 @@ def _discover_adapters():
     global _discovered
     _discovered = True
     from . import responses   # noqa: F401
-    # from . import messages    # noqa: F401 — Task 4 完成后取消注释
+    from . import messages    # noqa: F401
