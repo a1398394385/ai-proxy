@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass, field
 
 from .sse_utils import _format_sse_event
+from .transform_responses import _fix_tool_message_order
 from .transform_responses import _parse_sse_event, iter_sse_events
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,10 @@ def anthropic_to_chat(body: dict, model_cfg: dict) -> dict:
         if effort:
             chat["reasoning_effort"] = effort
 
+
+    # 修复：Anthropic 允许 tool_result 在后续任意位置响应 tool_use，
+    # 但 Chat Completions 要求 assistant+tool_calls 后必须紧跟 tool 消息。
+    chat["messages"] = _fix_tool_message_order(chat["messages"])
     return chat
 
 

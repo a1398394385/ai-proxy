@@ -90,10 +90,14 @@ def responses_to_chat(body: dict, model_cfg: dict) -> dict:
         if key in body:
             chat[key] = body[key]
 
-    # reasoning.effort 透传
+    # reasoning.effort → reasoning_effort
+    # Responses API: {"reasoning": {"effort": "xhigh"}}
+    # Chat Completions API: "reasoning_effort": "xhigh"
     reasoning = body.get("reasoning", {})
-    if reasoning and "effort" in reasoning:
-        chat["reasoning"] = {"effort": reasoning["effort"]}
+    if isinstance(reasoning, dict):
+        effort = reasoning.get("effort")
+        if effort in ("xhigh", "high", "medium", "low"):
+            chat["reasoning_effort"] = effort
 
     # 结构化输出映射
     text_format = body.get("text", {}).get("format")
@@ -297,22 +301,66 @@ def _map_tools(tools: list) -> list:
     Chat Completions: {"type":"function", "function": {"name":"...", "parameters":{...}, ...}}
 
     已有 "function" 键的工具保持不变（幂等）。
-    非 "function" 类型的工具（custom、web_search 等）Chat Completions 不支持，丢弃并记录警告。
+    非 "function" 类型的工具（custom、web_search 等）降级为 function 格式：
+    优先提取已有 schema，没有则兜底为 {"input": "string"} 参数。
     """
     result = []
     for tool in tools:
-        if tool.get("type") != "function":
-            logger.warning(f"[transform] 丢弃不支持的 tool 类型: {tool.get('type')} ({tool.get('name', '?')})")
+        tool_type = tool.get("type", "function")
+        tool_name = tool.get("name", "")
+        if not tool_name and isinstance(tool.get("function"), dict):
+            tool_name = tool["function"].get("name", "")
+
+        if not tool_name:
+            logger.warning(f"[transform] 跳过 name 为空的 tool: {tool}")
             continue
-        if "function" in tool:
-            result.append(tool)
+
+        if tool_type == "function":
+            if "function" in tool:
+                result.append(tool)
+            else:
+                func = {}
+                for key in ("name", "description", "parameters", "strict"):
+                    if key in tool:
+                        func[key] = tool[key]
+                result.append({"type": "function", "function": func})
         else:
-            func = {}
-            for key in ("name", "description", "parameters", "strict"):
-                if key in tool:
-                    func[key] = tool[key]
-            result.append({"type": "function", "function": func})
+            # 非标准 tool 降级为 function 格式
+            logger.info(f"[transform] 非标准 tool 降级为 function: type={tool_type}, name={tool_name}")
+            params = _extract_freeform_tool_params(tool)
+            desc = tool.get("description", "")
+            if desc:
+                desc = f"{desc}\n[原始工具类型: {tool_type}]"
+            result.append({
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "description": desc,
+                    "parameters": params,
+                },
+            })
     return result
+
+
+def _extract_freeform_tool_params(tool: dict) -> dict:
+    """从非标准 tool 中提取 parameters schema，无 schema 则兜底为 input 字符串参数。
+
+    优先级：input_schema → schema → parameters → 兜底 input 字符串。
+    """
+    for key in ("input_schema", "schema", "parameters"):
+        schema = tool.get(key)
+        if isinstance(schema, dict) and schema:
+            return schema
+    return {
+        "type": "object",
+        "properties": {
+            "input": {
+                "type": "string",
+                "description": "工具输入内容（原始文本）",
+            },
+        },
+        "required": ["input"],
+    }
 
 
 def _map_response_format(text_format: dict) -> dict:

@@ -705,6 +705,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
             raw_response = driver.create(upstream_format, upstream_body)
             chat_response = raw_response.model_dump()
         except Exception as e:
+            logging.exception(f"SDK 非流式调用失败: model={model}, target={target}, "
+                              f"upstream_format={upstream_format}")
+            if logger:
+                logger.log_upstream_response(
+                    request_id, 0,
+                    json.dumps({"error": str(e)}),
+                    int((_time.time() - _request_start) * 1000),
+                    model, target,
+                    request_type=client_format,
+                )
             self._handle_sdk_error(e)
             driver.close()
             return
@@ -779,9 +789,21 @@ class ProxyHandler(BaseHTTPRequestHandler):
         driver = UpstreamDriver(upstream_cfg)
         logger = get_logger()
 
+        import time as _time
+        _stream_start = _time.time()
         try:
             stream = driver.create_stream(upstream_format, upstream_body)
         except Exception as e:
+            logging.exception(f"SDK 流式调用失败: model={model_name}, target={target}, "
+                              f"upstream_format={upstream_format}")
+            if logger:
+                logger.log_upstream_response(
+                    request_id, 0,
+                    json.dumps({"error": str(e)}),
+                    int((_time.time() - _stream_start) * 1000),
+                    model_name, target,
+                    request_type=client_format,
+                )
             self._handle_sdk_error(e)
             driver.close()
             return
@@ -895,6 +917,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
         使用 isinstance 按继承链从具体到通用依次检查，避免遗漏子类。
         """
         import httpx
+
+        logging.exception(f"SDK 调用异常: {type(e).__name__}: {e}")
 
         try:
             from openai import (
