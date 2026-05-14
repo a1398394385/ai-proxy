@@ -44,6 +44,13 @@ from .transform_router import TransformRouter  # noqa: E402
 from .transform_responses import _parse_sse_event  # noqa: E402 — v2 流式使用
 from .agent_detector import detect_subagent
 
+# ── 上游路径映射 ──
+_UPSTREAM_PATHS = {
+    "chat_completions": "/v1/chat/completions",
+    "responses": "/v1/responses",
+    "messages": "/v1/messages",
+}
+
 # ─── 统一 Handler ──────────────────────────────────────────────────
 
 
@@ -703,92 +710,131 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                  request_ts, upstream_cfg, client_format,
                                  upstream_format, store_enabled=True,
                                  is_responses_api=False):
-        """非流式转换请求：SDK 调用 + 响应转换 + Token 统计。"""
-        from .upstream_driver import UpstreamDriver
-
-        driver = UpstreamDriver(upstream_cfg)
+        """非流式：http.client 连上游 → 响应转换。"""
+        base_url = upstream_cfg["base_url"]
+        api_key = upstream_cfg["api_key"]
+        timeout = upstream_cfg.get("timeout", 120)
+        retries = upstream_cfg.get("retry", 0) + 1
         logger = get_logger()
 
-        import time as _time
-        _request_start = _time.time()
-        try:
-            raw_response = driver.create(upstream_format, upstream_body)
-            chat_response = raw_response.model_dump()
-        except Exception as e:
-            logging.exception(f"SDK 非流式调用失败: model={model}, target={target}, "
-                              f"upstream_format={upstream_format}")
-            if logger:
-                logger.log_upstream_response(
-                    request_id, 0,
-                    json.dumps({"error": str(e)}),
-                    int((_time.time() - _request_start) * 1000),
-                    model, target,
-                    request_type=client_format,
-                )
-            self._handle_sdk_error(e)
-            driver.close()
-            return
-        duration_ms = int((_time.time() - _request_start) * 1000)
-        request_ts_for_stats = request_ts
+        parsed = urllib.parse.urlparse(base_url)
+        path = parsed.path.rstrip("/") + _UPSTREAM_PATHS.get(upstream_format, "/v1/chat/completions")
+        port = parsed.port or (80 if parsed.scheme == "http" else 443)
 
-        # 阶段 3：记录上游响应
-        if logger:
-            logger.log_upstream_response(
-                request_id, 200, chat_response, 0,
-                model, target,
-                request_type=client_format,
-            )
+        for attempt in range(retries):
+            conn = None
+            try:
+                conn = _create_upstream_conn(upstream_cfg, parsed, port)
+                conn.connect()
+                conn.sock.settimeout(timeout)
 
-        # 阶段 4：转换响应 + Token 统计
-        try:
-            output = TransformRouter.convert_response(
-                chat_response, upstream_format, client_format
-            )
-            if logger:
-                logger.log_converted_response(
-                    request_id, model, target, output,
-                    request_type=client_format,
-                )
+                conn.request("POST", path, body=json.dumps(upstream_body), headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                })
 
-            usage = chat_response.get("usage", {})
-            if usage:
-                ctx = {
-                    "request_id": request_id,
-                    "request_type": client_format,
-                    "model": model,
-                    "target_model": target,
-                    "request_ts": request_ts_for_stats,
-                    "duration_ms": duration_ms,
-                }
-                if upstream_cfg.get("id") is not None:
-                    ctx["upstream_id"] = upstream_cfg["id"]
-                record_token_stats(usage, ctx)
+                start = time.time()
+                resp = conn.getresponse()
+                resp_body = resp.read()
+                duration_ms = int((time.time() - start) * 1000)
+                conn.close()
+                conn = None
 
-        except Exception as e:
-            logging.exception("响应转换失败")
-            if logger:
-                logger.log_converted_response(
-                    request_id, model, target,
-                    {"error": str(e)}, request_type=client_format,
-                )
-            self._send_json(500, {
-                "error": {"type": "internal_error", "message": str(e)}
-            })
-            driver.close()
-            return
+                if resp.status >= 500 and attempt < retries - 1:
+                    if logger:
+                        logger.log_upstream_response(
+                            request_id, resp.status,
+                            resp_body.decode("utf-8", errors="replace"),
+                            duration_ms, model, target,
+                            request_type=client_format,
+                        )
+                    logging.warning(f"上游 {resp.status}，重试 {attempt + 1}/{retries}")
+                    continue
 
-        # 存储 response（仅 responses 路径）
-        if store_enabled and is_responses_api:
-            from .transform_responses import output_items_to_messages as _oitm
-            assistant_msgs = _oitm(output.get("output", []))
-            messages_for_conv = [
-                m for m in upstream_body.get("messages", [])
-                if m.get("role") != "system"
-            ] + assistant_msgs
-            _store_response(self.server, output, messages_for_conv)
+                if resp.status != 200:
+                    if logger:
+                        logger.log_upstream_response(
+                            request_id, resp.status,
+                            resp_body.decode("utf-8", errors="replace"),
+                            duration_ms, model, target,
+                            request_type=client_format,
+                        )
+                    self.send_response(resp.status)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(resp_body)
+                    return
 
-        self._send_json(200, output)
-        driver.close()
+                try:
+                    chat_response = json.loads(resp_body)
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    chat_response = {"error": str(e), "raw": resp_body.decode("utf-8", errors="replace")[:5000]}
+
+                if logger:
+                    logger.log_upstream_response(
+                        request_id, resp.status, chat_response, duration_ms,
+                        model, target,
+                        request_type=client_format,
+                    )
+
+                try:
+                    from .transform_router import TransformRouter
+                    output = TransformRouter.convert_response(
+                        chat_response, upstream_format, client_format
+                    )
+                    if logger:
+                        logger.log_converted_response(
+                            request_id, model, target, output,
+                            request_type=client_format,
+                        )
+
+                    usage = chat_response.get("usage", {})
+                    if usage:
+                        ctx = {
+                            "request_id": request_id,
+                            "request_type": client_format,
+                            "model": model,
+                            "target_model": target,
+                            "request_ts": request_ts,
+                            "duration_ms": duration_ms,
+                        }
+                        if upstream_cfg.get("id") is not None:
+                            ctx["upstream_id"] = upstream_cfg["id"]
+                        record_token_stats(usage, ctx)
+                except Exception as e:
+                    logging.exception("响应转换失败")
+                    if logger:
+                        logger.log_converted_response(
+                            request_id, model, target,
+                            {"error": str(e)}, request_type=client_format,
+                        )
+                    self._send_json(500, {"error": {"type": "internal_error", "message": str(e)}})
+                    return
+
+                if store_enabled and is_responses_api:
+                    from .transform_responses import output_items_to_messages as _oitm
+                    assistant_msgs = _oitm(output.get("output", []))
+                    messages_for_conv = [
+                        m for m in upstream_body.get("messages", [])
+                        if m.get("role") != "system"
+                    ] + assistant_msgs
+                    _store_response(self.server, output, messages_for_conv)
+
+                self._send_json(200, output)
+                return
+
+            except (socket.timeout, http.client.HTTPException, OSError) as e:
+                logging.warning(f"上游请求失败 (attempt {attempt + 1}): {e}")
+                if attempt < retries - 1:
+                    continue
+                self._send_json(502, {"error": {"type": "server_error", "message": str(e)}})
+                return
+            finally:
+                if conn:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
 
     def _forward_streaming(self, upstream_body, model_cfg, request_id, model_name,
                              target, request_ts, upstream_cfg, client_format,
