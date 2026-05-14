@@ -112,6 +112,7 @@ function switchRequestType(rt) {
   currentRequestType = rt;
   document.querySelectorAll('.route-type-card').forEach(b => b.classList.toggle('active', b.dataset.pt === rt));
   loadRouteTable(rt);
+  loadAgentRouteTable(rt);
 }
 
 async function loadRouteTable(requestType) {
@@ -139,6 +140,38 @@ async function loadRouteTable(requestType) {
       </td>
     </tr>`;
   }).join('') || '<tr><td colspan="6" class="empty-state"><div class="empty-state-icon">🔀</div>暂无路由配置</td></tr>';
+}
+
+async function loadAgentRouteTable(requestType) {
+  let url = '/api/agent-routes';
+  if (requestType) url += '?request_type=' + encodeURIComponent(requestType);
+  const tbody = document.querySelector('#agent-route-table tbody');
+  const countEl = document.getElementById('agent-route-count');
+  try {
+    const data = await api(url);
+    if (countEl) countEl.textContent = '覆盖层 · ' + (data.routes ? data.routes.length : 0);
+    if (tbody) tbody.innerHTML = (data.routes || []).map(r => {
+    const isDisabled = !r.upstream_active;
+    const rowClass = isDisabled ? 'route-disabled' : '';
+    return `<tr class="${rowClass}">
+      <td><span class="badge badge-amber">${escHtml(r.source)}</span></td>
+      <td><span class="badge badge-green">${escHtml(r.target_name)}</span>
+          <span class="route-override-hint">← 覆盖主路由</span></td>
+      <td><span class="badge" style="background:hsl(var(--muted) / 0.7);color:hsl(var(--muted-foreground))">${escHtml(r.upstream_name || r.upstream_id)}</span></td>
+      <td><span class="badge ${FORMAT_COLORS[r.upstream_format] || ''}">${FORMAT_LABELS[r.upstream_format] || r.upstream_format || '-'}</span></td>
+      <td><span class="route-status"><span class="route-status-dot ${r.upstream_active ? 'active' : 'inactive'}"></span>${r.upstream_active ? '活跃' : '已禁用'}</span></td>
+      <td>
+        <div class="route-actions">
+          <button class="btn btn-secondary btn-sm" onclick="showAgentRouteModal(${r.id})">编辑</button>
+          <button class="btn btn-danger btn-sm" onclick="confirmDeleteAgentRoute(${r.id}, '${escHtml(r.source)}')">删除</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="6" class="empty-state"><div class="empty-state-icon">🤖</div>暂无 Agent 路由配置<br><span style="font-size:11px">子 agent 请求将使用主路由表</span></td></tr>';
+  } catch (e) {
+    if (countEl) countEl.textContent = '覆盖层 · ?';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="empty-state">加载失败</td></tr>';
+  }
 }
 
 // ─── 级联选择：上游 → 模型 ───
@@ -243,6 +276,44 @@ async function showRouteModal(editId) {
   bindCascadeModelSelect();
 }
 
+async function showAgentRouteModal(editId) {
+  let data = { source: '', target_model_id: '', request_type: currentRequestType };
+  let title = '新增 Agent 路由';
+  let routeUpstreamId = null;
+  let routeModelId = null;
+  let models, upstreams;
+  try {
+    if (editId) {
+      title = '编辑 Agent 路由 #' + editId;
+      const routes = await api('/api/agent-routes');
+      const found = routes.routes.find(r => r.id === editId);
+      if (found) data = found;
+    }
+    [models, upstreams] = await Promise.all([api('/api/models'), api('/api/upstreams')]);
+    if (editId && data.target_model_id) {
+      routeModelId = data.target_model_id;
+      const tm = models.models.find(m => m.id === data.target_model_id);
+      if (tm) routeUpstreamId = tm.upstream_id;
+    }
+  } catch (_) {
+    alert('加载数据失败，请检查服务是否正常运行');
+    return;
+  }
+  const cascadingHtml = buildCascadingSelect(upstreams, models, routeUpstreamId, routeModelId);
+  showModal(title,
+    `<div class="form-group"><label class="form-label">源模型名</label>
+       <input type="text" class="form-input" id="r-source" value="${escHtml(data.source)}" placeholder="如 claude-sonnet-4-6">
+       <div class="form-hint">子 agent 请求的模型名称，匹配时覆盖主路由指向</div>
+     </div>
+     <hr class="form-divider">
+     ${cascadingHtml}
+     <input type="hidden" id="r-proxy" value="${escHtml(data.request_type)}">`,
+    `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveAgentRoute(${editId || 0})">保存 Agent 路由</button>`);
+  const modal = document.querySelector('.modal');
+  if (modal) modal.classList.add('route-modal');
+  bindCascadeModelSelect();
+}
+
 async function showFallbackModal() {
   const data = { source: '*', target_model_id: '', request_type: currentRequestType };
   let models, upstreams;
@@ -294,6 +365,32 @@ async function confirmDeleteRoute(id, source) {
   else { bus.emit('config:route-changed', {}); loadRouteTable(currentRequestType); }
 }
 
+async function saveAgentRoute(editId) {
+  const data = {
+    source: document.getElementById('r-source').value.trim(),
+    target_model_id: parseInt(document.getElementById('r-target').value),
+    request_type: document.getElementById('r-proxy').value,
+  };
+  if (!data.source) { alert('源模型名不能为空'); return; }
+  if (data.source === '*') { alert('Agent 路由不支持 * fallback'); return; }
+  if (!data.target_model_id) { alert('请选择目标模型'); return; }
+  if (editId) {
+    await api('/api/agent-routes/' + editId, { method: 'PUT', body: JSON.stringify(data) });
+  } else {
+    await api('/api/agent-routes', { method: 'POST', body: JSON.stringify(data) });
+  }
+  closeModal();
+  bus.emit('config:route-changed', {});
+  loadAgentRouteTable(currentRequestType);
+}
+
+async function confirmDeleteAgentRoute(id, source) {
+  if (!confirm('确认删除 Agent 路由 "' + source + '"？')) return;
+  const result = await api('/api/agent-routes/' + id, { method: 'DELETE' });
+  if (result.error) { alert(result.error); }
+  else { bus.emit('config:route-changed', {}); loadAgentRouteTable(currentRequestType); }
+}
+
 // ===== Page Loader =====
 async function loadRoutePage() {
   const typeCards = Object.entries(RT_CONFIG).map(([key, cfg]) =>
@@ -322,14 +419,32 @@ async function loadRoutePage() {
           <tbody></tbody>
         </table>
       </div>
+    </div>
+    <div class="table-card agent-route-card">
+      <div class="table-header">
+        <div class="table-title">
+          <span>🤖 Agent 路由</span>
+          <span class="agent-badge" id="agent-route-count">覆盖层 · 0</span>
+        </div>
+        <div class="page-actions">
+          <button class="btn btn-secondary btn-sm" onclick="showAgentRouteModal()">+ 新增 Agent 路由</button>
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table id="agent-route-table">
+          <thead><tr><th>源模型</th><th>覆盖目标</th><th>上游</th><th>请求格式</th><th>状态</th><th>操作</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>`;
   loadRouteTable('chat_completions');
+  loadAgentRouteTable('chat_completions');
 }
 
 function initRoutePage() {}
 
 // ===== Exports =====
-export { loadRoutePage, initRoutePage, loadRouteTable, showRouteModal, showFallbackModal, saveRoute, confirmDeleteRoute, switchRequestType };
+export { loadRoutePage, initRoutePage, loadRouteTable, showRouteModal, showFallbackModal, saveRoute, confirmDeleteRoute, switchRequestType, loadAgentRouteTable, showAgentRouteModal, saveAgentRoute, confirmDeleteAgentRoute };
 
 // ===== Global Scope Mounting =====
 window.switchRequestType = switchRequestType;
@@ -339,3 +454,7 @@ window.saveRoute = saveRoute;
 window.confirmDeleteRoute = confirmDeleteRoute;
 window.loadRoutePage = loadRoutePage;
 window.initRoutePage = initRoutePage;
+window.loadAgentRouteTable = loadAgentRouteTable;
+window.showAgentRouteModal = showAgentRouteModal;
+window.saveAgentRoute = saveAgentRoute;
+window.confirmDeleteAgentRoute = confirmDeleteAgentRoute;

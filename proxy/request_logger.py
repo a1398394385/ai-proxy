@@ -112,12 +112,17 @@ class RequestLogger:
             conn.close()
 
     def log_raw_request(self, request_id: str, model: str, target: str, body: str | dict,
-                        request_type: str = None, request_path: str = None):
+                        request_type: str = None, request_path: str = None,
+                        is_agent: bool = False):
         """阶段 1：记录 agent 原始请求。"""
         try:
             conn = self._get_conn()
             try:
-                data = body if isinstance(body, str) else json.dumps(body)
+                if is_agent and isinstance(body, dict):
+                    log_body = dict(body)
+                    data = json.dumps({"_log_meta": {"is_agent": True}, "body": log_body})
+                else:
+                    data = body if isinstance(body, str) else json.dumps(body)
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn.execute(
                     "INSERT INTO debug_log (request_id, stage, model, target_model, request_type, request_path, data, created_at) "

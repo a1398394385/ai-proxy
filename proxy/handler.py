@@ -42,6 +42,7 @@ from .request_logger import (
 from .token_stats import record_token_stats
 from .transform_router import TransformRouter  # noqa: E402
 from .transform_responses import _parse_sse_event  # noqa: E402 — v2 流式使用
+from .agent_detector import detect_subagent
 
 # ─── 统一 Handler ──────────────────────────────────────────────────
 
@@ -143,6 +144,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
 
         model_name = body.get("model", "*")
+        # Agent 检测：子 agent 请求走 agent_routes 覆盖层
+        is_agent = detect_subagent(body)
+        if is_agent:
+            logging.info(f"检测到子 agent 请求: model={model_name}")
         client_ip = self.client_address[0]
         user_agent = self.headers.get("User-Agent", "")[:120]
 
@@ -152,8 +157,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
             f"model={model_name}, type={request_type}, path={self.path}"
         )
 
-        # 解析模型路由：先查 config_cache.resolve 获取完整信息（含 format）
-        raw_cfg = config_cache.resolve(model_name, request_type)
+        # 解析模型路由：先查 agent 路由覆盖层，未命中或上游禁用则回退主路由
+        raw_cfg = None
+        if is_agent:
+            raw_cfg = config_cache.resolve_agent(model_name, request_type)
+        if raw_cfg is None:
+            raw_cfg = config_cache.resolve(model_name, request_type)
+
         if raw_cfg is None:
             model_cfg = {"target": model_name, "multimodal": False}
             upstream_cfg = CONFIG.get("upstream", {})
@@ -178,7 +188,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         logger = get_logger()
         if logger:
             logger.log_raw_request(request_id, model_name, target, body,
-                                   request_type=request_type, request_path=downstream_url)
+                                   request_type=request_type, request_path=downstream_url, is_agent=is_agent)
 
         # 透传/转换判定
         if request_type == upstream_format and upstream_format:

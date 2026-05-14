@@ -485,3 +485,35 @@
   margin-bottom: 12px;
   opacity: 0.4;
 }
+
+/* ===== Agent 路由卡片 ===== */
+.agent-route-card {
+  border-color: hsl(45 100% 50% / 0.3) !important;
+  margin-top: 16px;
+}
+
+.agent-route-card .table-header {
+  background: hsl(45 100% 50% / 0.05) !important;
+  border-bottom: 1px solid hsl(45 100% 50% / 0.15) !important;
+}
+
+.agent-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: hsl(45 100% 50% / 0.15);
+  color: hsl(45 100% 50%);
+  margin-left: 8px;
+}
+
+.badge-amber {
+  background: hsl(45 100% 50% / 0.15) !important;
+  color: hsl(45 100% 50%) !important;
+}
+
+.route-override-hint {
+  font-size: 10px;
+  color: hsl(var(--muted-foreground));
+  margin-left: 4px;
+}

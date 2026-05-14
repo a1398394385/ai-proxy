@@ -13,6 +13,7 @@
 import io
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -675,3 +676,161 @@ class TestConvertOutputConsistency(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAgentRouting(unittest.TestCase):
+    def setUp(self):
+        from proxy.config_manager import ConfigDB, ConfigCache
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "test.db"
+        self.db = ConfigDB(self.db_path)
+        self.cache = ConfigCache(self.db_path)
+        # 创建上游 + 模型
+        self.upstream_id = self.db.add_upstream({
+            "name": "main-upstream", "base_url": "http://main:8000",
+            "api_key": "sk-main", "format": "chat_completions"
+        })
+        self.main_model_id = self.db.add_model({
+            "name": "main-target", "upstream_id": self.upstream_id
+        })
+        self.db.add_route({
+            "source": "claude-sonnet-4-6", "target_model_id": self.main_model_id,
+            "request_type": "chat_completions"
+        })
+
+    def tearDown(self):
+        self.db.close()
+        self.tmp.cleanup()
+
+    def test_agent_route_overrides_main(self):
+        # 创建 agent 专用上游 + 模型
+        agent_up_id = self.db.add_upstream({
+            "name": "agent-upstream", "base_url": "http://agent:8001",
+            "api_key": "sk-agent", "format": "chat_completions"
+        })
+        agent_model_id = self.db.add_model({
+            "name": "agent-target", "upstream_id": agent_up_id
+        })
+        self.db.add_agent_route({
+            "source": "claude-sonnet-4-6", "target_model_id": agent_model_id,
+            "request_type": "chat_completions"
+        })
+        self.cache.reload()
+        # agent 路由命中
+        result = self.cache.resolve_agent("claude-sonnet-4-6", "chat_completions")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["target_name"], "agent-target")
+        # 主路由不受影响
+        main_result = self.cache.resolve("claude-sonnet-4-6", "chat_completions")
+        self.assertIsNotNone(main_result)
+        self.assertEqual(main_result["target_name"], "main-target")
+
+    def test_agent_route_fallback_to_main_when_not_found(self):
+        self.cache.reload()
+        # agent 路由无匹配 → 应返回 None，调用方回退主路由
+        result = self.cache.resolve_agent("nonexistent-model", "chat_completions")
+        self.assertIsNone(result)
+
+    def test_agent_route_inactive_upstream_returns_none(self):
+        agent_up_id = self.db.add_upstream({
+            "name": "dead-upstream", "base_url": "http://dead:8002",
+            "api_key": "sk-dead", "format": "chat_completions"
+        })
+        agent_model_id = self.db.add_model({
+            "name": "dead-target", "upstream_id": agent_up_id
+        })
+        self.db.add_agent_route({
+            "source": "claude-sonnet-4-6", "target_model_id": agent_model_id,
+            "request_type": "chat_completions"
+        })
+        self.db.update_upstream(agent_up_id, {"is_active": 0})
+        self.cache.reload()
+        result = self.cache.resolve_agent("claude-sonnet-4-6", "chat_completions")
+        self.assertIsNone(result)
+
+    def test_detect_subagent_with_marker(self):
+        from proxy.agent_detector import detect_subagent
+        body = {"messages": [{"role": "user", "content": "__SUBAGENT_MARKER__ test"}]}
+        self.assertTrue(detect_subagent(body))
+
+    def test_detect_subagent_normal_request(self):
+        from proxy.agent_detector import detect_subagent
+        body = {"messages": [{"role": "user", "content": "normal request"}]}
+        self.assertFalse(detect_subagent(body))
+
+    def test_handler_agent_detection_with_route_override(self):
+        """验证完整的 agent 检测 → 路由覆盖流程（不启动 HTTP 服务，仅测试逻辑）。"""
+        from proxy.agent_detector import detect_subagent
+        # 场景：子 agent 请求有 agent 路由 → resolve_agent 命中
+        agent_up_id = self.db.add_upstream({
+            "name": "agent-only", "base_url": "http://agent-only:8003",
+            "api_key": "sk-agent-only", "format": "chat_completions"
+        })
+        agent_model_id = self.db.add_model({
+            "name": "cheap-model", "upstream_id": agent_up_id
+        })
+        self.db.add_agent_route({
+            "source": "claude-sonnet-4-6", "target_model_id": agent_model_id,
+            "request_type": "chat_completions"
+        })
+        self.cache.reload()
+
+        # 模拟 handler 逻辑：检测 → 选择路由
+        body = {"messages": [{"role": "user", "content": '{"__SUBAGENT_MARKER__": {}}'}]}
+        is_agent = detect_subagent(body)
+        self.assertTrue(is_agent)
+
+        raw_cfg = None
+        if is_agent:
+            raw_cfg = self.cache.resolve_agent("claude-sonnet-4-6", "chat_completions")
+        if raw_cfg is None:
+            raw_cfg = self.cache.resolve("claude-sonnet-4-6", "chat_completions")
+        self.assertIsNotNone(raw_cfg)
+        self.assertEqual(raw_cfg["target_name"], "cheap-model")
+
+    def test_handler_normal_request_ignores_agent_route(self):
+        """验证普通请求不查 agent_routes，直接走主路由。"""
+        from proxy.agent_detector import detect_subagent
+        agent_up_id = self.db.add_upstream({
+            "name": "agent-only", "base_url": "http://agent-only:8003",
+            "api_key": "sk-agent-only", "format": "chat_completions"
+        })
+        agent_model_id = self.db.add_model({
+            "name": "cheap-model", "upstream_id": agent_up_id
+        })
+        self.db.add_agent_route({
+            "source": "claude-sonnet-4-6", "target_model_id": agent_model_id,
+            "request_type": "chat_completions"
+        })
+        self.cache.reload()
+
+        # 普通请求
+        body = {"messages": [{"role": "user", "content": "hello"}]}
+        is_agent = detect_subagent(body)
+        self.assertFalse(is_agent)
+
+        raw_cfg = None
+        if is_agent:
+            raw_cfg = self.cache.resolve_agent("claude-sonnet-4-6", "chat_completions")
+        if raw_cfg is None:
+            raw_cfg = self.cache.resolve("claude-sonnet-4-6", "chat_completions")
+        self.assertIsNotNone(raw_cfg)
+        self.assertEqual(raw_cfg["target_name"], "main-target")
+
+    def test_handler_agent_fallback_to_main(self):
+        """验证子 agent 请求无 agent 路由时回退主路由。"""
+        from proxy.agent_detector import detect_subagent
+        self.cache.reload()
+
+        body = {"messages": [{"role": "user", "content": '{"__SUBAGENT_MARKER__": {}}'}]}
+        is_agent = detect_subagent(body)
+        self.assertTrue(is_agent)
+
+        # 无 agent 路由 → resolve_agent 返回 None → 回退主路由
+        raw_cfg = None
+        if is_agent:
+            raw_cfg = self.cache.resolve_agent("claude-sonnet-4-6", "chat_completions")
+        if raw_cfg is None:
+            raw_cfg = self.cache.resolve("claude-sonnet-4-6", "chat_completions")
+        self.assertIsNotNone(raw_cfg)
+        self.assertEqual(raw_cfg["target_name"], "main-target")
