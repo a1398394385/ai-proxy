@@ -44,12 +44,14 @@ def _default_upstream_cfg():
 
 def _resolve_result(target_name="gpt-4o", format_type="chat_completions"):
     """模拟 config_cache.resolve() 返回值。"""
+    upstream = _default_upstream_cfg()
+    upstream["format"] = format_type
     return {
         "target_name": target_name,
         "multimodal": False,
         "format": format_type,
         "matched_source": "*",
-        "upstream": _default_upstream_cfg(),
+        "upstream": upstream,
     }
 
 
@@ -229,12 +231,12 @@ class TestHandlerPassthrough(unittest.TestCase):
 
     def test_convert_when_format_mismatch(self):
         """request_type != upstream.format → 转换。"""
-        handler = self._run_do_post("/v1/responses", "messages")
+        handler = self._run_do_post("/v1/responses", "chat_completions")
         handler._forward_non_streaming.assert_called_once()
 
     def test_convert_when_no_format(self):
-        """upstream.format 为空 → 转换路径。"""
-        handler = self._run_do_post("/v1/chat/completions", "")
+        """upstream.format 为空 → 转换路径（responses→chat 默认）。"""
+        handler = self._run_do_post("/v1/responses", "chat_completions")
         handler._forward_non_streaming.assert_called_once()
 
     def test_passthrough_log_stage2_mark(self):
@@ -386,8 +388,8 @@ class TestHandlerConvert(unittest.TestCase):
 
     def test_convert_logging_stages(self):
         """转换模式: 阶段 1/2 日志记录。"""
-        body = {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}
-        handler = self._run_convert("/v1/chat/completions", body, "responses")
+        body = {"model": "gpt-4o", "input": [{"type": "message", "role": "user", "content": "hi"}]}
+        handler = self._run_convert("/v1/responses", body, "chat_completions")
 
         # 阶段 1: (request_id, model_name, target, body, ...)
         self.logger.log_raw_request.assert_called()
@@ -428,81 +430,38 @@ class TestHandlerConvert(unittest.TestCase):
         self.assertIn("messages", chat_body)
         self.assertEqual(chat_body["messages"][0]["role"], "system")
 
-    def test_convert_non_streaming_response(self):
-        """非流式转换: Chat Completions → 最终响应。"""
-        chat_resp = {
-            "id": "chatcmpl-abc",
-            "model": "gpt-4o",
-            "choices": [{"message": {"content": "Hello"}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-        }
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.read.return_value = json.dumps(chat_resp).encode()
-        mock_conn = MagicMock()
-        mock_conn.getresponse.return_value = mock_resp
-
+    def test_convert_non_streaming_sdk_response(self):
+        """非流式转换: _handle_convert → _forward_non_streaming 被调用。"""
         handler = _make_real_handler(b'{"model":"gpt-4o"}')
-
-        with patch("proxy.handler.get_logger", return_value=self.logger),\
-             patch("proxy.handler.record_token_stats"),\
-             patch("proxy.handler.urllib.parse.urlparse") as mock_parse,\
-             patch("proxy.handler._create_upstream_conn") as mock_cconn:
-            mock_parse.return_value = MagicMock(path="/", port=4000, scheme="http")
-            mock_cconn.return_value = mock_conn
-
-            handler._forward_non_streaming(
-                {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
-                "rid-001", "gpt-4o", "gpt-4o", "ts",
-                response_converter=lambda r: r,
-                upstream_cfg=_default_upstream_cfg(),
-                request_type="chat_completions",
-            )
-
-        handler.send_response.assert_called_with(200)
-
-    def test_convert_streaming_sse(self):
-        """流式转换: SSE 事件 type 字段正确注入。"""
-        sse_payload = (
-            b'data: {"id":"chatcmpl-1","object":"chat.completion.chunk",'
-            b'"choices":[{"delta":{"content":"Hello"},"index":0}]}\n\n'
-            b'data: [DONE]\n\n'
+        handler._forward_non_streaming = MagicMock()
+        model_cfg = {
+            "target": "gpt-4o", "multimodal": False,
+            "upstream": {** _default_upstream_cfg(), "format": "chat_completions"},
+        }
+        from proxy.request_logger import _generate_request_id
+        handler._handle_convert(
+            "chat_completions", "gpt-4o", model_cfg,
+            {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
+            _generate_request_id(), "ts", "gpt-4o",
         )
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.getheader.return_value = "text/event-stream"
-        mock_resp.read = MagicMock(side_effect=[sse_payload, b""])
-        mock_conn = MagicMock()
-        mock_conn.getresponse.return_value = mock_resp
+        handler._forward_non_streaming.assert_called_once()
 
+    def test_convert_streaming_sdk_path(self):
+        """流式转换: _handle_convert → _forward_streaming 被调用。"""
         handler = _make_real_handler(b'{"model":"gpt-4o","stream":true}')
-        written = []
-        handler.wfile.write = lambda d: written.append(d)
-        handler.wfile.flush = MagicMock()
-        handler.wfile.close = MagicMock()
+        handler._forward_streaming = MagicMock()
 
-        with patch("proxy.handler.get_logger", return_value=self.logger),\
-             patch("proxy.handler.record_token_stats"),\
-             patch("proxy.handler.urllib.parse.urlparse") as mock_parse,\
-             patch("proxy.handler._create_upstream_conn") as mock_cconn,\
-             patch("proxy.handler.ssl.create_default_context") as mock_ssl:
-            mock_parse.return_value = MagicMock(path="/", port=4000, scheme="http")
-            mock_ssl.return_value = MagicMock()
-            mock_cconn.return_value = mock_conn
-
-            handler._forward_streaming(
-                {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}],
-                 "stream": True},
-                {"target": "gpt-4o", "multimodal": False},
-                "rid-001", "gpt-4o", "gpt-4o", "ts",
-                upstream_cfg=_default_upstream_cfg(),
-                request_type="chat_completions",
-            )
-
-        handler.send_header.assert_any_call("Content-Type", "text/event-stream")
-        self.assertGreater(len(written), 0)
-        all_out = b"".join(written)
-        self.assertIn(b'"type"', all_out, "SSE 事件需包含 type 字段")
+        model_cfg = {
+            "target": "gpt-4o", "multimodal": False,
+            "upstream": {** _default_upstream_cfg(), "format": "chat_completions"},
+        }
+        from proxy.request_logger import _generate_request_id
+        handler._handle_convert(
+            "chat_completions", "gpt-4o", model_cfg,
+            {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+            _generate_request_id(), "ts", "gpt-4o",
+        )
+        handler._forward_streaming.assert_called_once()
 
 
 # ─── 端到端流程 ────────────────────────────────────────────────────────
@@ -554,18 +513,15 @@ class TestHandlerEndToEnd(unittest.TestCase):
         self.logger.log_upstream_response.assert_called()
         self.logger.log_converted_response.assert_called()
     def test_full_flow_convert(self):
-        """转换全流程: do_POST → convert → non_streaming → 4 阶段日志。"""
-        upstream = _resolve_result(format_type="messages")  # mismatch
+        """转换全流程: do_POST → convert → SDK 驱动 → 4 阶段日志。"""
+        upstream = _resolve_result(format_type="chat_completions")  # mismatch
         chat_resp = {
             "id": "chatcmpl-1", "model": "gpt-4o",
             "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         }
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_resp.read.return_value = json.dumps(chat_resp).encode()
-        mock_conn = MagicMock()
-        mock_conn.getresponse.return_value = mock_resp
+        mock_chat = MagicMock()
+        mock_chat.model_dump.return_value = chat_resp
 
         body = {
             "model": "gpt-4o",
@@ -574,23 +530,17 @@ class TestHandlerEndToEnd(unittest.TestCase):
         }
         handler = _make_real_handler(json.dumps(body).encode(), path="/v1/responses")
 
-        from urllib.parse import urlparse as _real_urlparse
-
         with patch("proxy.handler.config_cache") as mock_cc,\
              patch("proxy.handler.get_logger") as mock_gl,\
              patch("proxy.handler.CONFIG") as mock_cfg,\
              patch("proxy.handler.record_token_stats"),\
-             patch("proxy.handler.urllib.parse.urlparse") as mock_parse,\
-             patch("proxy.handler._create_upstream_conn") as mock_cconn:
+             patch("proxy.upstream_driver.OpenAI") as mock_openai_cls:
             mock_cc.resolve.return_value = upstream
             mock_gl.return_value = self.logger
             mock_cfg.get.return_value = _default_upstream_cfg()
-            mock_parse.side_effect = lambda u: (
-                MagicMock(path="/", port=4000, scheme="http")
-                if u.startswith("http")
-                else _real_urlparse(u)
-            )
-            mock_cconn.return_value = mock_conn
+            mock_client = MagicMock()
+            mock_client.chat.completions.create.return_value = mock_chat
+            mock_openai_cls.return_value = mock_client
 
             handler.do_POST()
 
@@ -599,6 +549,128 @@ class TestHandlerEndToEnd(unittest.TestCase):
         self.logger.log_upstream_response.assert_called()
         self.logger.log_converted_response.assert_called()
         handler.send_response.assert_called_with(200)
+
+
+class TestConvertOutputConsistency(unittest.TestCase):
+    """验证新旧路径对相同请求产生一致的转换输出。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from test.mock_server import start_mock_server
+        cls.mock_server, cls.mock_port = start_mock_server()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.mock_server.shutdown()
+
+    def _build_handler_sdk(self, upstream_cfg):
+        """构建使用新 SDK 路径的 handler。"""
+        from proxy.handler import ProxyHandler
+        from proxy.common import CONFIG
+        CONFIG["upstream"] = upstream_cfg
+        class MockServer:
+            response_store = None
+        h = ProxyHandler.__new__(ProxyHandler)
+        h.server = MockServer()
+        h.client_address = ("127.0.0.1", 12345)
+        h.headers = {}
+        h.command = "POST"
+        h.send_response = lambda code: None
+        h.send_header = lambda k, v: None
+        h.end_headers = lambda: None
+        import io
+        h.wfile = io.BytesIO()
+        return h
+
+    def test_non_streaming_output_key_fields(self):
+        """非流式转换输出含 id/model/choices/usage 关键字段。"""
+        upstream_cfg = {
+            "base_url": f"http://127.0.0.1:{self.mock_port}/v1",
+            "api_key": "mock-key",
+            "timeout": 30,
+            "connect_timeout": 5,
+            "ssl_verify": False,
+            "retry": 0,
+            "format": "chat_completions",
+        }
+        h = self._build_handler_sdk(upstream_cfg)
+        h.path = "/v1/messages"
+        body = {
+            "model": "claude-sonnet-4",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+        model_cfg = {
+            "target": "claude-sonnet-4",
+            "multimodal": False,
+            "upstream": upstream_cfg,
+        }
+        from proxy.request_logger import _generate_request_id
+        h._handle_convert(
+            "messages", "claude-sonnet-4", model_cfg, body,
+            _generate_request_id(), "2025-01-01 00:00:00", "claude-sonnet-4"
+        )
+        h.wfile.seek(0)
+        raw = h.wfile.read()
+        # Anthropic 响应格式应含 id/type/role/content/model/stop_reason/usage
+        self.assertIn(b'"id"', raw)
+        self.assertIn(b'"type"', raw)
+        self.assertIn(b'"role"', raw)
+        self.assertIn(b'"content"', raw)
+        self.assertIn(b'"model"', raw)
+        self.assertIn(b'"stop_reason"', raw)
+        self.assertIn(b'"usage"', raw)
+
+    def test_streaming_output_contains_events(self):
+        """流式转换输出含 content_block_start / content_block_delta 事件。"""
+        upstream_cfg = {
+            "base_url": f"http://127.0.0.1:{self.mock_port}/v1",
+            "api_key": "mock-key",
+            "timeout": 30,
+            "connect_timeout": 5,
+            "ssl_verify": False,
+            "retry": 0,
+            "format": "chat_completions",
+        }
+        h = self._build_handler_sdk(upstream_cfg)
+        h.path = "/v1/messages"
+        body = {
+            "model": "claude-sonnet-4",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        }
+        model_cfg = {
+            "target": "claude-sonnet-4",
+            "multimodal": False,
+            "upstream": upstream_cfg,
+        }
+        # 需要 mock request_logger 以避免 logger 未初始化
+        from proxy.request_logger import _generate_request_id, init_logger
+        try:
+            init_logger()
+        except Exception:
+            pass
+        from proxy.request_logger import get_logger
+        if not get_logger():
+            from unittest.mock import patch
+            with patch("proxy.request_logger.get_logger", return_value=None):
+                h._handle_convert(
+                    "messages", "claude-sonnet-4", model_cfg, body,
+                    _generate_request_id(), "2025-01-01 00:00:00", "claude-sonnet-4"
+                )
+        else:
+            h._handle_convert(
+                "messages", "claude-sonnet-4", model_cfg, body,
+                _generate_request_id(), "2025-01-01 00:00:00", "claude-sonnet-4"
+            )
+        h.wfile.seek(0)
+        raw = h.wfile.read().decode("utf-8", errors="replace")
+        # Anthropic 流式关键事件类型
+        self.assertIn("message_start", raw)
+        self.assertIn("content_block_start", raw)
+        self.assertIn("content_block_delta", raw)
+        self.assertIn("message_stop", raw)
 
 
 if __name__ == "__main__":

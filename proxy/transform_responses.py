@@ -90,10 +90,14 @@ def responses_to_chat(body: dict, model_cfg: dict) -> dict:
         if key in body:
             chat[key] = body[key]
 
-    # reasoning.effort 透传
+    # reasoning.effort → reasoning_effort
+    # Responses API: {"reasoning": {"effort": "xhigh"}}
+    # Chat Completions API: "reasoning_effort": "xhigh"
     reasoning = body.get("reasoning", {})
-    if reasoning and "effort" in reasoning:
-        chat["reasoning"] = {"effort": reasoning["effort"]}
+    if isinstance(reasoning, dict):
+        effort = reasoning.get("effort")
+        if effort in ("xhigh", "high", "medium", "low"):
+            chat["reasoning_effort"] = effort
 
     # 结构化输出映射
     text_format = body.get("text", {}).get("format")
@@ -297,22 +301,66 @@ def _map_tools(tools: list) -> list:
     Chat Completions: {"type":"function", "function": {"name":"...", "parameters":{...}, ...}}
 
     已有 "function" 键的工具保持不变（幂等）。
-    非 "function" 类型的工具（custom、web_search 等）Chat Completions 不支持，丢弃并记录警告。
+    非 "function" 类型的工具（custom、web_search 等）降级为 function 格式：
+    优先提取已有 schema，没有则兜底为 {"input": "string"} 参数。
     """
     result = []
     for tool in tools:
-        if tool.get("type") != "function":
-            logger.warning(f"[transform] 丢弃不支持的 tool 类型: {tool.get('type')} ({tool.get('name', '?')})")
+        tool_type = tool.get("type", "function")
+        tool_name = tool.get("name", "")
+        if not tool_name and isinstance(tool.get("function"), dict):
+            tool_name = tool["function"].get("name", "")
+
+        if not tool_name:
+            logger.warning(f"[transform] 跳过 name 为空的 tool: {tool}")
             continue
-        if "function" in tool:
-            result.append(tool)
+
+        if tool_type == "function":
+            if "function" in tool:
+                result.append(tool)
+            else:
+                func = {}
+                for key in ("name", "description", "parameters", "strict"):
+                    if key in tool:
+                        func[key] = tool[key]
+                result.append({"type": "function", "function": func})
         else:
-            func = {}
-            for key in ("name", "description", "parameters", "strict"):
-                if key in tool:
-                    func[key] = tool[key]
-            result.append({"type": "function", "function": func})
+            # 非标准 tool 降级为 function 格式
+            logger.info(f"[transform] 非标准 tool 降级为 function: type={tool_type}, name={tool_name}")
+            params = _extract_freeform_tool_params(tool)
+            desc = tool.get("description", "")
+            if desc:
+                desc = f"{desc}\n[原始工具类型: {tool_type}]"
+            result.append({
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "description": desc,
+                    "parameters": params,
+                },
+            })
     return result
+
+
+def _extract_freeform_tool_params(tool: dict) -> dict:
+    """从非标准 tool 中提取 parameters schema，无 schema 则兜底为 input 字符串参数。
+
+    优先级：input_schema → schema → parameters → 兜底 input 字符串。
+    """
+    for key in ("input_schema", "schema", "parameters"):
+        schema = tool.get(key)
+        if isinstance(schema, dict) and schema:
+            return schema
+    return {
+        "type": "object",
+        "properties": {
+            "input": {
+                "type": "string",
+                "description": "工具输入内容（原始文本）",
+            },
+        },
+        "required": ["input"],
+    }
 
 
 def _map_response_format(text_format: dict) -> dict:
@@ -920,42 +968,63 @@ class CodexStreamConverter:
 StreamState = CodexStreamConverter
 
 
-def create_codex_sse_stream(upstream_response, request_messages: list = None, response_store=None):
-    """读取上游 SSE 流，逐事件 yield Responses API 格式的 SSE 字符串。
+def create_codex_sse_stream(chunks_or_response, *, request_messages=None, response_store=None):
+    """读取上游 SSE 流（file-like 或 SDK Iterable），生成 Responses API 格式的 SSE 事件。
 
-    request_messages: chat_body["messages"]，用于构建完整 conversation（Phase 2 新增）
-    response_store: ResponseStore 实例；非 None 时在 finish() 后存储 response（Phase 2 新增）
+    chunks_or_response:
+        - file-like 对象（有 read 方法）→ 兼容旧路径（透传/过渡期）
+        - Iterable[dict|ChatCompletionChunk] → 新路径（openai SDK 流）
+    request_messages: chat_body["messages"]，用于构建 conversation
+    response_store: ResponseStore 实例；非 None 时在 finish() 后存储 response
     """
     converter = CodexStreamConverter()
     converter.response_id = generate_response_id()
 
-    for event in iter_sse_events(upstream_response):
-        if event["event"] == "[DONE]":
+    # 兼容适配：检测输入类型
+    if hasattr(chunks_or_response, 'read'):
+        # 旧路径：file-like 对象
+        chunks_iter = iter_sse_events(chunks_or_response)
+        # iter_sse_events 返回 (event_type, data) 的 dict，需要提取 data
+        chunks_iter = (e.get("data") or {} for e in chunks_iter if e.get("data"))
+    else:
+        # 新路径：SDK 流式迭代器
+        def _to_dict(chunk):
+            if hasattr(chunk, 'model_dump'):
+                return chunk.model_dump()
+            return chunk
+        chunks_iter = (_to_dict(c) for c in chunks_or_response)
+
+    for data_dict in chunks_iter:
+        if isinstance(data_dict, str) and data_dict == "[DONE]":
             break
-        data = event.get("data")
-        if not data:
-            continue
-        for sse_str in converter.process_chunk(data):
+        if isinstance(data_dict, str):
+            # "data:" 前缀后的 JSON 字符串
+            try:
+                data_dict = json.loads(data_dict)
+            except json.JSONDecodeError:
+                continue
+        for sse_str in converter.process_chunk(data_dict):
             yield sse_str
 
     for sse_str in converter.finish():
         yield sse_str
 
-    # finish() 返回后 output_items 已按 output_index 排序为 (index, item) 元组
+    # finish() 返回后：存储 response
     if response_store is not None:
         from .response_store import ResponseRecord
         output_list = [item for _, item in converter.output_items]
+        # output_items_to_messages 在同文件的 module 层级已导入，直接调用
         assistant_msgs = output_items_to_messages(output_list)
-        conversation = [
+        messages_for_conv = [
             m for m in (request_messages or []) if m.get("role") != "system"
         ] + assistant_msgs
         usage = converter._convert_usage(converter.final_usage) if converter.final_usage is not None else None
         status = "incomplete" if converter.finish_reason in ("length", "content_filter") else "completed"
         record = ResponseRecord(
             response_id=converter.response_id,
-            model=converter.model,
+            model=converter.model or "",
             output=output_list,
-            conversation=conversation,
+            conversation=messages_for_conv,
             usage=usage,
             status=status,
             created_at=time.time(),

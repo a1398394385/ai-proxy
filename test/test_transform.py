@@ -681,8 +681,8 @@ class TestAdvancedFeatures(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["function"]["name"], "bash")
 
-    def test_map_tools_drops_custom_type(self):
-        """验证 _map_tools 丢弃非 function 类型的工具（如 Codex 的 custom apply_patch）。"""
+    def test_map_tools_downgrades_custom_type(self):
+        """非 function 类型工具降级为 function 格式，不丢弃。"""
         from proxy.transform import _map_tools
         tools = [
             {
@@ -697,10 +697,20 @@ class TestAdvancedFeatures(unittest.TestCase):
             },
         ]
         result = _map_tools(tools)
-        self.assertEqual(len(result), 1, "应该只保留 function 类型工具")
-        self.assertEqual(result[0]["function"]["name"], "bash")
+        self.assertEqual(len(result), 2, "custom 工具应降级保留而非丢弃")
+        # apply_patch 降级为 function
+        downgraded = [t for t in result if t["function"]["name"] == "apply_patch"]
+        self.assertEqual(len(downgraded), 1)
+        self.assertIn("input", downgraded[0]["function"]["parameters"]["properties"],
+            "无 schema 的 custom 工具应兜底为 input 字符串参数")
+        # 原始类型标注
+        self.assertIn("原始工具类型: custom", downgraded[0]["function"]["description"])
+        # bash 保持原样
+        bash = [t for t in result if t["function"]["name"] == "bash"]
+        self.assertEqual(len(bash), 1)
 
-    def test_reasoning_effort_passthrough(self):
+    def test_reasoning_effort_mapping(self):
+        """reasoning.effort → reasoning_effort: Responses API 到 Chat Completions 的正确映射。"""
         from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
@@ -709,7 +719,10 @@ class TestAdvancedFeatures(unittest.TestCase):
         }
         model_cfg = {"target": "claude-sonnet-4-6", "multimodal": False}
         result = responses_to_chat(body, model_cfg)
-        self.assertEqual(result["reasoning"]["effort"], "high")
+        self.assertEqual(result["reasoning_effort"], "high",
+            "reasoning.effort 应映射为 reasoning_effort")
+        self.assertNotIn("reasoning", result,
+            "reasoning 对象不应透传，Chat Completions API 不接受")
 
     def test_discarded_fields(self):
         """验证 previous_response_id, include, store, client_metadata, service_tier 全部丢弃。"""
@@ -1633,35 +1646,27 @@ class TestOutputItemsToMessages(unittest.TestCase):
 
 
 class TestProxyErrorPathsDone(unittest.TestCase):
-    """验证三处错误路径各包含 data: [DONE]。"""
+    """验证 SDK 驱动路径的错误处理包含 data: [DONE]。"""
 
     @staticmethod
     def _read_forward_streaming_source():
         import pathlib
         return (pathlib.Path(__file__).parent.parent / "proxy" / "handler.py").read_text()
 
-    def test_non_200_error_path_has_done(self):
-        """上游非 200 错误路径在 completed 后补发 [DONE]。"""
+    def test_stream_exception_path_has_done(self):
+        """流式转换异常路径补发 [DONE]。"""
         src = self._read_forward_streaming_source()
-        # 找到非 200 分支代码段（"Upstream returned HTTP {resp.status}"附近）
-        idx = src.index("Upstream returned HTTP")
-        segment = src[idx:idx+1500]
-        self.assertIn("[DONE]", segment,
-            "非 200 错误路径缺少 data: [DONE] 终止标记")
-
-    def test_non_sse_content_type_error_path_has_done(self):
-        src = self._read_forward_streaming_source()
-        idx = src.index("non-SSE Content-Type")
-        segment = src[idx:idx+1500]
-        self.assertIn("[DONE]", segment,
-            "非 SSE Content-Type 错误路径缺少 data: [DONE]")
-
-    def test_exception_error_path_has_done(self):
-        src = self._read_forward_streaming_source()
-        idx = src.index("流式转发异常")
+        idx = src.index("流式转换异常")
         segment = src[idx:idx+2000]
         self.assertIn("[DONE]", segment,
-            "流式转发异常路径缺少 data: [DONE]")
+            "流式转换异常路径缺少 data: [DONE]")
+
+    def test_sdk_error_path_calls_handle_sdk_error(self):
+        """SDK 调用异常由 _handle_sdk_error 处理。"""
+        src = self._read_forward_streaming_source()
+        idx = src.index("stream = driver.create_stream")
+        segment = src[idx:idx+700]
+        self.assertIn("_handle_sdk_error", segment)
 
     def test_iter_sse_buffer_size(self):
         """iter_sse_events 读缓冲区应为 4096 字节。"""
