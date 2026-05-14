@@ -2034,27 +2034,31 @@ class TestToolBlockState(unittest.TestCase):
 class TestFixToolMessageOrder(unittest.TestCase):
     """验证 _fix_tool_message_order：assistant 纯文本消息不能夹在 tool_call/tool 对之间。"""
 
-    def test_text_between_tool_pairs_deferred(self):
+    def test_text_between_tool_pairs_merged(self):
         from proxy.transform_responses import _fix_tool_message_order
         # 模拟问题场景：assistant+tool_calls → tool → assistant(纯文本) → assistant+tool_calls → tool
+        # 连续的 assistant 消息应合并，而非推迟到末尾
         messages = [
             {"role": "assistant", "tool_calls": [{"id": "call_00", "type": "function"}]},
             {"role": "tool", "tool_call_id": "call_00"},
-            {"role": "assistant", "content": "让我先核实设计"},  # 违规消息
+            {"role": "assistant", "content": "让我先核实设计"},  # 连续 assistant
             {"role": "assistant", "tool_calls": [{"id": "call_01", "type": "function"}]},
             {"role": "tool", "tool_call_id": "call_01"},
         ]
         result = _fix_tool_message_order(messages)
         roles = [(m["role"], bool(m.get("tool_calls"))) for m in result]
-        # assistant(纯文本) 应该被推迟到最后
+        # assistant(纯文本) 合并到下一条 assistant+tool_calls
         expected_roles = [
             ("assistant", True),
             ("tool", False),
-            ("assistant", True),
+            ("assistant", True),  # content + tool_calls 合并
             ("tool", False),
-            ("assistant", False),  # 推迟到最后
         ]
         self.assertEqual(roles, expected_roles)
+        # 验证合并后的消息同时包含 content 和 tool_calls
+        merged_msg = result[2]
+        self.assertEqual(merged_msg["content"], "让我先核实设计")
+        self.assertEqual(len(merged_msg["tool_calls"]), 1)
 
     def test_no_tool_calls_unchanged(self):
         from proxy.transform_responses import _fix_tool_message_order
@@ -2085,7 +2089,7 @@ class TestFixToolMessageOrder(unittest.TestCase):
             {"role": "user", "content": "..."},
             {"role": "assistant", "tool_calls": [{"id": "call_00_7aXx", "type": "function"}]},
             {"role": "tool", "tool_call_id": "call_00_7aXx"},
-            {"role": "assistant", "content": "让我先核实设计中的现有代码"},  # 违规
+            {"role": "assistant", "content": "让我先核实设计中的现有代码"},
             {"role": "assistant", "tool_calls": [{"id": "call_00_nqkw", "type": "function"}]},
             {"role": "assistant", "tool_calls": [{"id": "call_01_dvAq", "type": "function"}]},
             {"role": "assistant", "tool_calls": [{"id": "call_02_Qvae", "type": "function"}]},
@@ -2095,7 +2099,7 @@ class TestFixToolMessageOrder(unittest.TestCase):
         ]
         result = _fix_tool_message_order(messages)
 
-        # 验证：所有 tool_call 都有对应的 tool 响应，且纯文本消息在最后
+        # 验证：所有 tool_call 都有对应的 tool 响应
         all_tc_ids = set()
         all_tool_call_ids = set()
         for m in result:
@@ -2106,17 +2110,13 @@ class TestFixToolMessageOrder(unittest.TestCase):
                 all_tool_call_ids.add(m.get("tool_call_id"))
         self.assertEqual(all_tc_ids, all_tool_call_ids)
 
-        # 验证连续的 assistant+tool_calls 被合并为单条
+        # 验证连续的 assistant+tool_calls 被合并，且 assistant(text) 合并到下一条
         merged_tool_call_msgs = [m for m in result if m.get("role") == "assistant" and m.get("tool_calls")]
-        self.assertEqual(len(merged_tool_call_msgs), 2)  # 第一个单独的 + 合并后的
-        self.assertEqual(len(merged_tool_call_msgs[1]["tool_calls"]), 3)  # 3个合并为1条
+        self.assertEqual(len(merged_tool_call_msgs), 2)
+        self.assertEqual(len(merged_tool_call_msgs[1]["tool_calls"]), 3)
 
-        # 验证文本消息被推迟到最后
-        text_msg = [m for m in result if m.get("content") == "让我先核实设计中的现有代码"]
-        self.assertEqual(len(text_msg), 1)
-        text_idx = result.index(text_msg[0])
-        last_tool_idx = max(i for i, m in enumerate(result) if m.get("role") == "tool")
-        self.assertTrue(text_idx > last_tool_idx)
+        # 验证文本消息被合并到第二条 assistant 消息中
+        self.assertEqual(merged_tool_call_msgs[1]["content"], "让我先核实设计中的现有代码")
 
     def test_user_between_tool_calls_and_tool(self):
         """复现 ce91a35cdad14ffa：Anthropic user 消息夹在 assistant+tool_calls 和 tool 之间。"""

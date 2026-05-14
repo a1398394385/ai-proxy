@@ -896,7 +896,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             )
             logger.log_converted_response(
                 request_id, model_name, target,
-                {"streaming": True, "note": "SDK 流式响应"},
+                {"streaming": True, "data": full_sse},
                 request_type=client_format,
             )
 

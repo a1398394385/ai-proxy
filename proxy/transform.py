@@ -42,4 +42,3 @@ from .transform_anthropic import anthropic_to_chat, chat_to_anthropic, create_an
 
 # SDK 驱动和转换路由（Task 2-3 新增）
 from .transform_router import TransformRouter  # noqa: F401
-from .upstream_driver import UpstreamDriver  # noqa: F401

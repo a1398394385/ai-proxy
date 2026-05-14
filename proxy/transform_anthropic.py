@@ -72,6 +72,10 @@ def anthropic_to_chat(body: dict, model_cfg: dict) -> dict:
     # 修复：Anthropic 允许 tool_result 在后续任意位置响应 tool_use，
     # 但 Chat Completions 要求 assistant+tool_calls 后必须紧跟 tool 消息。
     chat["messages"] = _fix_tool_message_order(chat["messages"])
+
+    # DeepSeek 等推理模型要求：同一会话中 assistant 消息的 reasoning_content 必须一致存在。
+    # 部分轮次可能因 SSE 流丢失 thinking 块，补空字符串保持一致。
+    _ensure_reasoning_consistency(chat["messages"])
     return chat
 
 
@@ -79,6 +83,19 @@ def _is_o_series(model: str) -> bool:
     """检测 o-series 模型（o + 数字开头），大小写不敏感。"""
     import re
     return bool(re.match(r'^o\d', model.lower()))
+
+
+def _ensure_reasoning_consistency(messages: list) -> None:
+    """确保 assistant 消息的 reasoning_content 一致：有则全有。"""
+    has_reasoning = any(
+        m.get("role") == "assistant" and "reasoning_content" in m
+        for m in messages
+    )
+    if not has_reasoning:
+        return
+    for m in messages:
+        if m.get("role") == "assistant" and "reasoning_content" not in m:
+            m["reasoning_content"] = ""
 
 
 def supports_reasoning_effort(model: str) -> bool:
@@ -93,71 +110,98 @@ def supports_reasoning_effort(model: str) -> bool:
 
 
 def _convert_message_to_chat(role: str, content) -> list:
-    """将单个 Anthropic 消息转换为 Chat messages（可能多条）。
+    """将单个 Anthropic 消息转换为 Chat Completions messages。
 
-    返回顺序：assistant/user 消息在前，tool 消息在后。
-    空 content list 时跳过（不产生空消息）。
+    Anthropic 消息模式：user → assistant → user → assistant → ...
+    其中 tool_result 被 Anthropic 包装在 user 角色中。
+
+    转换规则（三条路，互斥）：
+    1. 含 tool_result → tool 消息（Anthropic 用 user 包装 tool_result）
+    2. assistant + tool_use → assistant + tool_calls + reasoning_content
+    3. 其他 → 保持原 role 的普通消息
     """
     if isinstance(content, str):
         return [{"role": role, "content": content}]
-    if isinstance(content, list):
-        chat_content = []
-        tool_calls = []
-        tool_messages = []
-        for block in content:
-            block_type = block.get("type")
-            if block_type == "text":
-                text_item = {"type": "text", "text": block.get("text", "")}
-                if "cache_control" in block:
-                    text_item["cache_control"] = block["cache_control"]
-                chat_content.append(text_item)
-            elif block_type == "image":
-                source = block.get("source", {})
-                media_type = source.get("media_type", "image/png")
-                data = source.get("data", "")
-                chat_content.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{media_type};base64,{data}"},
-                })
-            elif block_type == "tool_use":
-                tool_calls.append({
-                    "id": block.get("id", ""),
-                    "type": "function",
-                    "function": {
-                        "name": block.get("name", ""),
-                        "arguments": json.dumps(block.get("input", {})),
-                    },
-                })
-            elif block_type == "tool_result":
-                tc = block.get("content") or ""
-                if isinstance(tc, list):
-                    # 如果数组含复杂对象，取第一个 text 块内容
-                    text_parts = [b.get("text", "") for b in tc if b.get("type") == "text"]
-                    if text_parts:
-                        tc = text_parts[0]
-                    else:
-                        tc = json.dumps(tc)
-                tool_messages.append({
-                    "role": "tool",
-                    "tool_call_id": block.get("tool_use_id", ""),
-                    "content": tc,
-                })
-            elif block_type in ("thinking", "redacted_thinking"):
-                pass  # 丢弃
-        # 空 content list 且无 tool_messages → 跳过（不产生空消息）
-        if not chat_content and not tool_calls and not tool_messages:
-            return []
-        result = []
-        if role == "assistant" and tool_calls:
-            msg: dict = {"role": "assistant", "tool_calls": tool_calls, "content": None}
-            if chat_content:
-                msg["content"] = chat_content
-            result.append(msg)
-        elif chat_content:
-            result.append({"role": role, "content": chat_content})
-        result.extend(tool_messages)
-        return result
-    return [{"role": role, "content": str(content)}]
+    if not isinstance(content, list):
+        return [{"role": role, "content": str(content)}]
+
+    text_parts = []
+    tool_calls = []
+    tool_results = []
+    reasoning_parts = []
+
+    for block in content:
+        block_type = block.get("type")
+        if block_type == "text":
+            item = {"type": "text", "text": block.get("text", "")}
+            if "cache_control" in block:
+                item["cache_control"] = block["cache_control"]
+            text_parts.append(item)
+        elif block_type == "image":
+            source = block.get("source", {})
+            media_type = source.get("media_type", "image/png")
+            data = source.get("data", "")
+            text_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{media_type};base64,{data}"},
+            })
+        elif block_type == "tool_use":
+            tool_calls.append({
+                "id": block.get("id", ""),
+                "type": "function",
+                "function": {
+                    "name": block.get("name", ""),
+                    "arguments": json.dumps(block.get("input", {})),
+                },
+            })
+        elif block_type == "tool_result":
+            tc = block.get("content") or ""
+            if isinstance(tc, list):
+                parts = [b.get("text", "") for b in tc if b.get("type") == "text"]
+                tc = parts[0] if parts else json.dumps(tc)
+            tool_results.append({
+                "role": "tool",
+                "tool_call_id": block.get("tool_use_id", ""),
+                "content": tc,
+            })
+        elif block_type == "thinking":
+            thinking = block.get("thinking", "")
+            if thinking:
+                reasoning_parts.append(thinking)
+
+    if not text_parts and not tool_calls and not tool_results and not reasoning_parts:
+        return []
+
+    # ① tool_result 优先：Anthropic 用 user 包装 tool_result → 转为 tool 消息
+    if tool_results:
+        # text 与 tool_result 同在时，text 是工具返回的附属内容，追加到最后一个 tool 消息
+        if text_parts:
+            extra = "\n".join(t.get("text", "") for t in text_parts if t.get("type") == "text")
+            if extra:
+                tool_results[-1]["content"] = (tool_results[-1].get("content") or "") + "\n" + extra
+        return tool_results
+
+    # ② assistant + tool_use → assistant + tool_calls
+    if role == "assistant" and tool_calls:
+        msg = {"role": "assistant", "tool_calls": tool_calls, "content": None}
+        if text_parts:
+            msg["content"] = text_parts
+        if reasoning_parts:
+            msg["reasoning_content"] = "".join(reasoning_parts)
+        return [msg]
+
+    # ③ 普通消息（user 文本/图片，assistant 纯文本）
+    if text_parts:
+        msg = {"role": role, "content": text_parts}
+        if role == "assistant" and reasoning_parts:
+            msg["reasoning_content"] = "".join(reasoning_parts)
+        return [msg]
+
+    # assistant 仅有 thinking（无 text 无 tool_use）
+    if role == "assistant" and reasoning_parts:
+        return [{"role": "assistant", "content": None, "reasoning_content": "".join(reasoning_parts)}]
+
+    return []
 
 
 def _map_tool_choice(tc) -> str | dict:

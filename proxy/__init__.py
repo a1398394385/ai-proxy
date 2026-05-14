@@ -48,4 +48,3 @@ from .agent_detector import detect_subagent  # noqa: F401
 from .handler import ProxyHandler  # noqa: F401
 
 from .transform_router import TransformRouter  # noqa: F401 — re-export
-from .upstream_driver import UpstreamDriver  # noqa: F401 — re-export — re-export

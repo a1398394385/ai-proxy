@@ -226,11 +226,12 @@ def _fix_tool_message_order(messages: list) -> list:
 
     但 Chat Completions 要求：
     (a) assistant+tool_calls 必须紧跟对应的 tool 消息，中间不能有其他消息
-    (b) 多条连续的 assistant+tool_calls 必须合并为单条消息
+    (b) 不允许连续的 assistant 消息
 
     策略：
-    1. 将夹在 tool_call ↔ tool 之间的 assistant 纯文本消息推迟到所有 tool 消息之后
+    1. 将夹在 assistant+tool_calls ↔ tool 之间的 user/system 消息推迟到 tool 消息之后
     2. 将连续的 assistant+tool_calls 合并为单条消息
+    3. 将连续的 assistant 消息合并（text+tool_calls 或 text+text）
     """
     result = []
     deferred = []
@@ -249,7 +250,6 @@ def _fix_tool_message_order(messages: list) -> list:
                 m = messages[i]
                 if m.get("role") == "assistant" and m.get("tool_calls"):
                     all_tool_calls.extend(m["tool_calls"])
-                    # 保留 reasoning_content（如果有的话）
                     if "reasoning_content" in m and merged_reasoning is None:
                         merged_reasoning = m["reasoning_content"]
                     i += 1
@@ -280,15 +280,6 @@ def _fix_tool_message_order(messages: list) -> list:
                     deferred.append(m)  # user/system 等消息推迟
                 i += 1
 
-            # 中间夹着的 assistant 纯文本消息推迟
-            while i < len(messages):
-                m = messages[i]
-                if m.get("role") == "assistant" and not m.get("tool_calls"):
-                    deferred.append(m)
-                    i += 1
-                else:
-                    break
-
             result.append(merged)
             result.extend(tool_msgs)
         else:
@@ -296,6 +287,51 @@ def _fix_tool_message_order(messages: list) -> list:
             i += 1
 
     result.extend(deferred)
+    return _merge_consecutive_assistants(result)
+
+
+def _merge_consecutive_assistants(messages: list) -> list:
+    """合并连续的 assistant 消息，确保 Chat Completions 格式合法。
+
+    处理场景：
+    - assistant(text) + assistant(tool_calls) → assistant(content + tool_calls)
+    - assistant(text) + assistant(text) → assistant(merged content)
+    - assistant(tool_calls) + assistant(text) → assistant(tool_calls + content)
+    """
+    result = []
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            result.append(msg)
+            continue
+        if result and result[-1].get("role") == "assistant":
+            prev = result[-1]
+            # 合并 content
+            curr_content = msg.get("content")
+            if curr_content is not None and curr_content != "":
+                prev_content = prev.get("content")
+                if prev_content is None or prev_content == "":
+                    prev["content"] = curr_content
+                elif isinstance(prev_content, str) and isinstance(curr_content, str):
+                    prev["content"] = prev_content + "\n" + curr_content
+                elif isinstance(prev_content, list) and isinstance(curr_content, list):
+                    prev["content"] = prev_content + curr_content
+                else:
+                    parts = []
+                    for c in (prev_content, curr_content):
+                        if isinstance(c, str):
+                            parts.append({"type": "text", "text": c})
+                        elif isinstance(c, list):
+                            parts.extend(c)
+                    prev["content"] = parts
+            # 合并 tool_calls
+            curr_tc = msg.get("tool_calls")
+            if curr_tc:
+                if prev.get("tool_calls"):
+                    prev["tool_calls"].extend(curr_tc)
+                else:
+                    prev["tool_calls"] = list(curr_tc)
+        else:
+            result.append(msg)
     return result
 
 
