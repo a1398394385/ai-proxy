@@ -75,7 +75,9 @@ path = 按路径映射表拼接
   duration_ms = 计算
   ↓
   resp.status >= 500 and attempt < retries - 1:
+    → logger.log_upstream_response(request_id, resp.status, resp_body, duration_ms, ...)
     → logging.warning + continue（立即重试，无 backoff）
+    注意：同一个 request_id 可能有多条 upstream_response 记录（每次重试都记一条）
   ↓
   resp.status != 200:
     → 转发错误响应 + 日志 + return
