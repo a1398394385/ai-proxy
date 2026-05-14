@@ -358,6 +358,10 @@ TransformRouter.convert_response(raw_response_dict, "messages", "responses")
 - SDK 异常 → `_handle_sdk_error` 保持不变 (isinstance 链映射 HTTP 状态码)
 - `close()` 确保连接在 finally 中释放
 
+## 线程安全
+
+Handler 每个请求实例化一个新的 `UpstreamDriver`（创建于 `_handle_convert` / `_forward_non_streaming` / `_forward_streaming` 中），方法返回前调用 `driver.close()` 释放。不存在跨请求共享 Driver 实例的场景，因此 `@property` 懒初始化中的 `_openai is None` 检查无线程竞争风险，无需加锁。
+
 ## 迁移步骤
 
 1. 创建 `proxy/adapters/` 目录 + `base.py`（ProtocolAdapter 抽象基类 + UnsupportedFormat 异常）
@@ -371,9 +375,10 @@ TransformRouter.convert_response(raw_response_dict, "messages", "responses")
 9. 更新 `proxy/transform.py` — 删除或极简 shim
 10. 新建 `test/test_adapters.py` — 覆盖 ResponsesAdapter、MessagesAdapter 的 request_to/response_from/stream_from
 11. 适配 `test/test_handler.py` — 新 Router 接口
-12. 删除 `test/test_transform.py`、`test/test_transform_anthropic.py`
-13. 删除 `proxy/transform_responses.py`、`proxy/transform_anthropic.py`
-14. 全量 `python3 -m pytest test/ -q` 通过后 commit
+12. **新旧并行验证**：`python3 -m pytest test/ -q` 全量通过，确保保持 531 tests（此时新旧代码共存）
+13. 删除 `test/test_transform.py`、`test/test_transform_anthropic.py`
+14. 删除 `proxy/transform_responses.py`、`proxy/transform_anthropic.py`
+15. **最终验证**：`python3 -m pytest test/ -q` 全量通过后 commit
 
 ## 测试
 
@@ -397,8 +402,13 @@ MessagesAdapter:
 
 ### 迁移的测试
 
-- `test_transform.py`（138 tests）→ `test_adapters.py` 中 ResponsesAdapter 测试
-- `test_transform_anthropic.py`（44 tests）→ `test_adapters.py` 中 MessagesAdapter 测试
+- `test_transform.py`（138 tests）→ `test_adapters.py` 中 ResponsesAdapter 测试，必须覆盖全部 138 个场景
+- `test_transform_anthropic.py`（44 tests）→ `test_adapters.py` 中 MessagesAdapter 测试，必须覆盖全部 44 个场景
+
+迁移验证标准:
+1. 新旧代码并行期运行 `python3 -m pytest test/ -q`，确认 test_adapters + 旧测试文件同时通过
+2. 删除旧文件后再次全量通过，确保测试总数持平（不丢失覆盖）
+3. Adapter 新增 UnsupportedFormat 异常测试（额外增加，不计入迁移数）
 
 ### 适配的测试
 
