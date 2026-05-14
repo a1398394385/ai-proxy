@@ -74,6 +74,18 @@ class ConfigDB:
                     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
                     UNIQUE(source, request_type)
                 );
+
+                CREATE TABLE IF NOT EXISTS agent_routes (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source          TEXT NOT NULL CHECK(length(source) > 0 AND source != '*'),
+                    target_model_id INTEGER NOT NULL REFERENCES target_models(id) ON DELETE RESTRICT,
+                    request_type    TEXT NOT NULL DEFAULT 'chat_completions'
+                                    CHECK(request_type IN ('responses', 'messages', 'chat_completions')),
+                    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                    UNIQUE(source, request_type)
+                );
+
                 """);
 
             # 新数据库写入 schema_version = 5（幂等）
@@ -473,6 +485,174 @@ class ConfigDB:
         finally:
             conn.close()
 
+    # ─── Agent 路由 CRUD ───────────────────────────────────────
+
+    def list_agent_routes(self, request_type: Optional[str] = None):
+        conn = self._connect()
+        try:
+            params = []
+            where = ""
+            if request_type is not None:
+                where = "WHERE ar.request_type = ?"
+                params.append(request_type)
+            rows = conn.execute(
+                "SELECT ar.*, tm.name as target_name, tm.upstream_id,"
+                " u.name as upstream_name,"
+                " u.is_active as upstream_active,"
+                " u.format as upstream_format"
+                " FROM agent_routes ar"
+                " JOIN target_models tm ON ar.target_model_id = tm.id"
+                " JOIN upstreams u ON tm.upstream_id = u.id"
+                " " + where + " ORDER BY ar.source",
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def get_agent_route(self, route_id: int) -> Optional[dict]:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT ar.*, tm.name as target_name, tm.upstream_id"
+                " FROM agent_routes ar"
+                " JOIN target_models tm ON ar.target_model_id = tm.id"
+                " WHERE ar.id = ?",
+                (route_id,),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def add_agent_route(self, data: dict) -> int:
+        source = data.get("source", "")
+        if source == "*":
+            raise ValueError("agent_routes 不允许 source='*'")
+        request_type = data.get("request_type", "chat_completions")
+        if request_type not in ("responses", "messages", "chat_completions"):
+            raise ValueError("request_type must be one of: responses, messages, chat_completions")
+        conn = self._connect()
+        try:
+            active = conn.execute(
+                "SELECT 1 FROM target_models tm"
+                " JOIN upstreams u ON tm.upstream_id = u.id"
+                " WHERE tm.id = ? AND u.is_active = 1",
+                (data["target_model_id"],),
+            ).fetchone()
+            if not active:
+                raise ValueError("目标模型不存在或所属上游已禁用")
+            cursor = conn.execute(
+                "INSERT INTO agent_routes (source, target_model_id, request_type) VALUES (?, ?, ?)",
+                (source, data["target_model_id"], request_type),
+            )
+            conn.commit()
+            return cursor.lastrowid
+        finally:
+            conn.close()
+
+    def update_agent_route(self, route_id: int, data: dict):
+        conn = self._connect()
+        try:
+            if data.get("source") == "*":
+                raise ValueError("agent_routes 不允许 source='*'")
+            fields = []
+            values = []
+            for key in ("source", "target_model_id", "request_type"):
+                if key in data:
+                    if key == "request_type" and data[key] not in ("responses", "messages", "chat_completions"):
+                        raise ValueError("request_type must be one of: responses, messages, chat_completions")
+                    fields.append(str(key) + " = ?")
+                    values.append(data[key])
+            if not fields:
+                return
+            target_model_id = data.get("target_model_id")
+            if target_model_id is not None:
+                active = conn.execute(
+                    "SELECT 1 FROM target_models tm"
+                    " JOIN upstreams u ON tm.upstream_id = u.id"
+                    " WHERE tm.id = ? AND u.is_active = 1",
+                    (target_model_id,),
+                ).fetchone()
+                if not active:
+                    raise ValueError("目标模型不存在或所属上游已禁用")
+            fields.append("updated_at = datetime('now')")
+            values.append(route_id)
+            conn.execute(
+                "UPDATE agent_routes SET " + ", ".join(fields) + " WHERE id = ?",
+                values,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def delete_agent_route(self, route_id: int):
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM agent_routes WHERE id = ?", (route_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def resolve_agent(self, source_name: str, request_type: str) -> Optional[dict]:
+        """精确匹配一条 agent 路由，无 fallback。上游禁用返回 None。"""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT tm.name as target_name, tm.multimodal, u.format,"
+                " u.id as upstream_id, u.base_url, u.api_key,"
+                " u.timeout, u.connect_timeout, u.ssl_verify, u.retry"
+                " FROM agent_routes ar"
+                " JOIN target_models tm ON ar.target_model_id = tm.id"
+                " JOIN upstreams u ON tm.upstream_id = u.id"
+                " WHERE ar.source = ? AND ar.request_type = ? AND u.is_active = 1",
+                (source_name, request_type),
+            ).fetchone()
+            if row is None:
+                return None
+            d = dict(row)
+            return {
+                "target_name": d["target_name"],
+                "multimodal": d["multimodal"],
+                "format": d["format"],
+                "matched_source": source_name,
+                "upstream": {
+                    "id": d["upstream_id"],
+                    "base_url": d["base_url"],
+                    "api_key": d["api_key"],
+                    "timeout": d["timeout"],
+                    "connect_timeout": d["connect_timeout"],
+                    "ssl_verify": bool(d["ssl_verify"]),
+                    "retry": d["retry"],
+                    "format": d["format"],
+                },
+            }
+        finally:
+            conn.close()
+
+    def get_all_agent_routes(self, request_type: Optional[str] = None) -> dict:
+        conn = self._connect()
+        try:
+            params = []
+            where = "WHERE u.is_active = 1"
+            if request_type is not None:
+                where += " AND ar.request_type = ?"
+                params.append(request_type)
+            rows = conn.execute(
+                "SELECT ar.source, ar.request_type, tm.name as target_name, tm.multimodal,"
+                " u.format, tm.upstream_id"
+                " FROM agent_routes ar"
+                " JOIN target_models tm ON ar.target_model_id = tm.id"
+                " JOIN upstreams u ON tm.upstream_id = u.id"
+                " " + where + " ORDER BY ar.source",
+                params,
+            ).fetchall()
+            result = {}
+            for r in rows:
+                result[r["source"]] = dict(r)
+            return result
+        finally:
+            conn.close()
+
     # ─── 配置查询（供 proxy 使用）────────────────────────────────
 
     def resolve_model(self, source_name: str, request_type: str = "responses") -> Optional[dict]:
@@ -564,7 +744,8 @@ class ConfigDB:
             ).fetchone()[0]
             models = conn.execute("SELECT COUNT(*) FROM target_models").fetchone()[0]
             routes = conn.execute("SELECT COUNT(*) FROM model_routes").fetchone()[0]
-            return {"upstreams": upstreams, "models": models, "routes": routes}
+            agent_routes = conn.execute("SELECT COUNT(*) FROM agent_routes").fetchone()[0]
+            return {"upstreams": upstreams, "models": models, "routes": routes, "agent_routes": agent_routes}
         finally:
             conn.close()
 
@@ -696,10 +877,12 @@ class Migrations:
             self._migrate_v4_to_v5(backup_path)
         if version <= 5:
             self._migrate_v5_to_v6(backup_path)
+        if version <= 6:
+            self._migrate_v6_to_v7(backup_path)
 
         return {
             "status": "ok",
-            "version": 6,
+            "version": 7,
             "backup_path": str(backup_path),
         }
 
@@ -1299,6 +1482,51 @@ class Migrations:
             conn.close()
 
 
+
+    def _migrate_v6_to_v7(self, backup_path: Path):
+        """执行 v6 \u2192 v7 迁移（新增 agent_routes 表）。"""
+        conn = self._connect()
+        try:
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.execute("BEGIN TRANSACTION")
+            try:
+                conn.execute('''
+                    CREATE TABLE IF NOT EXISTS agent_routes (
+                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source          TEXT NOT NULL CHECK(length(source) > 0 AND source != '*'),
+                        target_model_id INTEGER NOT NULL REFERENCES target_models(id) ON DELETE RESTRICT,
+                        request_type    TEXT NOT NULL DEFAULT 'chat_completions'
+                                        CHECK(request_type IN ('responses', 'messages', 'chat_completions')),
+                        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                        UNIQUE(source, request_type)
+                    );
+                ''')
+                logging.info("[Migrations] v6\u2192v7 STEP 1: agent_routes \u8868\u521b\u5efa\u5b8c\u6210")
+
+                old_count = conn.execute("SELECT COUNT(*) FROM agent_routes").fetchone()[0]
+                new_count = conn.execute("SELECT COUNT(*) FROM agent_routes").fetchone()[0]
+                if new_count < old_count:
+                    raise sqlite3.OperationalError(
+                        "agent_routes \u9a8c\u8bc1\u5931\u8d25: \u539f\u6709 %d \u6761\u8bb0\u5f55, \u73b0\u6709 %d \u6761\u8bb0\u5f55" % (old_count, new_count)
+                    )
+
+                conn.execute("DELETE FROM schema_version;")
+                conn.execute("INSERT INTO schema_version (version) VALUES (7);")
+                logging.info("[Migrations] v6\u2192v7 STEP 2: schema_version \u66f4\u65b0\u4e3a 7")
+
+                conn.commit()
+                logging.info("[Migrations] v6\u2192v7 \u8fc1\u79fb\u6210\u529f")
+            except Exception:
+                conn.rollback()
+                logging.error("[Migrations] v6\u2192v7 \u8fc1\u79fb\u5931\u8d25\uff0c\u5df2\u56de\u6eda", exc_info=True)
+                raise
+            finally:
+                conn.execute("PRAGMA foreign_keys = ON")
+        finally:
+            conn.close()
+
+
 class ConfigCache:
     """内存缓存，供 proxy.py 使用。
 
@@ -1311,6 +1539,7 @@ class ConfigCache:
         self._db_path = db_path
         self._lock = threading.Lock()
         self._routes: dict = {}
+        self._agent_routes: dict = {}
         self._loaded_at: float = 0
 
     def reload(self):
@@ -1324,6 +1553,12 @@ class ConfigCache:
             if key in self._routes:
                 return self._routes[key]
             return self._routes.get(("*", request_type))
+
+    def resolve_agent(self, source_name: str, request_type: str = "responses") -> Optional[dict]:
+        with self._lock:
+            self._refresh_if_stale()
+            key = (source_name, request_type)
+            return self._agent_routes.get(key)
 
     def get_all(self, request_type: Optional[str] = None) -> dict:
         with self._lock:
@@ -1351,6 +1586,15 @@ class ConfigCache:
                     if cfg:
                         new_routes[(source, pt)] = cfg
                 self._routes = new_routes
+                # 加载 agent_routes
+                new_agent_routes = {}
+                try:
+                    agent_routes_data = db.get_all_agent_routes(request_type=None)
+                    for src, cfg in agent_routes_data.items():
+                        new_agent_routes[(src, cfg["request_type"])] = cfg
+                except Exception:
+                    logging.warning("[ConfigCache] agent_routes 加载失败", exc_info=True)
+                self._agent_routes = new_agent_routes
                 self._loaded_at = time.time()
             finally:
                 db.close()

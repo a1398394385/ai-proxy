@@ -584,7 +584,7 @@ class TestMigrations(unittest.TestCase):
         m = Migrations(self.db_path)
         result = m.migrate()
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["version"], 6)
+        self.assertEqual(result["version"], 7)
 
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
@@ -621,3 +621,157 @@ class TestMigrations(unittest.TestCase):
         result = m.migrate()  # 第二次迁移
         self.assertEqual(result["status"], "already_migrated")
 
+
+
+class TestAgentRouteCRUD(unittest.TestCase):
+    def setUp(self):
+        from proxy.config_manager import ConfigDB
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "config.db"
+        self.db = ConfigDB(self.db_path)
+        # 创建上游 + 模型供路由引用
+        self.upstream_id = self.db.add_upstream({
+            "name": "test-upstream", "base_url": "http://localhost:8000",
+            "api_key": "sk-test", "format": "chat_completions"
+        })
+        self.model_id = self.db.add_model({
+            "name": "test-model", "upstream_id": self.upstream_id
+        })
+
+    def tearDown(self):
+        self.db.close()
+        self.tmp.cleanup()
+
+    def test_add_and_list_agent_routes(self):
+        rid = self.db.add_agent_route({
+            "source": "claude-sonnet-4-6",
+            "target_model_id": self.model_id,
+            "request_type": "chat_completions"
+        })
+        self.assertIsNotNone(rid)
+        routes = self.db.list_agent_routes()
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0]["source"], "claude-sonnet-4-6")
+
+    def test_list_agent_routes_filter_by_request_type(self):
+        self.db.add_agent_route({
+            "source": "m1", "target_model_id": self.model_id,
+            "request_type": "chat_completions"
+        })
+        self.db.add_agent_route({
+            "source": "m2", "target_model_id": self.model_id,
+            "request_type": "responses"
+        })
+        self.assertEqual(len(self.db.list_agent_routes(request_type="chat_completions")), 1)
+        self.assertEqual(len(self.db.list_agent_routes(request_type="responses")), 1)
+
+    def test_add_agent_route_source_star_rejected(self):
+        with self.assertRaises(ValueError):
+            self.db.add_agent_route({
+                "source": "*", "target_model_id": self.model_id,
+                "request_type": "chat_completions"
+            })
+
+    def test_add_agent_route_duplicate_raises(self):
+        self.db.add_agent_route({
+            "source": "m1", "target_model_id": self.model_id,
+            "request_type": "chat_completions"
+        })
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.add_agent_route({
+                "source": "m1", "target_model_id": self.model_id,
+                "request_type": "chat_completions"
+            })
+
+    def test_add_agent_route_inactive_upstream_rejected(self):
+        self.db.update_upstream(self.upstream_id, {"is_active": 0})
+        with self.assertRaises(ValueError):
+            self.db.add_agent_route({
+                "source": "m1", "target_model_id": self.model_id,
+                "request_type": "chat_completions"
+            })
+
+    def test_get_agent_route(self):
+        rid = self.db.add_agent_route({
+            "source": "m1", "target_model_id": self.model_id,
+            "request_type": "chat_completions"
+        })
+        route = self.db.get_agent_route(rid)
+        self.assertIsNotNone(route)
+        self.assertEqual(route["source"], "m1")
+
+    def test_get_agent_route_not_found(self):
+        self.assertIsNone(self.db.get_agent_route(999))
+
+    def test_update_agent_route(self):
+        rid = self.db.add_agent_route({
+            "source": "m1", "target_model_id": self.model_id,
+            "request_type": "chat_completions"
+        })
+        self.db.update_agent_route(rid, {"source": "m1-updated"})
+        route = self.db.get_agent_route(rid)
+        self.assertEqual(route["source"], "m1-updated")
+
+    def test_update_agent_route_star_rejected(self):
+        rid = self.db.add_agent_route({
+            "source": "m1", "target_model_id": self.model_id,
+            "request_type": "chat_completions"
+        })
+        with self.assertRaises(ValueError):
+            self.db.update_agent_route(rid, {"source": "*"})
+
+    def test_delete_agent_route(self):
+        rid = self.db.add_agent_route({
+            "source": "m1", "target_model_id": self.model_id,
+            "request_type": "chat_completions"
+        })
+        self.db.delete_agent_route(rid)
+        self.assertIsNone(self.db.get_agent_route(rid))
+
+    def test_resolve_agent_found(self):
+        self.db.add_agent_route({
+            "source": "claude-sonnet-4-6", "target_model_id": self.model_id,
+            "request_type": "chat_completions"
+        })
+        result = self.db.resolve_agent("claude-sonnet-4-6", "chat_completions")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["target_name"], "test-model")
+
+    def test_resolve_agent_not_found(self):
+        result = self.db.resolve_agent("nonexistent", "chat_completions")
+        self.assertIsNone(result)
+
+    def test_resolve_agent_inactive_upstream_returns_none(self):
+        self.db.add_agent_route({
+            "source": "m1", "target_model_id": self.model_id,
+            "request_type": "chat_completions"
+        })
+        self.db.update_upstream(self.upstream_id, {"is_active": 0})
+        result = self.db.resolve_agent("m1", "chat_completions")
+        self.assertIsNone(result)
+
+    def test_get_all_agent_routes(self):
+        self.db.add_agent_route({
+            "source": "m1", "target_model_id": self.model_id,
+            "request_type": "chat_completions"
+        })
+        self.db.add_agent_route({
+            "source": "m2", "target_model_id": self.model_id,
+            "request_type": "responses"
+        })
+        result = self.db.get_all_agent_routes()
+        self.assertIn("m1", result)
+        self.assertIn("m2", result)
+
+    def test_get_all_agent_routes_filtered(self):
+        self.db.add_agent_route({
+            "source": "m1", "target_model_id": self.model_id,
+            "request_type": "chat_completions"
+        })
+        self.db.add_agent_route({
+            "source": "m2", "target_model_id": self.model_id,
+            "request_type": "responses"
+        })
+        result = self.db.get_all_agent_routes(request_type="chat_completions")
+        self.assertIn("m1", result)
+        self.assertNotIn("m2", result)
