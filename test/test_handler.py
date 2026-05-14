@@ -620,6 +620,9 @@ class TestConvertOutputConsistency(unittest.TestCase):
         h.client_address = ("127.0.0.1", 12345)
         h.headers = {}
         h.command = "POST"
+        h.send_response = lambda code: None
+        h.send_header = lambda k, v: None
+        h.end_headers = lambda: None
         import io
         h.wfile = io.BytesIO()
         return h

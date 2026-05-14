@@ -967,14 +967,18 @@ def create_codex_sse_stream(chunks_or_response, *, request_messages=None, respon
         output_list = [item for _, item in converter.output_items]
         # output_items_to_messages 在同文件的 module 层级已导入，直接调用
         assistant_msgs = output_items_to_messages(output_list)
-        messages_for_conv = (request_messages or []) + assistant_msgs
+        messages_for_conv = [
+            m for m in (request_messages or []) if m.get("role") != "system"
+        ] + assistant_msgs
+        usage = converter._convert_usage(converter.final_usage) if converter.final_usage is not None else None
+        status = "incomplete" if converter.finish_reason in ("length", "content_filter") else "completed"
         record = ResponseRecord(
             response_id=converter.response_id,
             model=converter.model or "",
             output=output_list,
             conversation=messages_for_conv,
-            usage=converter.usage,
-            status="completed",
+            usage=usage,
+            status=status,
             created_at=time.time(),
             expires_at=time.time() + response_store.ttl_seconds,
         )

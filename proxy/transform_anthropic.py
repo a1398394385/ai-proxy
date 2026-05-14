@@ -245,8 +245,8 @@ def chat_to_anthropic(response: dict) -> dict:
     if refusal:
         content.append({"type": "text", "text": refusal})
 
-    # 工具调用
-    tool_calls = message.get("tool_calls", [])
+    # 工具调用（SDK model_dump 可能含 tool_calls=None）
+    tool_calls = message.get("tool_calls") or []
     for tc in tool_calls:
         func = tc.get("function", {})
         try:
@@ -276,7 +276,7 @@ def chat_to_anthropic(response: dict) -> dict:
         "input_tokens": usage.get("prompt_tokens", 0),
         "output_tokens": usage.get("completion_tokens", 0),
     }
-    cached = usage.get("prompt_tokens_details", {}).get("cached_tokens")
+    cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
     if cached is not None:
         result["usage"]["cache_read_input_tokens"] = cached
     if "cache_creation_input_tokens" in usage:
@@ -398,7 +398,7 @@ def create_anthropic_sse_stream(chunks_or_response, *, request_messages=None, re
                 "input_tokens": state.usage.get("prompt_tokens", 0),
                 "output_tokens": state.usage.get("completion_tokens", 0),
             }
-            cached = state.usage.get("prompt_tokens_details", {}).get("cached_tokens")
+            cached = (state.usage.get("prompt_tokens_details") or {}).get("cached_tokens")
             if cached is not None:
                 usage_out["cache_read_input_tokens"] = cached
             delta_event["usage"] = usage_out
@@ -528,7 +528,7 @@ def _process_anthropic_delta(delta: dict, state: AnthropicStreamState) -> list:
                 "input_tokens": state.usage.get("prompt_tokens", 0),
                 "output_tokens": state.usage.get("completion_tokens", 0),
             }
-            cached = state.usage.get("prompt_tokens_details", {}).get("cached_tokens")
+            cached = (state.usage.get("prompt_tokens_details") or {}).get("cached_tokens")
             if cached is not None:
                 usage_out["cache_read_input_tokens"] = cached
             delta_event["usage"] = usage_out
