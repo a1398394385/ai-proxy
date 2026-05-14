@@ -62,16 +62,15 @@ class TestUpstreamDriver(unittest.TestCase):
             driver.create("unsupported_format", {"model": "test"})
 
     def test_chat_create_unpacks_dict_to_sdk(self):
-        """chat_create 将 dict 解包传给 openai SDK。"""
+        """create('chat_completions') 将 dict 传给 openai SDK。"""
         from proxy.upstream_driver import UpstreamDriver
 
         driver = UpstreamDriver(self.cfg)
         mock_create = MagicMock(return_value=MagicMock(model_dump=lambda: {"id": "1"}))
         with patch.object(driver.openai.chat.completions, "create", mock_create):
-            driver.chat_create(
-                model="gpt-4",
-                messages=[{"role": "user", "content": "hi"}],
-                temperature=0.7,
+            driver.create(
+                "chat_completions",
+                {"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}], "temperature": 0.7},
             )
         mock_create.assert_called_once_with(
             model="gpt-4",
@@ -80,7 +79,7 @@ class TestUpstreamDriver(unittest.TestCase):
         )
 
     def test_chat_stream_copies_kwargs_no_side_effect(self):
-        """chat_stream 不修改调用者传入的 dict（无副作用）。"""
+        """create_stream 不修改调用者传入的 dict（无副作用）。"""
         from proxy.upstream_driver import UpstreamDriver
 
         driver = UpstreamDriver(self.cfg)
@@ -88,21 +87,20 @@ class TestUpstreamDriver(unittest.TestCase):
         saved = dict(original)
         mock_create = MagicMock()
         with patch.object(driver.openai.chat.completions, "create", mock_create):
-            driver.chat_stream(**original)
+            driver.create_stream("chat_completions", original)
         # original dict 不应被修改
         self.assertEqual(original, saved)
 
     def test_chat_stream_removes_duplicate_stream_key(self):
-        """chat_stream 移除可能重复的 stream key 但不抛 TypeError。"""
+        """create_stream 设置 stream=True 并保留其他参数。"""
         from proxy.upstream_driver import UpstreamDriver
 
         driver = UpstreamDriver(self.cfg)
         mock_create = MagicMock()
         with patch.object(driver.openai.chat.completions, "create", mock_create):
-            driver.chat_stream(
-                model="gpt-4",
-                messages=[{"role": "user", "content": "hi"}],
-                stream=True,
+            driver.create_stream(
+                "chat_completions",
+                {"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}], "stream": True},
             )
         call_kwargs = mock_create.call_args.kwargs
         self.assertTrue(call_kwargs["stream"])
@@ -113,4 +111,4 @@ class TestUpstreamDriver(unittest.TestCase):
         driver = UpstreamDriver(self.cfg)
         _ = driver.openai
         driver.close()
-        self.assertIsNone(driver._openai_client)
+        self.assertIsNone(driver._openai)
