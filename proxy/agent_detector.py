@@ -23,7 +23,11 @@ def _claude_code_subagent(body: dict) -> bool:
     if _contains_marker(body, "__SUBAGENT_MARKER__"):
         return True
 
-    # 信号 2: metadata.user_id 含 _agent_ 字符串
+    # 信号 2: OMC SubagentStart hook 注入的 <system-reminder> 标签
+    if _contains_marker(body, "SubagentStart"):
+        return True
+
+    # 信号 3: metadata.user_id 含 _agent_ 字符串
     user_id = body.get("metadata", {}).get("user_id", "")
     if user_id and "_agent_" in user_id:
         return True

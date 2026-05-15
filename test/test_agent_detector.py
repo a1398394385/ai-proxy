@@ -63,6 +63,22 @@ class TestDetectSubagent(unittest.TestCase):
         from proxy.agent_detector import detect_subagent
         self.assertFalse(detect_subagent({"metadata": {"user_id": "normal"}}))
 
+    def test_omc_subagent_start_in_system_reminder(self):
+        from proxy.agent_detector import detect_subagent
+        body = self._make_body(messages=[
+            {"role": "user", "content": [
+                {"type": "text", "text": "<system-reminder>\nSubagentStart hook additional context: Agent oh-my-claudecode:executor started (afc6402fb0104581e)\n</system-reminder>"},
+            ]}
+        ])
+        self.assertTrue(detect_subagent(body))
+
+    def test_omc_subagent_start_in_string_content(self):
+        from proxy.agent_detector import detect_subagent
+        body = self._make_body(messages=[
+            {"role": "user", "content": "<system-reminder>\nSubagentStart hook additional context: Agent oh-my-claudecode:planner started\n</system-reminder>"}
+        ])
+        self.assertTrue(detect_subagent(body))
+
     def test_content_blocks_without_text(self):
         from proxy.agent_detector import detect_subagent
         body = self._make_body(messages=[
