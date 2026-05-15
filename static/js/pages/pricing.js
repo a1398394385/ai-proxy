@@ -131,6 +131,7 @@ function renderCards(items) {
         <span class="card-currency">
           <span class="currency-badge ${p.currency === 'RMB' ? 'curr-rmb' : 'curr-usd'}">${p.currency}</span>
         </span>
+        ${p.input_includes_cache_read ? '<span class="meta-badge badge-cache" title="查询时从 input 扣除 cache_read">⚡含缓存</span>' : ''}
       </div>
     </div>`;
   }).join('');
@@ -248,6 +249,15 @@ function showPricingModal(existing = null) {
           <option value="RMB" ${existing?.currency === 'RMB' ? 'selected' : ''}>RMB（人民币）</option>
         </select>
       </div>
+
+      <div class="pricing-modal-section">统计扣除</div>
+      <div class="form-group full">
+        <label class="form-label">
+          <input type="checkbox" id="pm-input-includes-cache-read" ${existing?.input_includes_cache_read ? 'checked' : ''} style="margin-right:8px">
+          查询统计数据时从 input_tokens 扣除 cache_read
+        </label>
+        <span class="form-hint">适用于 input_tokens 已包含 cache_read 的模型（如 kimi-k2.6），避免重复计费</span>
+      </div>
     </div>`;
 
   const footer = `
@@ -267,6 +277,7 @@ async function savePricing(editModelId) {
     cache_creation_cost_per_million: document.getElementById('pm-cache-write').value || '0',
     multiplier: document.getElementById('pm-multiplier').value || '1.0',
     currency: document.getElementById('pm-currency').value,
+    input_includes_cache_read: document.getElementById('pm-input-includes-cache-read').checked ? 1 : 0,
   };
   if (!payload.model_id || !payload.display_name || !payload.input_cost_per_million || !payload.output_cost_per_million) {
     alert('模型 ID、显示名、输入/输出价格为必填');

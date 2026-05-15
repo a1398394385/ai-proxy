@@ -317,6 +317,7 @@ class _CostCalculator:
                     "output_cost": round(float(r["output_cost_per_million"]) * rate * multiplier, 6),
                     "cache_read_cost": round(float(r["cache_read_cost_per_million"]) * rate * multiplier, 6),
                     "cache_creation_cost": round(float(r["cache_creation_cost_per_million"]) * rate * multiplier, 6),
+                    "input_includes_cache_read": r.get("input_includes_cache_read", 0),
                 }
                 display_names[key] = r["display_name"]
             self._pricing_cache = pricing
@@ -706,6 +707,20 @@ class StatsService:
 
         # 3. 逐条计算 4 项成本
         calculator = self._get_calculator()
+
+        # 对 proxy 来源的记录，按 model_pricing 配置扣除重复 cache_read
+        #    某些模型（如 kimi-k2.6）虽走 Anthropic 协议但 input_tokens 已包含 cache_read，
+        #    在查询时从 input_tokens 扣除，避免成本重复计算。token_stats 原始值不变。
+        pricing = calculator.get_pricing()
+        for r in records:
+            if r["upstream_id"] not in ("hermes", "opencode"):
+                key = r["model"].lower() if r["model"] else ""
+                p = pricing.get(key)
+                if p and p.get("input_includes_cache_read", 0):
+                    cache = r.get("cache_read_tokens", 0) or 0
+                    if cache > 0:
+                        r["input_tokens"] = max(0, r["input_tokens"] - cache)
+
         for r in records:
             breakdown = calculator.calculate_breakdown(
                 model=r["model"],
