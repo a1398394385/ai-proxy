@@ -1,11 +1,8 @@
-import { api, escHtml, showModal, closeModal, bus } from '../core.js';
+import { api, escHtml, showModal, closeModal, bus, on, FORMAT_LABELS, FORMAT_COLORS } from '../core.js';
 
 // ===== 路由管理 =====
 
 let currentRequestType = 'chat_completions';
-
-const FORMAT_LABELS = { responses: 'Responses', messages: 'Messages', chat_completions: 'Chat' };
-const FORMAT_COLORS = { responses: 'badge-blue', messages: 'badge-purple', chat_completions: 'badge-green' };
 
 const RT_CONFIG = {
   responses: { icon: '🔌', label: 'Responses' },
@@ -134,8 +131,8 @@ async function loadRouteTable(requestType) {
       <td><span class="route-status"><span class="route-status-dot ${r.upstream_active ? 'active' : 'inactive'}"></span>${r.upstream_active ? '活跃' : '已禁用'}</span></td>
       <td>
         <div class="route-actions">
-          <button class="btn btn-secondary btn-sm" onclick="showRouteModal(${r.id})">编辑</button>
-          <button class="btn btn-danger btn-sm" onclick="confirmDeleteRoute(${r.id}, '${escHtml(r.source)}')">删除</button>
+          <button class="btn btn-secondary btn-sm" data-action="showRouteModal" data-id="${r.id}">编辑</button>
+          <button class="btn btn-danger btn-sm" data-action="confirmDeleteRoute" data-id="${r.id}" data-source="${escHtml(r.source)}">删除</button>
         </div>
       </td>
     </tr>`;
@@ -162,8 +159,8 @@ async function loadAgentRouteTable(requestType) {
       <td><span class="route-status"><span class="route-status-dot ${r.upstream_active ? 'active' : 'inactive'}"></span>${r.upstream_active ? '活跃' : '已禁用'}</span></td>
       <td>
         <div class="route-actions">
-          <button class="btn btn-secondary btn-sm" onclick="showAgentRouteModal(${r.id})">编辑</button>
-          <button class="btn btn-danger btn-sm" onclick="confirmDeleteAgentRoute(${r.id}, '${escHtml(r.source)}')">删除</button>
+          <button class="btn btn-secondary btn-sm" data-action="showAgentRouteModal" data-id="${r.id}">编辑</button>
+          <button class="btn btn-danger btn-sm" data-action="confirmDeleteAgentRoute" data-id="${r.id}" data-source="${escHtml(r.source)}">删除</button>
         </div>
       </td>
     </tr>`;
@@ -270,7 +267,7 @@ async function showRouteModal(editId) {
      <hr class="form-divider">
      ${cascadingHtml}
      <input type="hidden" id="r-proxy" value="${escHtml(data.request_type)}">`,
-    `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveRoute(${editId || 0})">保存路由</button>`);
+    `<button class="btn btn-secondary" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="saveRoute" data-edit-id="${editId || 0}">保存路由</button>`);
   const modal = document.querySelector('.modal');
   if (modal) modal.classList.add('route-modal');
   bindCascadeModelSelect();
@@ -308,7 +305,7 @@ async function showAgentRouteModal(editId) {
      <hr class="form-divider">
      ${cascadingHtml}
      <input type="hidden" id="r-proxy" value="${escHtml(data.request_type)}">`,
-    `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveAgentRoute(${editId || 0})">保存 Agent 路由</button>`);
+    `<button class="btn btn-secondary" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="saveAgentRoute" data-edit-id="${editId || 0}">保存 Agent 路由</button>`);
   const modal = document.querySelector('.modal');
   if (modal) modal.classList.add('route-modal');
   bindCascadeModelSelect();
@@ -329,7 +326,7 @@ async function showFallbackModal() {
      <hr class="form-divider">
      ${cascadingHtml}
      <input type="hidden" id="r-proxy" value="${escHtml(data.request_type)}">`,
-    `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveRoute(0, true)">保存路由</button>`);
+    `<button class="btn btn-secondary" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="saveRoute" data-edit-id="0" data-fallback="true">保存路由</button>`);
   const modal = document.querySelector('.modal');
   if (modal) modal.classList.add('route-modal');
   bindCascadeModelSelect();
@@ -394,7 +391,7 @@ async function confirmDeleteAgentRoute(id, source) {
 // ===== Page Loader =====
 async function loadRoutePage() {
   const typeCards = Object.entries(RT_CONFIG).map(([key, cfg]) =>
-    `<button class="route-type-card${key === 'chat_completions' ? ' active' : ''}" data-pt="${key}" onclick="switchRequestType('${key}')">
+    `<button class="route-type-card${key === 'chat_completions' ? ' active' : ''}" data-action="switchRequestType" data-pt="${key}">
       <span class="rtc-icon">${cfg.icon}</span>
       <span class="rtc-label">${cfg.label}</span>
     </button>`
@@ -407,8 +404,8 @@ async function loadRoutePage() {
         路由映射
       </div>
       <div class="page-actions">
-        <button class="btn btn-secondary btn-sm" onclick="showFallbackModal()">+ 回退路由</button>
-        <button class="btn btn-primary btn-sm" onclick="showRouteModal()">+ 新增路由</button>
+        <button class="btn btn-secondary btn-sm" data-action="showFallbackModal">+ 回退路由</button>
+        <button class="btn btn-primary btn-sm" data-action="showRouteModal">+ 新增路由</button>
       </div>
     </div>
     <div class="route-type-cards">${typeCards}</div>
@@ -427,7 +424,7 @@ async function loadRoutePage() {
           <span class="agent-badge" id="agent-route-count">覆盖层 · 0</span>
         </div>
         <div class="page-actions">
-          <button class="btn btn-secondary btn-sm" onclick="showAgentRouteModal()">+ 新增 Agent 路由</button>
+          <button class="btn btn-secondary btn-sm" data-action="showAgentRouteModal">+ 新增 Agent 路由</button>
         </div>
       </div>
       <div class="table-scroll">
@@ -441,20 +438,19 @@ async function loadRoutePage() {
   loadAgentRouteTable('chat_completions');
 }
 
-function initRoutePage() {}
+function initRoutePage() {
+  on('switchRequestType', (e, el) => switchRequestType(el.dataset.pt));
+  on('showRouteModal', (e, el) => el.dataset.id ? showRouteModal(parseInt(el.dataset.id)) : showRouteModal());
+  on('showAgentRouteModal', (e, el) => el.dataset.id ? showAgentRouteModal(parseInt(el.dataset.id)) : showAgentRouteModal());
+  on('showFallbackModal', showFallbackModal);
+  on('saveRoute', (e, el) => {
+    const editId = parseInt(el.dataset.editId) || 0;
+    const allowFallback = el.dataset.fallback === 'true';
+    saveRoute(editId || 0, allowFallback);
+  });
+  on('saveAgentRoute', (e, el) => saveAgentRoute(parseInt(el.dataset.editId) || 0));
+  on('confirmDeleteRoute', (e, el) => confirmDeleteRoute(parseInt(el.dataset.id), el.dataset.source));
+  on('confirmDeleteAgentRoute', (e, el) => confirmDeleteAgentRoute(parseInt(el.dataset.id), el.dataset.source));
+}
 
-// ===== Exports =====
 export { loadRoutePage, initRoutePage, loadRouteTable, showRouteModal, showFallbackModal, saveRoute, confirmDeleteRoute, switchRequestType, loadAgentRouteTable, showAgentRouteModal, saveAgentRoute, confirmDeleteAgentRoute };
-
-// ===== Global Scope Mounting =====
-window.switchRequestType = switchRequestType;
-window.showRouteModal = showRouteModal;
-window.showFallbackModal = showFallbackModal;
-window.saveRoute = saveRoute;
-window.confirmDeleteRoute = confirmDeleteRoute;
-window.loadRoutePage = loadRoutePage;
-window.initRoutePage = initRoutePage;
-window.loadAgentRouteTable = loadAgentRouteTable;
-window.showAgentRouteModal = showAgentRouteModal;
-window.saveAgentRoute = saveAgentRoute;
-window.confirmDeleteAgentRoute = confirmDeleteAgentRoute;

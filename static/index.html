@@ -10,6 +10,10 @@
 <link rel="stylesheet" href="css/models.css">
 <link rel="stylesheet" href="css/routes.css">
 <link rel="stylesheet" href="css/pricing.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" media="print" onload="this.media='all'">
+<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"></noscript>
 </head>
 <body>
 <div class="app">
@@ -206,7 +210,7 @@
         <span class="table-title">📡 上游配置</span>
         <div style="display:flex;gap:8px;align-items:center">
           <span style="font-size:12px;color:hsl(var(--muted-foreground))" id="upstream-count"></span>
-          <button class="btn btn-primary btn-sm" onclick="showUpstreamModal()">+ 新增上游</button>
+          <button class="btn btn-primary btn-sm" data-action="showUpstreamModal">+ 新增上游</button>
         </div>
       </div>
       <div class="table-scroll">
@@ -229,7 +233,7 @@
   <div class="modal">
     <div class="modal-header">
       <span class="modal-title" id="modal-title">新增事实</span>
-      <button class="modal-close" onclick="closeModal()">×</button>
+      <button class="modal-close" data-action="closeModal">×</button>
     </div>
     <div class="modal-body" id="modal-body">
       <!-- 动态填充 -->

@@ -2,30 +2,27 @@
 // app.js — Hermes Data Browser Entry Point
 // ============================================================
 
-import { initTheme, toggleTheme, initSettings, showSettings, saveDefaultPage, pageLoaders, bus } from './core.js';
+import { initTheme, toggleTheme, initSettings, showSettings, switchPage, bus, delegate } from './core.js';
 import { loadFacts, initFactPage } from './pages/facts.js';
 import { loadTokenStats, initTokenPage } from './pages/tokens.js';
-import { loadUpstreamPage, initUpstreamPage } from './pages/upstreams.js';
+import { loadUpstreamPage, initUpstreamPage, refreshConfigStatus } from './pages/upstreams.js';
 import { loadRoutePage, initRoutePage } from './pages/routes.js';
 import { loadPricingPage, initPricingPage } from './pages/pricing.js';
 
-pageLoaders.facts = loadFacts;
-pageLoaders.tokens = loadTokenStats;
-pageLoaders.models = loadUpstreamPage;
-pageLoaders.routes = loadRoutePage;
-pageLoaders.pricing = loadPricingPage;
+const loaders = { facts: loadFacts, tokens: loadTokenStats, models: loadUpstreamPage, routes: loadRoutePage, pricing: loadPricingPage };
 
 initFactPage();
 initTokenPage();
 initUpstreamPage(); initRoutePage();
 initPricingPage();
 
-bus.on('config:upstream-changed', () => { window.refreshUpstreamDropdown?.(); window.refreshConfigStatus?.(); });
-bus.on('config:model-changed', () => { window.refreshConfigStatus?.(); });
-bus.on('config:route-changed', () => { window.refreshConfigStatus?.(); });
+bus.on('config:upstream-changed', () => refreshConfigStatus());
+bus.on('config:model-changed', () => refreshConfigStatus());
+bus.on('config:route-changed', () => refreshConfigStatus());
 
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
+  delegate();
 
   const themeBtn = document.getElementById('theme-toggle');
   if (themeBtn) themeBtn.addEventListener('click', toggleTheme);
@@ -36,22 +33,8 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.nav-tab').forEach(tab => {
     tab.addEventListener('click', () => {
       const page = tab.dataset.page;
-      window.currentPage = page;
-
-      document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-
-      document.getElementById('page-facts').classList.toggle('hidden', page !== 'facts');
-      document.getElementById('page-tokens').classList.toggle('hidden', page !== 'tokens');
-      document.getElementById('page-models').classList.toggle('hidden', page !== 'models');
-      document.getElementById('page-routes').classList.toggle('hidden', page !== 'routes');
-      document.getElementById('page-pricing').classList.toggle('hidden', page !== 'pricing');
-
-      if (page === 'facts') loadFacts();
-      if (page === 'tokens') loadTokenStats();
-      if (page === 'models') loadUpstreamPage();
-      if (page === 'routes') loadRoutePage();
-      if (page === 'pricing') loadPricingPage();
+      switchPage(page);
+      loaders[page]();
     });
   });
 
@@ -62,4 +45,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   initSettings();
+  const defaultPage = localStorage.getItem('defaultPage') || 'facts';
+  switchPage(defaultPage);
+  loaders[defaultPage]();
 });

@@ -150,7 +150,13 @@
 
 /* 图表卡片 */
 .chart-card {
-  composes: glass-card;
+  background: linear-gradient(145deg, hsl(var(--card)) 0%, hsl(var(--secondary)) 100%);
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 4px 24px -4px rgba(0, 0, 0, 0.2),
+              0 0 0 1px hsl(var(--foreground) / 0.02);
   padding: 20px;
   margin-bottom: 24px;
   position: relative;

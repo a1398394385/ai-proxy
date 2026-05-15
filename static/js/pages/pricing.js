@@ -1,4 +1,4 @@
-import { api, escHtml, showModal, closeModal } from '../core.js';
+import { api, escHtml, showModal, closeModal, on } from '../core.js';
 
 const EXCHANGE_RATE = 7;
 
@@ -92,10 +92,10 @@ function renderCards(items) {
           <span class="card-model-id">${escHtml(p.model_id)}</span>
         </div>
         <div class="card-actions">
-          <button class="card-btn card-btn-edit" title="编辑" onclick="editPricing('${mid}')">
+          <button class="card-btn card-btn-edit" title="编辑" data-action="editPricing" data-id="${mid}">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 10.5V12h1.5l6.5-6.5-1.5-1.5L2 10.5zM11.5 4.5c.3-.3.3-.8 0-1.1l-.4-.4c-.3-.3-.8-.3-1.1 0L9 3.5l1.5 1.5 1-1z" fill="currentColor"/></svg>
           </button>
-          <button class="card-btn card-btn-delete" title="删除" onclick="deletePricing('${mid}')">
+          <button class="card-btn card-btn-delete" title="删除" data-action="deletePricing" data-id="${mid}">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M4 3V1.5c0-.3.2-.5.5-.5h5c.3 0 .5.2.5.5V3h3v1h-1v8c0 .6-.4 1-1 1H3c-.6 0-1-.4-1-1V4H1V3h3zm1-1v1h4V2H5zM3 4v8h8V4H3z" fill="currentColor"/></svg>
           </button>
         </div>
@@ -156,7 +156,7 @@ export async function loadPricingPage() {
           <div class="search-box" style="max-width:220px">
             <input type="text" id="pricing-search" placeholder="搜索模型...">
           </div>
-          <button class="btn btn-primary" onclick="showPricingModal()">＋ 新增定价</button>
+          <button class="btn btn-primary" data-action="showPricingModal">＋ 新增定价</button>
         </div>
       </div>
       <div class="pricing-grid" id="pricing-grid"></div>
@@ -166,7 +166,12 @@ export async function loadPricingPage() {
   await loadPricingData();
 }
 
-export function initPricingPage() {}
+export function initPricingPage() {
+  on('showPricingModal', () => showPricingModal());
+  on('editPricing', (e, el) => editPricing(el.dataset.id));
+  on('deletePricing', (e, el) => deletePricing(el.dataset.id));
+  on('savePricing', (e, el) => savePricing(el.dataset.editId || null));
+}
 
 /* ─── 加载数据 ─── */
 async function loadPricingData() {
@@ -245,10 +250,9 @@ function showPricingModal(existing = null) {
       </div>
     </div>`;
 
-  const editId = isEdit ? `'${escHtml(existing.model_id).replace(/'/g, "\\'")}'` : 'null';
   const footer = `
-    <button class="btn btn-secondary" onclick="closeModal()">取消</button>
-    <button class="btn btn-primary" onclick="savePricing(${editId})">保存</button>`;
+    <button class="btn btn-secondary" data-action="closeModal">取消</button>
+    <button class="btn btn-primary" data-action="savePricing" data-edit-id="${escHtml(existing ? existing.model_id : '')}">保存</button>`;
 
   showModal(isEdit ? '编辑定价' : '新增定价', content, footer);
 }
@@ -278,8 +282,3 @@ async function savePricing(editModelId) {
   await loadPricingData();
 }
 
-/* 挂载到 window（ES Module onclick 需要） */
-window.showPricingModal = showPricingModal;
-window.editPricing = editPricing;
-window.deletePricing = deletePricing;
-window.savePricing = savePricing;

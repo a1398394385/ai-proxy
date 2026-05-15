@@ -1,4 +1,4 @@
-import { api, escHtml, showModal, closeModal, catLabels, catIcons } from '../core.js';
+import { api, escHtml, showModal, closeModal, catLabels, catIcons, on } from '../core.js';
 
 // ===== Mutable State =====
 let allFacts = [];
@@ -55,7 +55,7 @@ function renderFacts(facts) {
     // 按 1.6 行高、13px 字体计算，120px 约 5-6 行
     const needsExpand = lineCount > 5 || charCount > 300;
     const contentClass = needsExpand ? 'fact-content collapsed' : 'fact-content';
-    const expandBtn = needsExpand ? `<button class="fact-expand-btn" onclick="toggleFactExpand(this)">展开 ▼</button>` : '';
+    const expandBtn = needsExpand ? `<button class="fact-expand-btn" data-action="toggleFactExpand">展开 ▼</button>` : '';
     
     return `<div class="fact-card">
       <div class="fact-header">
@@ -65,8 +65,8 @@ function renderFacts(facts) {
           ${expandBtn}
         </div>
         <div class="fact-actions">
-          <button class="btn btn-secondary btn-sm" onclick="editFact(${f.fact_id})">编辑</button>
-          <button class="btn btn-danger btn-sm" onclick="deleteFact(${f.fact_id})">删除</button>
+          <button class="btn btn-secondary btn-sm" data-action="editFact" data-id="${f.fact_id}">编辑</button>
+          <button class="btn btn-danger btn-sm" data-action="deleteFact" data-id="${f.fact_id}">删除</button>
         </div>
       </div>
       <div class="fact-meta">
@@ -130,8 +130,8 @@ async function editFact(id) {
       <input type="number" class="form-input" id="m-trust" min="0" max="1" step="0.1" value="${f.trust_score}">
     </div>
   `, `
-    <button class="btn btn-secondary" onclick="closeModal()">取消</button>
-    <button class="btn btn-primary" onclick="saveFact()">保存</button>
+    <button class="btn btn-secondary" data-action="closeModal">取消</button>
+    <button class="btn btn-primary" data-action="saveFact">保存</button>
   `);
 }
 
@@ -163,6 +163,13 @@ async function deleteFact(id) {
 
 // ===== Init Fact Page Events =====
 function initFactPage() {
+  // 注册事件委托处理器
+  on('toggleFactExpand', (e, el) => toggleFactExpand(el));
+  on('editFact', (e, el) => editFact(parseInt(el.dataset.id)));
+  on('deleteFact', (e, el) => deleteFact(parseInt(el.dataset.id)));
+  on('saveFact', saveFact);
+  on('closeModal', closeModal);
+
   // Search input
   const searchInput = document.getElementById('search');
   if (searchInput) {
@@ -203,8 +210,8 @@ function initFactPage() {
           <input type="text" class="form-input" id="m-entities" placeholder="entity1, entity2">
         </div>
       `, `
-        <button class="btn btn-secondary" onclick="closeModal()">取消</button>
-        <button class="btn btn-primary" onclick="saveFact()">保存</button>
+        <button class="btn btn-secondary" data-action="closeModal">取消</button>
+        <button class="btn btn-primary" data-action="saveFact">保存</button>
       `);
     });
   }
@@ -212,15 +219,3 @@ function initFactPage() {
 
 // ===== Exports =====
 export { loadFacts, loadCategories, renderFacts, toggleFactExpand, editFact, saveFact, deleteFact, initFactPage, allFacts, activeCategory, editingId };
-
-// ===== Global Scope Mounting =====
-window.loadFacts = loadFacts;
-window.loadCategories = loadCategories;
-window.renderFacts = renderFacts;
-window.toggleFactExpand = toggleFactExpand;
-window.editFact = editFact;
-window.saveFact = saveFact;
-window.deleteFact = deleteFact;
-window.allFacts = allFacts;
-window.activeCategory = activeCategory;
-window.editingId = editingId;

@@ -1,4 +1,4 @@
-import { api, escHtml, showModal, closeModal, bus } from '../core.js';
+import { api, escHtml, showModal, closeModal, bus, on, FORMAT_LABELS, FORMAT_COLORS } from '../core.js';
 
 // ===== 上游管理 =====
 
@@ -24,20 +24,17 @@ async function loadUpstreamTable() {
   document.getElementById('upstream-count').textContent = data.upstreams.length + ' 个上游';
   const tbody = document.querySelector('#upstream-table tbody');
 
-  const formatLabels = { responses: 'Responses', messages: 'Messages', chat_completions: 'Chat' };
-  const formatColors = { responses: 'badge-blue', messages: 'badge-purple', chat_completions: 'badge-green' };
-
-  tbody.innerHTML = data.upstreams.map(u =>
-    `<tr data-upstream-id="${u.id}" style="${u.is_active ? '' : 'opacity:0.5'};cursor:pointer" onclick="toggleModelDrawer(event, '${u.id}')">
+    tbody.innerHTML = data.upstreams.map(u =>
+    `<tr data-action="toggleModelDrawer" data-id="${u.id}" style="${u.is_active ? '' : 'opacity:0.5'};cursor:pointer">
       <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${u.is_active ? 'hsl(var(--green))' : 'hsl(var(--red))'};"></span> ${u.is_active ? '活跃' : '已禁用'}</td>
       <td><span class="badge badge-blue">${escHtml(u.name)}</span></td>
       <td style="font-family:monospace;font-size:12px">${escHtml(u.base_url)}</td>
-      <td><span class="badge ${formatColors[u.format] || ''}">${formatLabels[u.format] || u.format || '-'}</span></td>
+      <td><span class="badge ${FORMAT_COLORS[u.format] || ''}">${FORMAT_LABELS[u.format] || u.format || '-'}</span></td>
       <td>${u.timeout}s</td>
       <td>
-        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); showUpstreamModal('${u.id}')">编辑</button>
-        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); testUpstream('${u.id}')">测试</button>
-        <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); showDeleteUpstreamModal('${u.id}')">删除</button>
+        <button class="btn btn-secondary btn-sm" data-action="showUpstreamModal" data-id="${u.id}">编辑</button>
+        <button class="btn btn-secondary btn-sm" data-action="testUpstream" data-id="${u.id}">测试</button>
+        <button class="btn btn-danger btn-sm" data-action="showDeleteUpstreamModal" data-id="${u.id}">删除</button>
       </td>
     </tr>`
   ).join('');
@@ -48,9 +45,7 @@ async function loadUpstreamTable() {
 let openDrawerUpstreamId = null;
 let upstreamDataMap = {};
 
-function toggleModelDrawer(event, upstreamId) {
-  event.stopPropagation();
-
+function toggleModelDrawer(el, upstreamId) {
   // If same upstream clicked again → close
   if (openDrawerUpstreamId === upstreamId) {
     closeDrawerRow();
@@ -61,19 +56,19 @@ function toggleModelDrawer(event, upstreamId) {
   closeDrawerRow();
 
   // Find the clicked row and insert drawer row after it
-  const clickedRow = event.currentTarget.closest('tr');
+  const clickedRow = el.closest('tr');
   if (!clickedRow) return;
 
   const tbody = clickedRow.parentElement;
   const drawerRow = document.createElement('tr');
   drawerRow.className = 'drawer-row';
   drawerRow.id = 'drawer-' + upstreamId;
-  const detectBtn = '<button class="btn btn-detect" onclick="event.stopPropagation(); window.detectUpstreamModels(\'' + escHtml(upstreamId) + '\')" id="detect-btn-' + escHtml(upstreamId) + '">🔍 检测模型</button>';
+  const detectBtn = '<button class="btn btn-detect" data-action="detectUpstreamModels" data-id="' + escHtml(upstreamId) + '" id="detect-btn-' + escHtml(upstreamId) + '">🔍 检测模型</button>';
   drawerRow.innerHTML =
     '<td colspan="7">' +
       '<div class="drawer-content">' +
         '<div class="drawer-header">🤖 模型列表 — 上游: ' + escHtml(upstreamDataMap[upstreamId]?.name || upstreamId) +
-          '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); showModelModalForUpstream(\'' + escHtml(upstreamId) + '\')" style="margin-left:auto;">＋ 新增模型</button>' + detectBtn + '</div>' +
+          '<button class="btn btn-primary btn-sm" data-action="showModelModalForUpstream" data-id="' + escHtml(upstreamId) + '" style="margin-left:auto;">＋ 新增模型</button>' + detectBtn + '</div>' +
         '<table class="drawer-model-table">' +
           '<thead><tr><th>模型名</th><th>所属上游</th><th>Multimodal</th><th>操作</th></tr></thead>' +
           '<tbody class="drawer-model-tbody"></tbody>' +
@@ -117,8 +112,8 @@ async function loadModelTable(upstreamId) {
       <td><span class="badge" style="background:hsl(var(--muted));color:hsl(var(--muted-foreground))">${escHtml(m.upstream_name)}</span></td>
       <td>${m.multimodal ? '✅' : '❌'}</td>
       <td>
-        <button class="btn btn-secondary btn-sm" onclick="showModelModal(${m.id})">编辑</button>
-        <button class="btn btn-danger btn-sm" onclick="confirmDeleteModel(${m.id}, '${escHtml(m.name)}')">删除</button>
+        <button class="btn btn-secondary btn-sm" data-action="showModelModal" data-id="${m.id}">编辑</button>
+        <button class="btn btn-danger btn-sm" data-action="confirmDeleteModel" data-id="${m.id}" data-name="${escHtml(m.name)}">删除</button>
       </td>
     </tr>`
   ).join('') || '<tr><td colspan="4" class="empty-state">暂无模型</td></tr>';
@@ -163,7 +158,7 @@ async function showUpstreamModal(editId) {
        <div class="form-group"><label class="form-label">重试</label><input type="number" class="form-input" id="up-retry" value="${data.retry}" min="0"></div>
      </div>
      <div class="form-group"><label class="form-label">请求格式</label><select class="form-input" id="up-format"><option value="chat_completions" ${data.format === 'chat_completions' ? 'selected' : ''}>Chat</option><option value="responses" ${data.format === 'responses' ? 'selected' : ''}>Responses</option><option value="messages" ${data.format === 'messages' ? 'selected' : ''}>Messages</option></select></div>`,
-    `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveUpstream('${editId || ''}')">保存</button>`);
+    `<button class="btn btn-secondary" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="saveUpstream" data-edit-id="${editId || ''}">保存</button>`);
 }
 
 async function saveUpstream(editId) {
@@ -218,18 +213,17 @@ async function showDeleteUpstreamModal(id) {
       '<pre style="background:hsl(var(--muted));padding:8px;border-radius:4px;font-size:12px;margin:8px 0">' + escHtml(routeList) + '</pre>' +
       '<div style="color:hsl(var(--muted-foreground));font-size:13px">请先在路由管理中解绑这些路由。</div>' +
       '</div>',
-      '<button class="btn btn-secondary" onclick="closeModal()">关闭</button>' +
+      '<button class="btn btn-secondary" data-action="closeModal">关闭</button>' +
       '<button class="btn btn-danger" disabled>确认删除</button>');
   } else {
-    // 无引用：可以安全删除
     showModal('\u{1F5D1}  删除上游',
       '<div style="font-size:14px;line-height:1.8">' +
       '<div>上游: ' + escHtml(upstreamName) + ' (ID: ' + escHtml(id) + ')</div>' +
       '<div>关联模型: ' + escHtml(modelNames) + '</div>' +
       '<div style="color:hsl(var(--green));margin-top:12px">✅ 无路由引用，可以安全删除</div>' +
       '</div>',
-      '<button class="btn btn-secondary" onclick="closeModal()">取消</button>' +
-      '<button class="btn btn-danger" onclick="confirmDeleteUpstream(\'' + escHtml(id) + '\')">确认删除</button>');
+      '<button class="btn btn-secondary" data-action="closeModal">取消</button>' +
+      '<button class="btn btn-danger" data-action="confirmDeleteUpstream" data-id="' + escHtml(id) + '">确认删除</button>');
   }
 }
 
@@ -266,7 +260,7 @@ async function showModelModal(editId, defaultUpstreamId) {
     `<div class="form-group"><label class="form-label">模型名</label><input type="text" class="form-input" id="m-name" value="${escHtml(data.name)}"></div>
      ${upstreamField}
      <div class="form-group"><label class="form-label">Multimodal</label><select class="form-input" id="m-multimodal"><option value="1" ${data.multimodal ? 'selected' : ''}>✅ 支持</option><option value="0" ${!data.multimodal ? 'selected' : ''}>❌ 不支持</option></select></div>`,
-    `<button class="btn btn-secondary" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="saveModel(${editId || 0})">保存</button>`);
+    `<button class="btn btn-secondary" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="saveModel" data-edit-id="${editId || 0}">保存</button>`);
 }
 
 function showModelModalForUpstream(upstreamId) {
@@ -347,7 +341,7 @@ function showDetectModal(upstreamId, result) {
         '<div class="detect-all-existing-icon">✅</div>' +
         '<div>所有模型已存在' + (existingCount > 0 ? '（' + existingCount + ' 个）' : '') + '</div>' +
       '</div>',
-      '<button class="btn btn-secondary" onclick="closeModal()">关闭</button>');
+      '<button class="btn btn-secondary" data-action="closeModal">关闭</button>');
     return;
   }
 
@@ -369,8 +363,8 @@ function showDetectModal(upstreamId, result) {
     '<div class="detect-select-bar">' +
       '<span class="detect-select-count">已选 <strong id="detect-selected-count">' + discovered.length + '</strong> / ' + discovered.length + '</span>' +
       '<div class="detect-select-actions">' +
-        '<a class="detect-select-link" onclick="window.toggleSelectAllModels(true)">全选</a>' +
-        '<a class="detect-select-link" onclick="window.toggleSelectAllModels(false)">取消全选</a>' +
+        '<a class="detect-select-link" data-action="toggleSelectAllModels" data-checked="true">全选</a>' +
+        '<a class="detect-select-link" data-action="toggleSelectAllModels" data-checked="false">取消全选</a>' +
       '</div>' +
     '</div>';
 
@@ -378,7 +372,7 @@ function showDetectModal(upstreamId, result) {
   const tableRows = discovered.map((name, i) =>
     '<tr class="detect-row" style="animation-delay:' + (i * 30) + 'ms">' +
       '<td class="detect-cell-check">' +
-        '<input type="checkbox" class="detect-model-cb" value="' + escHtml(name) + '" checked id="dm-cb-' + i + '" onchange="window.updateDetectSelectedCount()">' +
+        '<input type="checkbox" class="detect-model-cb" value="' + escHtml(name) + '" checked id="dm-cb-' + i + '" data-action="updateDetectSelectedCount">' +
       '</td>' +
       '<td class="detect-cell-name">' +
         '<span class="detect-model-name" title="' + escHtml(name) + '">' + escHtml(name) + '</span>' +
@@ -407,8 +401,8 @@ function showDetectModal(upstreamId, result) {
   const content = summaryHtml + selectBarHtml + tableHtml;
 
   const footer =
-    '<button class="btn btn-secondary" onclick="closeModal()">取消</button>' +
-    '<button class="btn btn-primary" onclick="window.bulkAddDetectedModels(\'' + escHtml(upstreamId) + '\')">批量添加选中模型</button>';
+    '<button class="btn btn-secondary" data-action="closeModal">取消</button>' +
+    '<button class="btn btn-primary" data-action="bulkAddDetectedModels" data-id="' + escHtml(upstreamId) + '">批量添加选中模型</button>';
 
   showModal('检测模型 — ' + escHtml(upstreamId), content, footer);
 }
@@ -421,7 +415,7 @@ function updateDetectSelectedCount() {
 
 function toggleSelectAllModels(checked) {
   document.querySelectorAll('.detect-model-cb').forEach(cb => { cb.checked = checked; });
-  window.updateDetectSelectedCount();
+  updateDetectSelectedCount();
 }
 
 async function bulkAddDetectedModels(upstreamId) {
@@ -467,25 +461,20 @@ async function loadUpstreamPage() {
 }
 
 function initUpstreamPage() {
-  // No filter dropdown needed — removed
+  on('toggleModelDrawer', (e, el) => toggleModelDrawer(el, el.dataset.id));
+  on('showUpstreamModal', (e, el) => showUpstreamModal(el.dataset.id));
+  on('testUpstream', (e, el) => testUpstream(el.dataset.id));
+  on('showDeleteUpstreamModal', (e, el) => showDeleteUpstreamModal(el.dataset.id));
+  on('saveUpstream', (e, el) => saveUpstream(el.dataset.editId));
+  on('confirmDeleteUpstream', (e, el) => confirmDeleteUpstream(el.dataset.id));
+  on('showModelModal', (e, el) => showModelModal(parseInt(el.dataset.id)));
+  on('showModelModalForUpstream', (e, el) => showModelModalForUpstream(el.dataset.id));
+  on('saveModel', (e, el) => saveModel(parseInt(el.dataset.editId)));
+  on('confirmDeleteModel', (e, el) => confirmDeleteModel(parseInt(el.dataset.id), el.dataset.name));
+  on('detectUpstreamModels', (e, el) => detectUpstreamModels(el.dataset.id));
+  on('bulkAddDetectedModels', (e, el) => bulkAddDetectedModels(el.dataset.id));
+  on('toggleSelectAllModels', (e, el) => toggleSelectAllModels(el.dataset.checked === 'true'));
+  on('updateDetectSelectedCount', updateDetectSelectedCount);
 }
 
-// ─── 全局绑定 ───
-
-window.showUpstreamModal = showUpstreamModal;
-window.saveUpstream = saveUpstream;
-window.testUpstream = testUpstream;
-window.showDeleteUpstreamModal = showDeleteUpstreamModal;
-window.confirmDeleteUpstream = confirmDeleteUpstream;
-window.showModelModal = showModelModal;
-window.showModelModalForUpstream = showModelModalForUpstream;
-window.saveModel = saveModel;
-window.confirmDeleteModel = confirmDeleteModel;
-window.toggleModelDrawer = toggleModelDrawer;
-window.loadUpstreamPage = loadUpstreamPage;
-window.refreshConfigStatus = refreshConfigStatus;
-window.detectUpstreamModels = detectUpstreamModels;
-window.bulkAddDetectedModels = bulkAddDetectedModels;
-window.toggleSelectAllModels = toggleSelectAllModels;
-window.updateDetectSelectedCount = updateDetectSelectedCount;
 export { loadUpstreamPage, initUpstreamPage, refreshConfigStatus };

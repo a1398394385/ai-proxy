@@ -146,40 +146,24 @@ function renderTrendChart(trends) {
   const yTicks = 5;
   
   const gridGroup = document.getElementById('chart-grid');
-  gridGroup.innerHTML = '';
+  const axesGroup = document.getElementById('chart-axes');
+  let gridHtml = '', axesHtml = '';
   for (let i = 0; i <= yTicks; i++) {
     const y = margin.top + (chartHeight * i / yTicks);
-    const value = Math.round(yMax * (1 - i / yTicks));
-    
-    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    line.setAttribute('x1', margin.left);
-    line.setAttribute('y1', y);
-    line.setAttribute('x2', width - margin.right);
-    line.setAttribute('y2', y);
-    line.setAttribute('class', 'area-chart-grid');
-    gridGroup.appendChild(line);
+    gridHtml += `<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" class="area-chart-grid"/>`;
   }
-  
-  const axesGroup = document.getElementById('chart-axes');
-  axesGroup.innerHTML = '';
-  
+  gridGroup.innerHTML = gridHtml;
+
   function formatAxisValue(value) {
     if (value >= 1000000) return (value / 1000000).toFixed(1) + 'M';
     if (value >= 1000) return (value / 1000).toFixed(0) + 'k';
     return value.toString();
   }
-  
+
   for (let i = 0; i <= yTicks; i++) {
     const y = margin.top + (chartHeight * i / yTicks);
     const value = Math.round(yMax * (1 - i / yTicks));
-    
-    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    text.setAttribute('x', margin.left - 10);
-    text.setAttribute('y', y + 4);
-    text.setAttribute('text-anchor', 'end');
-    text.setAttribute('class', 'area-chart-tick');
-    text.textContent = formatAxisValue(value);
-    axesGroup.appendChild(text);
+    axesHtml += `<text x="${margin.left - 10}" y="${y + 4}" text-anchor="end" class="area-chart-tick">${formatAxisValue(value)}</text>`;
   }
 
   const costValues = chartData.map(d => d.estimated_cost_cny || 0);
@@ -193,33 +177,19 @@ function renderTrendChart(trends) {
     return '¥' + v.toFixed(6);
   }
 
-  const rightLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-  rightLine.setAttribute('x1', width - margin.right);
-  rightLine.setAttribute('y1', margin.top);
-  rightLine.setAttribute('x2', width - margin.right);
-  rightLine.setAttribute('y2', margin.top + chartHeight);
-  rightLine.setAttribute('class', 'area-chart-axis');
-  axesGroup.appendChild(rightLine);
-
+  axesHtml += `<line x1="${width - margin.right}" y1="${margin.top}" x2="${width - margin.right}" y2="${margin.top + chartHeight}" class="area-chart-axis"/>`;
   for (let i = 0; i <= yTicks; i++) {
     const y = margin.top + (chartHeight * i / yTicks);
     const value = costYMax * (1 - i / yTicks);
-    const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    t.setAttribute('x', width - margin.right + 8);
-    t.setAttribute('y', y + 4);
-    t.setAttribute('text-anchor', 'start');
-    t.setAttribute('class', 'area-chart-tick');
-    t.setAttribute('fill', '#f43f5e');
-    t.textContent = formatCostAxis(value);
-    axesGroup.appendChild(t);
+    axesHtml += `<text x="${width - margin.right + 8}" y="${y + 4}" text-anchor="start" class="area-chart-tick" fill="#f43f5e">${formatCostAxis(value)}</text>`;
   }
 
   const xStep = chartWidth / (chartData.length - 1 || 1);
   const dataCount = chartData.length;
-  
+
   let labelInterval;
   let labelFormatter;
-  
+
   if (dataCount === 24) {
     labelInterval = 1;
     labelFormatter = (d, i) => {
@@ -239,21 +209,20 @@ function renderTrendChart(trends) {
     labelInterval = Math.ceil(dataCount / 7);
     labelFormatter = (d) => d.date.slice(5);
   }
-  
+
   chartData.forEach((d, i) => {
     if (dataCount === 24) {
       if (i % labelInterval !== 0 && i !== dataCount - 1) {
         return;
       }
     }
-    
+
     if (dataCount !== 24 && i % labelInterval !== 0 && i !== dataCount - 1) {
       return;
     }
-    
+
     const x = margin.left + i * xStep;
-    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    
+
     let textAnchor = 'middle';
     let labelX = x;
     if (i === dataCount - 1) {
@@ -263,17 +232,14 @@ function renderTrendChart(trends) {
       textAnchor = 'start';
       labelX = Math.max(x, margin.left + 5);
     }
-    
-    text.setAttribute('x', labelX);
-    text.setAttribute('y', height - 10);
-    text.setAttribute('text-anchor', textAnchor);
-    text.setAttribute('class', 'area-chart-tick');
+
     const label = labelFormatter(d, i);
     if (label) {
-      text.textContent = label;
-      axesGroup.appendChild(text);
+      axesHtml += `<text x="${labelX}" y="${height - 10}" text-anchor="${textAnchor}" class="area-chart-tick">${label}</text>`;
     }
   });
+
+  axesGroup.innerHTML = axesHtml;
   
   const areasGroup = document.getElementById('chart-areas');
   areasGroup.innerHTML = '';
@@ -942,12 +908,16 @@ export function initTokenPage() {
     });
   });
   
-  // Window resize for chart
+  // Window resize for chart (150ms debounce)
+  let resizeTimer;
   window.addEventListener('resize', () => {
-if (document.getElementById('page-tokens') && !document.getElementById('page-tokens').classList.contains('hidden')) {
-      renderTrendChart(chartData);
-    }
-});
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (document.getElementById('page-tokens') && !document.getElementById('page-tokens').classList.contains('hidden')) {
+        renderTrendChart(chartData);
+      }
+    }, 150);
+  });
 
   // Sub-tab 切换
   initSubTabs();
@@ -955,8 +925,3 @@ if (document.getElementById('page-tokens') && !document.getElementById('page-tok
 
 // ===== Exports =====
 export { loadTokenStats, renderKPI, renderTrendChart, renderModelTable };
-
-// ===== Global Scope Mounting =====
-window.loadTokenStats = loadTokenStats;
-window.renderModelTable = renderModelTable;
-window.initTokenPage = initTokenPage;

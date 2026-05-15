@@ -1,13 +1,10 @@
 // ===== 全局状态 =====
-export let currentPage = 'facts';
 export let currentPeriod = 'week';
-export let allFacts = [];
-export let allModels = [];
-export let activeCategory = null;
-export let editingId = null;
 
 export const catLabels = { general: '通用', project: '项目', tool: '工具', user_pref: '偏好' };
 export const catIcons = { general: '📝', project: '📁', tool: '🔧', user_pref: '✨' };
+export const FORMAT_LABELS = { responses: 'Responses', messages: 'Messages', chat_completions: 'Chat' };
+export const FORMAT_COLORS = { responses: 'badge-blue', messages: 'badge-purple', chat_completions: 'badge-green' };
 
 // ===== 主题切换 =====
 export function initTheme() {
@@ -33,47 +30,21 @@ export function updateThemeButton(theme) {
 }
 
 // ===== 设置功能 =====
-export function initSettings() {
-  const savedDefaultPage = localStorage.getItem('defaultPage') || 'facts';
-  const savedDefaultPeriod = localStorage.getItem('defaultPeriod') || 'week';
+const VALID_PAGES = ['facts', 'tokens', 'models', 'routes', 'pricing'];
 
-  // 同步到当前周期
+export function switchPage(page) {
+  if (!page || !VALID_PAGES.includes(page)) page = 'facts';
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.toggle('active', t.dataset.page === page));
+  VALID_PAGES.forEach(p => document.getElementById(`page-${p}`).classList.toggle('hidden', p !== page));
+}
+
+export function initSettings() {
+  const savedDefaultPeriod = localStorage.getItem('defaultPeriod') || 'week';
   currentPeriod = savedDefaultPeriod;
   window.currentPeriod = currentPeriod;
-
-  // 更新周期按钮的活动状态
   document.querySelectorAll('.period-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.period === savedDefaultPeriod);
   });
-
-  // 应用默认页面
-  applyDefaultPage(savedDefaultPage);
-}
-
-export function applyDefaultPage(page) {
-  const validPages = ['facts', 'tokens', 'models', 'routes', 'pricing'];
-  if (!page || !validPages.includes(page)) {
-    page = 'facts';
-  }
-
-  currentPage = page;
-
-  // 更新导航标签状态
-  document.querySelectorAll('.nav-tab').forEach(t => {
-    t.classList.toggle('active', t.dataset.page === page);
-  });
-
-  // 显示/隐藏页面
-  document.getElementById('page-facts').classList.toggle('hidden', page !== 'facts');
-  document.getElementById('page-tokens').classList.toggle('hidden', page !== 'tokens');
-  document.getElementById('page-models').classList.toggle('hidden', page !== 'models');
-  document.getElementById('page-routes').classList.toggle('hidden', page !== 'routes');
-
-  // 加载数据（通过回调注册表，避免跨模块导入）
-  if (page === 'facts' && pageLoaders.facts) pageLoaders.facts();
-  if (page === 'tokens' && pageLoaders.tokens) pageLoaders.tokens();
-  if (page === 'models' && pageLoaders.models) pageLoaders.models();
-  if (page === 'routes' && pageLoaders.routes) pageLoaders.routes();
 }
 
 export function showSettings() {
@@ -165,10 +136,6 @@ export function escHtml(s) {
   const d = document.createElement('div'); d.textContent = s; return d.innerHTML;
 }
 
-// ===== SVG 面积图 =====
-export let chartData = [];
-export let hiddenSeries = new Set();
-
 // ===== 模态框 =====
 export function showModal(title, content, footer) {
   document.getElementById('modal-title').textContent = title;
@@ -179,7 +146,6 @@ export function showModal(title, content, footer) {
 
 export function closeModal() {
   document.getElementById('modal-overlay').classList.remove('show');
-  editingId = null;
 }
 
 // ===== Event Bus =====
@@ -188,31 +154,24 @@ export const bus = {
   on(name, fn) { document.addEventListener(name, fn); }
 };
 
-// Callback registry for cross-page data loading (avoids circular imports)
-export const pageLoaders = { facts: null, tokens: null, models: null, routes: null, pricing: null };
+// ===== 事件委托 =====
+const __actions = {};
+export function on(action, fn) { __actions[action] = fn; }
 
-// Global scope mounting for onclick handlers (required by ES modules)
-window.api = api;
-window.formatNumber = formatNumber;
-window.formatTokens = formatTokens;
-window.escHtml = escHtml;
-window.initTheme = initTheme;
-window.toggleTheme = toggleTheme;
-window.updateThemeButton = updateThemeButton;
-window.initSettings = initSettings;
-window.applyDefaultPage = applyDefaultPage;
-window.showSettings = showSettings;
-window.saveDefaultPage = saveDefaultPage;
-window.showModal = showModal;
-window.closeModal = closeModal;
-window.bus = bus;
-window.currentPage = currentPage;
+// 注册全局动作
+on('closeModal', closeModal);
+
+export function delegate(root = document) {
+  const handler = e => {
+    const el = e.target.closest('[data-action]');
+    if (el) {
+      const fn = __actions[el.dataset.action];
+      if (fn) fn(e, el);
+    }
+  };
+  root.addEventListener('click', handler);
+  root.addEventListener('change', handler);
+}
+
+// 仅保留跨模块同步必需的 window 挂载
 window.currentPeriod = currentPeriod;
-window.allFacts = allFacts;
-window.allModels = allModels;
-window.activeCategory = activeCategory;
-window.editingId = editingId;
-window.catLabels = catLabels;
-window.catIcons = catIcons;
-window.chartData = chartData;
-window.hiddenSeries = hiddenSeries;
