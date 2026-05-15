@@ -213,22 +213,85 @@ def _resolve_reasoning_effort(body: dict) -> str | None:
     return None
 
 
-def _convert_message_to_chat(role: str, content) -> list:
-    """将单个 Anthropic 消息转换为 Chat Completions messages。
+# ─── Content Block Converters ───
 
-    Anthropic 消息模式：user → assistant → user → assistant → ...
-    其中 tool_result 被 Anthropic 包装在 user 角色中。
 
-    转换规则（三条路，互斥）：
-    1. 含 tool_result → tool 消息（Anthropic 用 user 包装 tool_result）
-    2. assistant + tool_use → assistant + tool_calls + reasoning_content
-    3. 其他 → 保持原 role 的普通消息
+def _convert_text_block(block: dict) -> dict:
+    """Convert Anthropic text block → Chat text content part.
+
+    Preserves cache_control if present.
     """
-    if isinstance(content, str):
-        return [{"role": role, "content": content}]
-    if not isinstance(content, list):
-        return [{"role": role, "content": str(content)}]
+    item = {"type": "text", "text": block.get("text", "")}
+    if "cache_control" in block:
+        item["cache_control"] = block["cache_control"]
+    return item
 
+
+def _convert_image_block(block: dict) -> dict:
+    """Convert Anthropic image block → Chat image_url content part.
+
+    Anthropic: {"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}}
+    Chat: {"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}
+    """
+    source = block.get("source", {})
+    media_type = source.get("media_type", "image/png")
+    data = source.get("data", "")
+    return {
+        "type": "image_url",
+        "image_url": {"url": f"data:{media_type};base64,{data}"},
+    }
+
+
+def _convert_tool_use_block(block: dict) -> dict:
+    """Convert Anthropic tool_use block → Chat tool_calls item.
+
+    Anthropic: {"type":"tool_use","id":"...","name":"...","input":{...}}
+    Chat tool_calls item: {"id":"...","type":"function","function":{"name":"...","arguments":"..."}}
+    """
+    return {
+        "id": block.get("id", ""),
+        "type": "function",
+        "function": {
+            "name": block.get("name", ""),
+            "arguments": json.dumps(block.get("input", {})),
+        },
+    }
+
+
+def _convert_tool_result_block(block: dict) -> dict:
+    """Convert Anthropic tool_result block → Chat tool message.
+
+    IMPORTANT FIX: When content is a list, concatenate ALL text blocks
+    separated by newlines (instead of only taking parts[0]).
+
+    Anthropic: {"type":"tool_result","tool_use_id":"...","content":"..."|[...]}
+    Chat: {"role":"tool","tool_call_id":"...","content":"..."}
+    """
+    tc = block.get("content") or ""
+    if isinstance(tc, list):
+        parts = [b.get("text", "") for b in tc if b.get("type") == "text"]
+        tc = "\n".join(parts) if parts else json.dumps(tc)  # FIX: join all text blocks
+    return {
+        "role": "tool",
+        "tool_call_id": block.get("tool_use_id", ""),
+        "content": tc,
+    }
+
+
+def _convert_thinking_block(block: dict) -> str | None:
+    """Extract thinking text from Anthropic thinking block → reasoning_content.
+
+    Returns the thinking text, or None if empty/absent.
+    """
+    thinking = block.get("thinking", "")
+    return thinking if thinking else None
+
+
+def _convert_content_blocks(content: list, role: str) -> tuple:
+    """Dispatch content blocks to type-specific converters.
+
+    Returns (text_parts, tool_calls, tool_results, reasoning_parts) tuple.
+    """
     text_parts = []
     tool_calls = []
     tool_results = []
@@ -237,41 +300,45 @@ def _convert_message_to_chat(role: str, content) -> list:
     for block in content:
         block_type = block.get("type")
         if block_type == "text":
-            item = {"type": "text", "text": block.get("text", "")}
-            if "cache_control" in block:
-                item["cache_control"] = block["cache_control"]
-            text_parts.append(item)
+            text_parts.append(_convert_text_block(block))
         elif block_type == "image":
-            source = block.get("source", {})
-            media_type = source.get("media_type", "image/png")
-            data = source.get("data", "")
-            text_parts.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:{media_type};base64,{data}"},
-            })
+            text_parts.append(_convert_image_block(block))
         elif block_type == "tool_use":
-            tool_calls.append({
-                "id": block.get("id", ""),
-                "type": "function",
-                "function": {
-                    "name": block.get("name", ""),
-                    "arguments": json.dumps(block.get("input", {})),
-                },
-            })
+            tool_calls.append(_convert_tool_use_block(block))
         elif block_type == "tool_result":
-            tc = block.get("content") or ""
-            if isinstance(tc, list):
-                parts = [b.get("text", "") for b in tc if b.get("type") == "text"]
-                tc = parts[0] if parts else json.dumps(tc)
-            tool_results.append({
-                "role": "tool",
-                "tool_call_id": block.get("tool_use_id", ""),
-                "content": tc,
-            })
+            tool_results.append(_convert_tool_result_block(block))
         elif block_type == "thinking":
-            thinking = block.get("thinking", "")
+            thinking = _convert_thinking_block(block)
             if thinking:
                 reasoning_parts.append(thinking)
+        # redacted_thinking is silently skipped
+
+    return text_parts, tool_calls, tool_results, reasoning_parts
+
+
+def _convert_message_to_chat(role: str, content) -> list:
+    """将单个 Anthropic 消息转换为 Chat Completions messages。
+
+    Anthropic message sequence pattern: user → assistant → user → assistant → ...
+    Two types of "user" messages:
+      (a) User wrapping tool_result: This is an API construct, not real user input.
+          The most reliable distinguisher: real user messages NEVER contain tool_result blocks.
+      (b) Real user input: Contains text and/or image blocks.
+
+    Three-way dispatch (mutually exclusive, priority order):
+      1. tool_result present → tool messages (Anthropic wraps tool_result in user role)
+      2. assistant + tool_use → assistant + tool_calls + reasoning_content
+      3. Everything else → keep original role with plain content
+
+    Key insight: tool_result blocks ONLY appear in anthropic-wrapped "user" messages,
+    never in real user input. This is the primary disambiguation mechanism.
+    """
+    if isinstance(content, str):
+        return [{"role": role, "content": content}]
+    if not isinstance(content, list):
+        return [{"role": role, "content": str(content)}]
+
+    text_parts, tool_calls, tool_results, reasoning_parts = _convert_content_blocks(content, role)
 
     if not text_parts and not tool_calls and not tool_results and not reasoning_parts:
         return []
@@ -308,11 +375,71 @@ def _convert_message_to_chat(role: str, content) -> list:
     return []
 
 
+# ─── Main Entry ───
+
+
 def anthropic_to_chat(body: dict, model_cfg: dict) -> dict:
     """Anthropic Messages → OpenAI Chat Completions 请求转换。
 
     model_cfg: 来自 proxy 层 resolve_model()，必需字段 target（如 "qwen3.6-plus"）。
                测试中 mock 为 {"target": "qwen3.6-plus", "multimodal": True}。
     """
-    # TODO: Task 2 中实现完整逻辑
-    raise NotImplementedError("将在 Task 2 中实现")
+    chat = {
+        "model": model_cfg["target"],
+        "messages": [],
+    }
+
+    # system → system message
+    system = body.get("system")
+    if isinstance(system, str):
+        chat["messages"].append({"role": "system", "content": system})
+    elif isinstance(system, list):
+        parts = [block["text"] for block in system if block.get("type") == "text" and block.get("text")]
+        if parts:
+            chat["messages"].append({"role": "system", "content": "\n".join(parts)})
+
+    # messages
+    for msg in body.get("messages", []):
+        converted = _convert_message_to_chat(msg.get("role", "user"), msg.get("content"))
+        chat["messages"].extend(converted)
+
+    # max_tokens：o-series 用 max_completion_tokens，其他用 max_tokens
+    if "max_tokens" in body:
+        model_target = model_cfg.get("target", "")
+        if _is_o_series(model_target):
+            chat["max_completion_tokens"] = body["max_tokens"]
+        else:
+            chat["max_tokens"] = body["max_tokens"]
+
+    # temperature, top_p, stop, stream
+    stops = body.get("stop_sequences")
+    if stops:
+        chat["stop"] = stops
+    for key in ("temperature", "top_p", "stream"):
+        if key in body:
+            chat[key] = body[key]
+
+    if body.get("stream"):
+        chat["stream_options"] = {"include_usage": True}
+
+    # tool_choice 格式映射
+    if "tool_choice" in body:
+        chat["tool_choice"] = _map_tool_choice(body["tool_choice"])
+
+    # tools 格式转换
+    if "tools" in body:
+        chat["tools"] = _map_anthropic_tools(body["tools"])
+
+    # thinking → reasoning_effort（仅支持的模型）
+    if supports_reasoning_effort(model_cfg.get("target", "")):
+        effort = _resolve_reasoning_effort(body)
+        if effort:
+            chat["reasoning_effort"] = effort
+
+    # 修复：Anthropic 允许 tool_result 在后续任意位置响应 tool_use，
+    # 但 Chat Completions 要求 assistant+tool_calls 后必须紧跟 tool 消息。
+    chat["messages"] = _fix_tool_message_order(chat["messages"])
+
+    # DeepSeek 等推理模型要求：同一会话中 assistant 消息的 reasoning_content 必须一致存在。
+    _ensure_reasoning_consistency(chat["messages"])
+    return chat
