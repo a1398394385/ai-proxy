@@ -343,6 +343,9 @@ def _merge_consecutive_assistants(messages: list) -> list:
                     prev["tool_calls"].extend(curr_tc)
                 else:
                     prev["tool_calls"] = list(curr_tc)
+            # 合并 reasoning_content（如果当前消息有但前一条没有）
+            if "reasoning_content" in msg and "reasoning_content" not in prev:
+                prev["reasoning_content"] = msg["reasoning_content"]
         else:
             result.append(msg)
     return result
