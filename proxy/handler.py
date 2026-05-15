@@ -9,6 +9,7 @@
 """
 
 import json
+import re
 import time
 import ssl
 import logging
@@ -45,11 +46,47 @@ from .transform_responses import _parse_sse_event  # noqa: E402 — v2 流式使
 from .agent_detector import detect_subagent
 
 # ── 上游路径映射 ──
-_UPSTREAM_PATHS = {
-    "chat_completions": "/v1/chat/completions",
-    "responses": "/v1/responses",
-    "messages": "/v1/messages",
+# 各 format 对应的 API 后缀（不含版本路径）
+_SUFFIX_MAP = {
+    "chat_completions": "/chat/completions",
+    "responses": "/responses",
+    "messages": "/messages",
 }
+
+
+def _build_upstream_path(parsed_base, upstream_format):
+    """构建上游请求路径，自动检测 base_url 中的 /vX 版本后缀。
+
+    若 base_url 路径末尾已包含 /vX（X 为数字），直接拼接 API 后缀；
+    否则使用默认 /v1 作为版本前缀。
+    例如:
+      base_url=https://api.openai.com/v1  → /v1/chat/completions
+      base_url=https://glm.api.com/v4    → /v4/chat/completions
+      base_url=https://api.example.com   → /v1/chat/completions
+    """
+    base_path = parsed_base.path.rstrip("/")
+    suffix = _SUFFIX_MAP.get(upstream_format, "/chat/completions")
+
+    if re.search(r'/v\d+$', base_path):
+        return base_path + suffix
+    else:
+        return base_path + "/v1" + suffix
+
+
+def _build_passthrough_path(parsed_base, forward_path):
+    """构建透传上游请求路径，避免 /vX 版本路径重复拼接。
+
+    若 base_url 路径末尾的 /vX 与 forward_path 开头的 /vX/ 一致，
+    则从 forward_path 中去掉该版本前缀。
+    """
+    base_path = parsed_base.path.rstrip("/")
+    m = re.search(r'/(v\d+)$', base_path)
+    if m:
+        version = m.group(1)
+        prefix = "/" + version + "/"
+        if forward_path.startswith(prefix):
+            forward_path = forward_path[len(prefix) - 1:]  # 保留开头的 /
+    return base_path + forward_path
 
 # ─── 统一 Handler ──────────────────────────────────────────────────
 
@@ -251,7 +288,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": {"type": "invalid_request_error", "message": "无效的请求路径"}})
             return
 
-        upstream_url = upstream_cfg["base_url"].rstrip("/") + forward_path
+        _parsed = urllib.parse.urlparse(upstream_cfg["base_url"])
+        upstream_url = f"{_parsed.scheme}://{_parsed.netloc}{_build_passthrough_path(_parsed, forward_path)}"
 
         logger = get_logger()
         if logger:
@@ -305,7 +343,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         retries = upstream_cfg.get("retry", 0) + 1
 
         parsed = urllib.parse.urlparse(base_url)
-        path = parsed.path.rstrip("/") + forward_path
+        path = _build_passthrough_path(parsed, forward_path)
         port = parsed.port or (80 if parsed.scheme == "http" else 443)
         content_type = self.headers.get("Content-Type", "application/json")
 
@@ -401,7 +439,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         retries = upstream_cfg.get("retry", 0) + 1
 
         parsed = urllib.parse.urlparse(base_url)
-        path = parsed.path.rstrip("/") + forward_path
+        path = _build_passthrough_path(parsed, forward_path)
         port = parsed.port or (80 if parsed.scheme == "http" else 443)
         content_type = self.headers.get("Content-Type", "application/json")
 
@@ -642,7 +680,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
         # 阶段 2：记录转换后的请求
         upstream_url = None
         if upstream_cfg.get("base_url"):
-            upstream_url = upstream_cfg["base_url"].rstrip("/") + "/v1/chat/completions"
+            _parsed = urllib.parse.urlparse(upstream_cfg["base_url"])
+            upstream_url = f"{_parsed.scheme}://{_parsed.netloc}{_build_upstream_path(_parsed, upstream_format)}"
         if logger:
             logger.log_converted_request(
                 request_id, model_name, target, upstream_body,
@@ -718,7 +757,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         logger = get_logger()
 
         parsed = urllib.parse.urlparse(base_url)
-        path = _UPSTREAM_PATHS.get(upstream_format, "/v1/chat/completions")
+        path = _build_upstream_path(parsed, upstream_format)
         port = parsed.port or (80 if parsed.scheme == "http" else 443)
 
         for attempt in range(retries):
@@ -846,7 +885,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         logger = get_logger()
 
         parsed = urllib.parse.urlparse(base_url)
-        path = _UPSTREAM_PATHS.get(upstream_format, "/v1/chat/completions")
+        path = _build_upstream_path(parsed, upstream_format)
         port = parsed.port or (80 if parsed.scheme == "http" else 443)
 
         conn = _create_upstream_conn(upstream_cfg, parsed, port)
