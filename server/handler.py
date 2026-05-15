@@ -55,32 +55,25 @@ class HermesDataHandler(SimpleHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
+    def _dispatch(self, handlers, path, qs=None):
+        for fn in handlers:
+            if qs is not None:
+                if fn(path, qs, self):
+                    return
+            else:
+                if fn(path, self):
+                    return
+        json_response(self, {"error": "Not found"}, 404)
+
     def do_GET(self):
         parsed = urlparse(self.path)
-        path = unquote(parsed.path)
-        qs = parse_qs(parsed.query)
-        for fn in _GET_HANDLERS:
-            if fn(path, qs, self):
-                return
-        json_response(self, {"error": "Not found"}, 404)
+        self._dispatch(_GET_HANDLERS, unquote(parsed.path), parse_qs(parsed.query))
 
     def do_POST(self):
-        path = unquote(urlparse(self.path).path)
-        for fn in _POST_HANDLERS:
-            if fn(path, self):
-                return
-        json_response(self, {"error": "Not found"}, 404)
+        self._dispatch(_POST_HANDLERS, unquote(urlparse(self.path).path))
 
     def do_PUT(self):
-        path = unquote(urlparse(self.path).path)
-        for fn in _PUT_HANDLERS:
-            if fn(path, self):
-                return
-        json_response(self, {"error": "Not found"}, 404)
+        self._dispatch(_PUT_HANDLERS, unquote(urlparse(self.path).path))
 
     def do_DELETE(self):
-        path = unquote(urlparse(self.path).path)
-        for fn in _DELETE_HANDLERS:
-            if fn(path, self):
-                return
-        json_response(self, {"error": "Not found"}, 404)
+        self._dispatch(_DELETE_HANDLERS, unquote(urlparse(self.path).path))

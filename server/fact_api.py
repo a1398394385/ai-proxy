@@ -10,40 +10,44 @@ from .common import json_response, row_to_dict, fact_db, _read_json
 # ─── 查询函数 ───
 
 
-def get_all_facts():
+def _fetch_facts_with_entities(where_clause="", params=()):
     with fact_db() as conn:
-        rows = conn.execute("SELECT * FROM facts ORDER BY fact_id DESC").fetchall()
-        facts = [row_to_dict(r) for r in rows]
-        for f in facts:
-            entities = conn.execute(
-                """SELECT e.name, e.entity_type FROM entities e
-                   JOIN fact_entities fe ON e.entity_id = fe.entity_id
-                   WHERE fe.fact_id = ?""",
-                (f["fact_id"],),
-            ).fetchall()
-            f["entities"] = [dict(e)["name"] for e in entities]
-    return facts
+        sql = """SELECT f.*, e.name as entity_name
+                  FROM facts f
+                  LEFT JOIN fact_entities fe ON f.fact_id = fe.fact_id
+                  LEFT JOIN entities e ON fe.entity_id = e.entity_id"""
+        if where_clause:
+            sql += f" WHERE {where_clause}"
+        sql += " ORDER BY f.fact_id DESC"
+        rows = conn.execute(sql, params).fetchall()
+
+    facts_map = {}
+    for r in rows:
+        fid = r["fact_id"]
+        if fid not in facts_map:
+            d = dict(r)
+            for k, v in d.items():
+                if isinstance(v, bytes):
+                    d[k] = None
+            if "entity_name" in d:
+                del d["entity_name"]
+            d["entities"] = []
+            facts_map[fid] = d
+        entity_name = r["entity_name"]
+        if entity_name is not None:
+            facts_map[fid]["entities"].append(entity_name)
+    return list(facts_map.values())
+
+
+def get_all_facts():
+    return _fetch_facts_with_entities()
 
 
 def search_facts(query):
-    with fact_db() as conn:
-        rows = conn.execute(
-            """SELECT f.* FROM facts f
-               JOIN facts_fts ON facts_fts.rowid = f.fact_id
-               WHERE facts_fts MATCH ?
-               ORDER BY f.fact_id DESC""",
-            (query,),
-        ).fetchall()
-        facts = [row_to_dict(r) for r in rows]
-        for f in facts:
-            entities = conn.execute(
-                """SELECT e.name FROM entities e
-                   JOIN fact_entities fe ON e.entity_id = fe.entity_id
-                   WHERE fe.fact_id = ?""",
-                (f["fact_id"],),
-            ).fetchall()
-            f["entities"] = [dict(e)["name"] for e in entities]
-    return facts
+    return _fetch_facts_with_entities(
+        "f.fact_id IN (SELECT rowid FROM facts_fts WHERE facts_fts MATCH ?)",
+        (query,),
+    )
 
 
 # ─── GET ───
@@ -70,20 +74,24 @@ def handle_get(path, qs, handler) -> bool:
             json_response(handler, {"error": "Invalid ID"}, 400)
             return True
         with fact_db() as conn:
-            row = conn.execute(
-                "SELECT * FROM facts WHERE fact_id = ?", (fact_id,)
-            ).fetchone()
-            if not row:
-                json_response(handler, {"error": "Not found"}, 404)
-                return True
-            fact = row_to_dict(row)
-            entities = conn.execute(
-                """SELECT e.name FROM entities e
-                   JOIN fact_entities fe ON e.entity_id = fe.entity_id
-                   WHERE fe.fact_id = ?""",
+            rows = conn.execute(
+                """SELECT f.*, e.name as entity_name
+                   FROM facts f
+                   LEFT JOIN fact_entities fe ON f.fact_id = fe.fact_id
+                   LEFT JOIN entities e ON fe.entity_id = e.entity_id
+                   WHERE f.fact_id = ?""",
                 (fact_id,),
             ).fetchall()
-            fact["entities"] = [dict(e)["name"] for e in entities]
+        if not rows:
+            json_response(handler, {"error": "Not found"}, 404)
+            return True
+        fact = dict(rows[0])
+        for k, v in fact.items():
+            if isinstance(v, bytes):
+                fact[k] = None
+        if "entity_name" in fact:
+            del fact["entity_name"]
+        fact["entities"] = [r["entity_name"] for r in rows if r["entity_name"] is not None]
         json_response(handler, fact)
         return True
 

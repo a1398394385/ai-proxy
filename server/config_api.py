@@ -128,6 +128,100 @@ def _call_upstream_models(upstream: dict) -> dict:
     return result
 
 
+# ─── routes/agent-routes 共享逻辑 ───
+
+_ROUTE_DEFAULTS = {
+    "routes": "responses",
+    "agent-routes": "chat_completions",
+}
+
+
+def _list_routes(kind, request_type, handler):
+    with config_db() as db:
+        list_fn = db.list_routes if kind == "routes" else db.list_agent_routes
+        routes = list_fn(request_type=request_type)
+    json_response(handler, {"routes": routes})
+    return True
+
+
+def _get_route_detail(kind, route_id, handler):
+    with config_db() as db:
+        get_fn = db.get_route if kind == "routes" else db.get_agent_route
+        route = get_fn(route_id)
+    if route:
+        json_response(handler, route)
+    else:
+        json_response(handler, {"error": "Not found"}, 404)
+    return True
+
+
+def _add_route(kind, data, handler):
+    request_type = data.get("request_type", _ROUTE_DEFAULTS[kind])
+    if request_type not in ("responses", "messages", "chat_completions"):
+        json_response(
+            handler,
+            {"error": "request_type must be one of: responses, messages, chat_completions"},
+            400,
+        )
+        return True
+    with config_db() as db:
+        model = db.get_model(data["target_model_id"])
+        if not model:
+            json_response(handler, {"error": "target_model_id 不存在"}, 400)
+            return True
+        if not model.get("upstream_active"):
+            json_response(handler, {"error": "目标模型所属上游已禁用"}, 400)
+            return True
+        try:
+            add_fn = db.add_route if kind == "routes" else db.add_agent_route
+            rid = add_fn(data)
+        except (sqlite3.IntegrityError, ValueError) as e:
+            json_response(handler, {"error": str(e)}, 409)
+            return True
+    _reload_proxies()
+    json_response(handler, {"id": rid, "message": "Created"}, 201)
+    return True
+
+
+def _update_route(kind, route_id, data, handler):
+    with config_db() as db:
+        try:
+            update_fn = db.update_route if kind == "routes" else db.update_agent_route
+            update_fn(route_id, data)
+        except (sqlite3.IntegrityError, ValueError) as e:
+            json_response(handler, {"error": str(e)}, 409)
+            return True
+    _reload_proxies()
+    json_response(handler, {"message": "Updated"})
+    return True
+
+
+def _delete_route(kind, route_id, handler):
+    with config_db() as db:
+        get_fn = db.get_route if kind == "routes" else db.get_agent_route
+        route = get_fn(route_id)
+        if not route:
+            json_response(handler, {"error": "Not found"}, 404)
+            return True
+        if kind == "routes" and route["source"] == "*":
+            routes = db.list_routes()
+            star_count = sum(1 for r in routes if r["source"] == "*")
+            if star_count <= 1:
+                json_response(
+                    handler, {"error": "不能删除最后一条 * fallback 路由"}, 409
+                )
+                return True
+        try:
+            delete_fn = db.delete_route if kind == "routes" else db.delete_agent_route
+            delete_fn(route_id)
+        except sqlite3.IntegrityError as e:
+            json_response(handler, {"error": str(e)}, 409)
+            return True
+    _reload_proxies()
+    json_response(handler, {"message": "Deleted"})
+    return True
+
+
 # ─── GET ───
 
 
@@ -167,36 +261,18 @@ def handle_get(path, qs, handler) -> bool:
 
     if path == "/api/routes":
         request_type = qs.get("request_type", [None])[0]
-        with config_db() as db:
-            routes = db.list_routes(request_type=request_type)
-        json_response(handler, {"routes": routes})
-        return True
+        return _list_routes("routes", request_type, handler)
 
     m = re.match(r"/api/routes/(\d+)$", path)
     if m:
-        with config_db() as db:
-            route = db.get_route(int(m.group(1)))
-        if route:
-            json_response(handler, route)
-        else:
-            json_response(handler, {"error": "Not found"}, 404)
-        return True
+        return _get_route_detail("routes", int(m.group(1)), handler)
     if path == "/api/agent-routes":
         request_type = qs.get("request_type", [None])[0]
-        with config_db() as db:
-            routes = db.list_agent_routes(request_type=request_type)
-        json_response(handler, {"routes": routes})
-        return True
+        return _list_routes("agent-routes", request_type, handler)
 
     m = re.match(r"/api/agent-routes/(\d+)$", path)
     if m:
-        with config_db() as db:
-            route = db.get_agent_route(int(m.group(1)))
-        if route:
-            json_response(handler, route)
-        else:
-            json_response(handler, {"error": "Not found"}, 404)
-        return True
+        return _get_route_detail("agent-routes", int(m.group(1)), handler)
 
 
     if path == "/api/config/status":
@@ -322,58 +398,13 @@ def handle_post(path, handler) -> bool:
         data = _read_json(handler)
         if not data:
             return True
-        request_type = data.get("request_type", "responses")
-        if request_type not in ("responses", "messages", "chat_completions"):
-            json_response(
-                handler,
-                {"error": "request_type must be one of: responses, messages, chat_completions"},
-                400,
-            )
-            return True
-        with config_db() as db:
-            model = db.get_model(data["target_model_id"])
-            if not model:
-                json_response(handler, {"error": "target_model_id 不存在"}, 400)
-                return True
-            if not model.get("upstream_active"):
-                json_response(handler, {"error": "目标模型所属上游已禁用"}, 400)
-                return True
-            try:
-                rid = db.add_route(data)
-            except (sqlite3.IntegrityError, ValueError) as e:
-                json_response(handler, {"error": str(e)}, 409)
-                return True
-        _reload_proxies()
-        json_response(handler, {"id": rid, "message": "Created"}, 201)
-        return True
+        return _add_route("routes", data, handler)
+
     if path == "/api/agent-routes":
         data = _read_json(handler)
         if not data:
             return True
-        request_type = data.get("request_type", "chat_completions")
-        if request_type not in ("responses", "messages", "chat_completions"):
-            json_response(
-                handler,
-                {"error": "request_type must be one of: responses, messages, chat_completions"},
-                400,
-            )
-            return True
-        with config_db() as db:
-            model = db.get_model(data["target_model_id"])
-            if not model:
-                json_response(handler, {"error": "target_model_id 不存在"}, 400)
-                return True
-            if not model.get("upstream_active"):
-                json_response(handler, {"error": "目标模型所属上游已禁用"}, 400)
-                return True
-            try:
-                rid = db.add_agent_route(data)
-            except (sqlite3.IntegrityError, ValueError) as e:
-                json_response(handler, {"error": str(e)}, 409)
-                return True
-        _reload_proxies()
-        json_response(handler, {"id": rid, "message": "Created"}, 201)
-        return True
+        return _add_route("agent-routes", data, handler)
 
 
     if path == "/api/config/reload":
@@ -432,31 +463,14 @@ def handle_put(path, handler) -> bool:
         data = _read_json(handler)
         if not data:
             return True
-        try:
-            with config_db() as db:
-                db.update_agent_route(int(m.group(1)), data)
-        except (sqlite3.IntegrityError, ValueError) as e:
-            json_response(handler, {"error": str(e)}, 409)
-            return True
-        _reload_proxies()
-        json_response(handler, {"message": "Updated"})
-        return True
-
+        return _update_route("agent-routes", int(m.group(1)), data, handler)
 
     m = re.match(r"/api/routes/(\d+)$", path)
     if m:
         data = _read_json(handler)
         if not data:
             return True
-        try:
-            with config_db() as db:
-                db.update_route(int(m.group(1)), data)
-        except (sqlite3.IntegrityError, ValueError) as e:
-            json_response(handler, {"error": str(e)}, 409)
-            return True
-        _reload_proxies()
-        json_response(handler, {"message": "Updated"})
-        return True
+        return _update_route("routes", int(m.group(1)), data, handler)
     return False
 
 
@@ -502,44 +516,10 @@ def handle_delete(path, handler) -> bool:
 
     m = re.match(r"/api/routes/(\d+)$", path)
     if m:
-        rid = int(m.group(1))
-        with config_db() as db:
-            route = db.get_route(rid)
-            if not route:
-                json_response(handler, {"error": "Not found"}, 404)
-                return True
-            if route["source"] == "*":
-                routes = db.list_routes()
-                star_count = sum(1 for r in routes if r["source"] == "*")
-                if star_count <= 1:
-                    json_response(
-                        handler, {"error": "不能删除最后一条 * fallback 路由"}, 409
-                    )
-                    return True
-            try:
-                db.delete_route(rid)
-            except sqlite3.IntegrityError as e:
-                json_response(handler, {"error": str(e)}, 409)
-                return True
-        _reload_proxies()
-        json_response(handler, {"message": "Deleted"})
-        return True
+        return _delete_route("routes", int(m.group(1)), handler)
 
     m = re.match(r"/api/agent-routes/(\d+)$", path)
     if m:
-        rid = int(m.group(1))
-        with config_db() as db:
-            route = db.get_agent_route(rid)
-            if not route:
-                json_response(handler, {"error": "Not found"}, 404)
-                return True
-            try:
-                db.delete_agent_route(rid)
-            except sqlite3.IntegrityError as e:
-                json_response(handler, {"error": str(e)}, 409)
-                return True
-        _reload_proxies()
-        json_response(handler, {"message": "Deleted"})
-        return True
+        return _delete_route("agent-routes", int(m.group(1)), handler)
 
     return False
