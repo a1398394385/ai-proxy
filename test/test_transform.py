@@ -34,6 +34,7 @@ class TestResponsesToChatBasic(unittest.TestCase):
 
         self.assertEqual(result["model"], "claude-sonnet-4-6")
         self.assertEqual(result["max_tokens"], 1000)
+        self.assertEqual(result["max_completion_tokens"], 1000)
         self.assertEqual(result["stream"], True)
         # instructions → system message
         self.assertEqual(result["messages"][0]["role"], "system")
@@ -54,6 +55,49 @@ class TestResponsesToChatBasic(unittest.TestCase):
         # No system message when instructions is empty
         self.assertEqual(len(result["messages"]), 1)
         self.assertEqual(result["messages"][0]["role"], "user")
+
+    def test_input_string_wraps_to_user_message(self):
+        from proxy.transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": "Hello world",
+        }
+        model_cfg = {"target": "test-model", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        msgs = result.get("messages", [])
+        self.assertTrue(any(
+            m.get("role") == "user" and "Hello world" in m.get("content", "")
+            for m in msgs
+        ), "input 为 string 时未能正确包装为 user 消息")
+
+    def test_max_output_tokens_maps_to_both_fields(self):
+        from proxy.transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [],
+            "max_output_tokens": 2048,
+        }
+        model_cfg = {"target": "test-model", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        self.assertEqual(result.get("max_completion_tokens"), 2048)
+        self.assertEqual(result.get("max_tokens"), 2048)
+
+    def test_stream_options_merge_include_usage(self):
+        from proxy.transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [],
+            "stream": True,
+            "stream_options": {"custom_field": True},
+        }
+        model_cfg = {"target": "test-model", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        so = result.get("stream_options", {})
+        self.assertTrue(so.get("include_usage"),
+                        "stream_options 应包含 include_usage=True")
+        self.assertTrue(so.get("custom_field"),
+                        "stream_options 应保留自定义字段")
+
 
 
 class TestChatToResponses(unittest.TestCase):
@@ -76,6 +120,9 @@ class TestChatToResponses(unittest.TestCase):
 
         self.assertTrue(result["id"].startswith("resp-"))
         self.assertEqual(result["model"], "claude-sonnet-4-6")
+        self.assertEqual(result.get("object"), "response")
+        self.assertIsInstance(result.get("created_at"), int)
+        self.assertGreater(result["created_at"], 0)
         self.assertEqual(result["status"], "completed")
         # output 数组
         self.assertEqual(len(result["output"]), 1)
@@ -191,6 +238,40 @@ class TestChatToResponses(unittest.TestCase):
         result = chat_to_responses(chat_resp)
         self.assertEqual(result["usage"]["input_tokens_details"]["cached_tokens"], 0)
         self.assertEqual(result["usage"]["output_tokens_details"]["reasoning_tokens"], 0)
+
+    def test_response_object_and_created_at(self):
+        from proxy.transform import chat_to_responses
+        chat_resp = {
+            "id": "chatcmpl-abc",
+            "model": "test",
+            "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        result = chat_to_responses(chat_resp)
+        self.assertEqual(result.get("object"), "response")
+        self.assertIsInstance(result.get("created_at"), int)
+        self.assertGreater(result["created_at"], 0)
+
+    def test_reasoning_content_enriched(self):
+        from proxy.transform import chat_to_responses
+        chat_resp = {
+            "id": "chatcmpl-def",
+            "model": "test",
+            "choices": [{
+                "message": {"content": "answer", "reasoning_content": "thinking..."},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        result = chat_to_responses(chat_resp)
+        items = [o for o in result["output"] if o["type"] == "reasoning"]
+        self.assertEqual(len(items), 1, "应包含 1 个 reasoning item")
+        has_content = any(
+            c["type"] == "reasoning_text"
+            for c in items[0].get("content", [])
+        )
+        self.assertTrue(has_content, "reasoning item 应包含 content/reasoning_text")
+
 
 
 class TestSSEParser(unittest.TestCase):
@@ -725,7 +806,7 @@ class TestAdvancedFeatures(unittest.TestCase):
             "reasoning 对象不应透传，Chat Completions API 不接受")
 
     def test_discarded_fields(self):
-        """验证 previous_response_id, include, store, client_metadata, service_tier 全部丢弃。"""
+        """验证 previous_response_id, include, store, metadata 全部丢弃。service_tier 透传。"""
         from proxy.transform import responses_to_chat
         body = {
             "model": "gpt-4o",
@@ -733,7 +814,7 @@ class TestAdvancedFeatures(unittest.TestCase):
             "previous_response_id": "resp-prev",
             "include": ["reasoning"],
             "store": True,
-            "client_metadata": {"key": "val"},
+            "metadata": {"key": "val"},
             "service_tier": "default",
             "text": {},
         }
@@ -742,8 +823,43 @@ class TestAdvancedFeatures(unittest.TestCase):
         self.assertNotIn("previous_response_id", result)
         self.assertNotIn("include", result)
         self.assertNotIn("store", result)
-        self.assertNotIn("client_metadata", result)
-        self.assertNotIn("service_tier", result)
+        self.assertNotIn("metadata", result)
+
+    def test_chat_params_passthrough(self):
+        from proxy.transform import responses_to_chat
+        body = {
+            "model": "gpt-4o",
+            "input": [{"type": "message", "role": "user", "content": "hello"}],
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "stop": ["END"],
+            "frequency_penalty": 0.5,
+            "presence_penalty": 0.5,
+            "n": 2,
+        }
+        model_cfg = {"target": "test-model", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        self.assertEqual(result.get("temperature"), 0.7)
+        self.assertEqual(result.get("top_p"), 0.9)
+        self.assertEqual(result.get("stop"), ["END"])
+        self.assertEqual(result.get("n"), 2)
+
+    def test_responses_only_fields_discarded(self):
+        import logging
+        from proxy.transform import responses_to_chat
+        # metadata, max_tool_calls, truncation 应被丢弃（不在结果中）
+        body = {
+            "model": "gpt-4o",
+            "input": [{"type": "message", "role": "user", "content": "hi"}],
+            "metadata": {"key": "val"},
+            "max_tool_calls": 5,
+            "truncation": "auto",
+        }
+        model_cfg = {"target": "test-model", "multimodal": False}
+        result = responses_to_chat(body, model_cfg)
+        self.assertNotIn("metadata", result)
+        self.assertNotIn("max_tool_calls", result)
+        self.assertNotIn("truncation", result)
 
     def test_function_call_output_to_tool_role(self):
         from proxy.transform import responses_to_chat
@@ -1912,10 +2028,10 @@ class TestHandleTextDelta(_SSETestBase):
         self.assertFalse(c.text_content_part_opened)
 
 
-class TestCodexStreamConverterCreated(unittest.TestCase):
+class TestResponsesStreamConverterCreated(unittest.TestCase):
     def _make_converter(self):
-        from proxy.transform import CodexStreamConverter
-        c = CodexStreamConverter()
+        from proxy.transform import ResponsesStreamConverter
+        c = ResponsesStreamConverter()
         c.response_id = "resp-test-00000001"
         c.model = "test-model"
         return c
@@ -1981,11 +2097,18 @@ class TestCodexStreamConverterCreated(unittest.TestCase):
                 data = json.loads(line[6:])
                 self.assertEqual(data["response"]["model"], "test-model")
 
+    def test_codex_alias_importable(self):
+        """CodexStreamConverter 仍可作为别名导入。"""
+        from proxy.transform import CodexStreamConverter as Alias
+        import proxy.transform_responses as mod
+        self.assertIs(Alias, mod.ResponsesStreamConverter)
 
-class TestCodexStreamConverterFields(unittest.TestCase):
+
+
+class TestResponsesStreamConverterFields(unittest.TestCase):
     def test_default_fields(self):
-        from proxy.transform import CodexStreamConverter
-        c = CodexStreamConverter()
+        from proxy.transform import ResponsesStreamConverter
+        c = ResponsesStreamConverter()
         self.assertEqual(c.response_id, "")
         self.assertEqual(c.model, "")
         self.assertEqual(c.next_output_index, 0)
@@ -2002,7 +2125,10 @@ class TestCodexStreamConverterFields(unittest.TestCase):
         self.assertEqual(c.output_items, [])
         self.assertFalse(c.created_sent)
 
-    def test_codex_stream_converter_importable(self):
+    def test_responses_stream_converter_importable(self):
+        """ResponsesStreamConverter 可从 transform 导入。"""
+        from proxy.transform import ResponsesStreamConverter
+        self.assertTrue(hasattr(ResponsesStreamConverter, "response_id"))
         """CodexStreamConverter 可从 transform 导入（别名在删除旧 StreamState 后生效）。"""
         from proxy.transform import CodexStreamConverter
         self.assertTrue(hasattr(CodexStreamConverter, "response_id"))
@@ -2184,6 +2310,39 @@ class TestFixToolMessageOrder(unittest.TestCase):
         self.assertEqual(sorted(all_tc), sorted([
             "call_00_u8Yt", "call_00_ZxNe", "call_00_vggd", "call_01_0mOn", "call_02_iEjm"
         ]))
+
+
+class TestResponsesStreamConverterCompat(unittest.TestCase):
+    """ResponseStreamConverter 重命名向后兼容测试。"""
+
+    def test_alias_class_equality(self):
+        from proxy.transform import ResponsesStreamConverter, CodexStreamConverter
+        self.assertIs(ResponsesStreamConverter, CodexStreamConverter,
+                      "CodexStreamConverter 应作为别名指向 ResponsesStreamConverter")
+
+    def test_alias_function_equality(self):
+        from proxy.transform import create_responses_sse_stream, create_codex_sse_stream
+        self.assertIs(create_responses_sse_stream, create_codex_sse_stream,
+                      "create_codex_sse_stream 应作为别名指向 create_responses_sse_stream")
+
+    def test_stream_state_alias(self):
+        from proxy.transform_responses import ResponsesStreamConverter, StreamState
+        self.assertIs(StreamState, ResponsesStreamConverter,
+                      "StreamState 应指向 ResponsesStreamConverter")
+
+    def test_create_responses_sse_stream_importable(self):
+        from proxy.transform import create_responses_sse_stream
+        self.assertTrue(callable(create_responses_sse_stream))
+
+    def test_create_codex_sse_stream_legacy_importable(self):
+        from proxy.transform import create_codex_sse_stream
+        self.assertTrue(callable(create_codex_sse_stream))
+
+    def test_class_working(self):
+        from proxy.transform import ResponsesStreamConverter
+        c = ResponsesStreamConverter()
+        self.assertTrue(hasattr(c, "response_id"))
+        self.assertTrue(hasattr(c, "process_chunk"))
 
 
 if __name__ == "__main__":

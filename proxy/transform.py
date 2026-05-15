@@ -42,3 +42,7 @@ from .transform_anthropic import anthropic_to_chat, chat_to_anthropic, create_an
 
 # SDK 驱动和转换路由（Task 2-3 新增）
 from .transform_router import TransformRouter  # noqa: F401
+
+# 重命名别名（Task 6-7：CodexStreamConverter → ResponsesStreamConverter）
+ResponsesStreamConverter = CodexStreamConverter  # noqa: F401
+create_responses_sse_stream = create_codex_sse_stream  # noqa: F401
