@@ -585,8 +585,8 @@ class ToolBlockState:
 
 
 @dataclass
-class CodexStreamConverter:
-    """完整的 Codex SSE 流转换器，替代旧 StreamState + 三个顶层函数。"""
+class ResponsesStreamConverter:
+    """完整的 Responses SSE 流转换器，替代旧 StreamState + 三个顶层函数。"""
 
     response_id: str = ""
     model: str = ""
@@ -1023,11 +1023,12 @@ class CodexStreamConverter:
 
 
 # 向后兼容别名
-StreamState = CodexStreamConverter
+CodexStreamConverter = ResponsesStreamConverter  # 向后兼容别名
+StreamState = ResponsesStreamConverter
 
 
-def create_codex_sse_stream(chunks_or_response, *, request_messages=None, response_store=None) -> Generator[str, None, None]:
-    """读取上游 SSE 流（file-like 或 SDK Iterable），生成 Responses API 格式的 SSE 事件。
+def create_responses_sse_stream(chunks_or_response, *, request_messages=None, response_store=None) -> Generator[str, None, None]:
+    """create_responses_sse_stream: 读取上游 SSE 流（file-like 或 SDK Iterable），生成 Responses API 格式的 SSE 事件。
 
     chunks_or_response:
         - file-like 对象（有 read 方法）→ 兼容旧路径（透传/过渡期）
@@ -1035,7 +1036,7 @@ def create_codex_sse_stream(chunks_or_response, *, request_messages=None, respon
     request_messages: chat_body["messages"]，用于构建 conversation
     response_store: ResponseStore 实例；非 None 时在 finish() 后存储 response
     """
-    converter = CodexStreamConverter()
+    converter = ResponsesStreamConverter()
     converter.response_id = generate_response_id()
 
     # 兼容适配：检测输入类型
@@ -1137,3 +1138,4 @@ def output_items_to_messages(output_items: list) -> list:
         result.append({"role": "assistant", "content": None, "tool_calls": tool_calls})
 
     return result
+create_codex_sse_stream = create_responses_sse_stream  # 向后兼容别名
