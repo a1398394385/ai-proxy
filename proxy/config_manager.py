@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from .schema import ensure_table
+
 
 class ConfigDB:
     """数据数据库操作。每次查询打开新连接（无连接池）。
@@ -34,59 +36,8 @@ class ConfigDB:
         """创建数据库和表（幂等）。"""
         conn = self._connect()
         try:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS schema_version (
-                    version INTEGER NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS upstreams (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name            TEXT UNIQUE NOT NULL,
-                    base_url        TEXT NOT NULL,
-                    api_key         TEXT NOT NULL DEFAULT '',
-                    timeout         INTEGER NOT NULL DEFAULT 600  CHECK(timeout > 0),
-                    connect_timeout INTEGER NOT NULL DEFAULT 10   CHECK(connect_timeout > 0),
-                    ssl_verify      INTEGER NOT NULL DEFAULT 1    CHECK(ssl_verify IN (0, 1)),
-                    retry           INTEGER NOT NULL DEFAULT 1    CHECK(retry >= 0),
-                    is_active       INTEGER NOT NULL DEFAULT 1    CHECK(is_active IN (0, 1)),
-                    format          TEXT NOT NULL DEFAULT 'chat_completions'
-                                    CHECK(format IN ('responses', 'messages', 'chat_completions')),
-                    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
-                );
-
-                CREATE TABLE IF NOT EXISTS target_models (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name        TEXT NOT NULL CHECK(length(name) > 0),
-                    upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE RESTRICT,
-                    multimodal  INTEGER NOT NULL DEFAULT 1    CHECK(multimodal IN (0, 1)),
-                    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                    UNIQUE(name, upstream_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS model_routes (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    source          TEXT NOT NULL CHECK(length(source) > 0),
-                    target_model_id INTEGER NOT NULL REFERENCES target_models(id) ON DELETE RESTRICT,
-                    request_type    TEXT NOT NULL DEFAULT 'responses'
-                                    CHECK(request_type IN ('responses', 'messages', 'chat_completions')),
-                    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
-                    UNIQUE(source, request_type)
-                );
-
-                CREATE TABLE IF NOT EXISTS agent_routes (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    source          TEXT NOT NULL CHECK(length(source) > 0 AND source != '*'),
-                    target_model_id INTEGER NOT NULL REFERENCES target_models(id) ON DELETE RESTRICT,
-                    request_type    TEXT NOT NULL DEFAULT 'chat_completions'
-                                    CHECK(request_type IN ('responses', 'messages', 'chat_completions')),
-                    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
-                    UNIQUE(source, request_type)
-                );
-
-                """);
+            for t in ('schema_version', 'upstreams', 'target_models', 'model_routes', 'agent_routes'):
+                ensure_table(conn, t)
 
             # 新数据库写入 schema_version = 5（幂等）
             row = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()
@@ -1299,23 +1250,7 @@ class Migrations:
                 conn.execute("ALTER TABLE upstreams RENAME TO upstreams_old;")
                 logging.info("[Migrations] v4→v5 STEP 2: upstreams 重命名为 upstreams_old")
 
-                conn.execute("""
-                    CREATE TABLE upstreams (
-                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                        name            TEXT UNIQUE NOT NULL,
-                        base_url        TEXT NOT NULL,
-                        api_key         TEXT NOT NULL DEFAULT '',
-                        timeout         INTEGER NOT NULL DEFAULT 600  CHECK(timeout > 0),
-                        connect_timeout INTEGER NOT NULL DEFAULT 10   CHECK(connect_timeout > 0),
-                        ssl_verify      INTEGER NOT NULL DEFAULT 1    CHECK(ssl_verify IN (0, 1)),
-                        retry           INTEGER NOT NULL DEFAULT 1    CHECK(retry >= 0),
-                        is_active       INTEGER NOT NULL DEFAULT 1    CHECK(is_active IN (0, 1)),
-                        format          TEXT NOT NULL DEFAULT 'chat_completions'
-                                        CHECK(format IN ('responses', 'messages', 'chat_completions')),
-                        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-                        updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
-                    );
-                """)
+                ensure_table(conn, 'upstreams')
                 logging.info("[Migrations] v4→v5 STEP 3: 新 upstreams 表创建完成")
 
                 conn.execute("""
@@ -1357,16 +1292,7 @@ class Migrations:
                 conn.execute("ALTER TABLE target_models RENAME TO target_models_old;")
                 logging.info("[Migrations] v4→v5 STEP 7: target_models 重命名为 target_models_old")
 
-                conn.execute("""
-                    CREATE TABLE target_models (
-                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                        name        TEXT NOT NULL CHECK(length(name) > 0),
-                        upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE RESTRICT,
-                        multimodal  INTEGER NOT NULL DEFAULT 1    CHECK(multimodal IN (0, 1)),
-                        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                        UNIQUE(name, upstream_id)
-                    );
-                """)
+                ensure_table(conn, 'target_models')
                 logging.info("[Migrations] v4→v5 STEP 8: 新 target_models 表创建完成")
 
                 conn.execute("""
@@ -1490,18 +1416,7 @@ class Migrations:
             conn.execute("PRAGMA foreign_keys = OFF")
             conn.execute("BEGIN TRANSACTION")
             try:
-                conn.execute('''
-                    CREATE TABLE IF NOT EXISTS agent_routes (
-                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                        source          TEXT NOT NULL CHECK(length(source) > 0 AND source != '*'),
-                        target_model_id INTEGER NOT NULL REFERENCES target_models(id) ON DELETE RESTRICT,
-                        request_type    TEXT NOT NULL DEFAULT 'chat_completions'
-                                        CHECK(request_type IN ('responses', 'messages', 'chat_completions')),
-                        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-                        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
-                        UNIQUE(source, request_type)
-                    );
-                ''')
+                ensure_table(conn, 'agent_routes')
                 logging.info("[Migrations] v6\u2192v7 STEP 1: agent_routes \u8868\u521b\u5efa\u5b8c\u6210")
 
                 conn.execute("DELETE FROM schema_version;")
@@ -1579,12 +1494,16 @@ class ConfigCache:
                     if cfg:
                         new_routes[(source, pt)] = cfg
                 self._routes = new_routes
-                # 加载 agent_routes
+                # 加载 agent_routes（使用 resolve_agent 获取完整 upstream 配置，与主路由 resolve_one 一致）
                 new_agent_routes = {}
                 try:
-                    agent_routes_data = db.get_all_agent_routes(request_type=None)
-                    for src, cfg in agent_routes_data.items():
-                        new_agent_routes[(src, cfg["request_type"])] = cfg
+                    all_agent_routes = db.list_agent_routes(request_type=None)
+                    for route in all_agent_routes:
+                        source = route["source"]
+                        pt = route["request_type"]
+                        cfg = db.resolve_agent(source, pt)
+                        if cfg:
+                            new_agent_routes[(source, pt)] = cfg
                 except Exception:
                     logging.warning("[ConfigCache] agent_routes 加载失败", exc_info=True)
                 self._agent_routes = new_agent_routes

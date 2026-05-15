@@ -23,6 +23,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .paths import get_data_path
+from .schema import ensure_table
 
 logger = logging.getLogger(__name__)
 
@@ -124,37 +125,14 @@ def record_token_stats(usage: dict, context: dict) -> None:
         try:
             # 幂等建表：确保 token_stats 表存在（不依赖 request_logger 初始化顺序）
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS token_stats (
-                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                    request_id          TEXT NOT NULL,
-                    model               TEXT NOT NULL,
-                    target_model        TEXT NOT NULL,
-                    input_tokens        INTEGER DEFAULT 0,
-                    output_tokens       INTEGER DEFAULT 0,
-                    cached_read_tokens  INTEGER DEFAULT 0,
-                    cached_write_tokens INTEGER DEFAULT 0,
-                    request_type        TEXT NOT NULL,
-                    response_type       TEXT,
-                    request_ts          TEXT NOT NULL,
-                    duration_ms         INTEGER,
-                    status              TEXT DEFAULT 'completed',
-                    upstream_id         INTEGER,
-                    created_at          TEXT NOT NULL
-                )
-            """)
+            ensure_table(conn, 'token_stats')
 
             # ─── 兼容旧表：确保后续新增列存在 ───
-            for col, col_type in [("upstream_id", "INTEGER"), ("response_type", "TEXT")]:
+            for col, col_type in [("upstream_id", "INTEGER"), ("response_type", "TEXT"), ("session_id", "TEXT")]:
                 try:
                     conn.execute(f"ALTER TABLE token_stats ADD COLUMN {col} {col_type}")
                 except Exception:
                     pass  # 列已存在
-
-            # ─── 性能索引 ───
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_token_stats_request_ts ON token_stats(request_ts)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_token_stats_target_model ON token_stats(target_model)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_token_stats_upstream_id ON token_stats(upstream_id)")
 
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -163,8 +141,8 @@ def record_token_stats(usage: dict, context: dict) -> None:
                 "(request_id, model, target_model, "
                 "input_tokens, output_tokens, cached_read_tokens, cached_write_tokens, "
                 "request_type, response_type, request_ts, duration_ms, "
-                "status, upstream_id, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?)",
+                "status, upstream_id, session_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?)",
                 (
                     request_id,
                     context.get("model", "unknown"),
@@ -178,6 +156,7 @@ def record_token_stats(usage: dict, context: dict) -> None:
                     context.get("request_ts", ""),
                     context.get("duration_ms", 0),
                     context.get("upstream_id"),
+                    context.get("session_id"),
                     now,
                 ),
             )

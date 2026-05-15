@@ -13,6 +13,7 @@ import re
 import time
 import ssl
 import logging
+
 import http.client
 import urllib.parse
 import socket
@@ -44,6 +45,26 @@ from .token_stats import record_token_stats
 from .transform_router import TransformRouter  # noqa: E402
 from .transform_responses import _parse_sse_event  # noqa: E402 — v2 流式使用
 from .agent_detector import detect_subagent
+
+
+def _extract_session_id(body: dict, request_type: str) -> str | None:
+    """从客户端请求中提取 session_id。
+
+    - Responses: body["prompt_cache_key"]
+    - Anthropic: json.loads(body["metadata"]["user_id"])["session_id"]
+    """
+    try:
+        if request_type == "responses":
+            return body.get("prompt_cache_key") or None
+        if request_type == "messages":
+            user_id_raw = (body.get("metadata") or {}).get("user_id")
+            if user_id_raw:
+                user_id = json.loads(user_id_raw) if isinstance(user_id_raw, str) else user_id_raw
+                return user_id.get("session_id") or None
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        pass
+    return None
+
 
 # ── 上游路径映射 ──
 # 各 format 对应的 API 后缀（不含版本路径）
@@ -143,9 +164,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
 
         # 路由检测：根据路径设置 request_type
-        if path == "/v1/responses" or path == "/v1/responses/compact":
+        if path == "/v1/responses" or path.startswith("/v1/responses/"):
             request_type = REQUEST_TYPE_RESPONSES
-        elif path == "/v1/messages":
+        elif path == "/v1/messages" or path.startswith("/v1/messages/"):
             request_type = REQUEST_TYPE_MESSAGES
         elif path == "/v1/chat/completions":
             request_type = REQUEST_TYPE_CHAT_COMPLETIONS
@@ -188,6 +209,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
 
         model_name = body.get("model", "*")
+        session_id = _extract_session_id(body, request_type)
         # Agent 检测：子 agent 请求走 agent_routes 覆盖层
         is_agent = detect_subagent(body)
         if is_agent:
@@ -232,19 +254,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
         logger = get_logger()
         if logger:
             logger.log_raw_request(request_id, model_name, target, body,
-                                   request_type=request_type, request_path=downstream_url, is_agent=is_agent)
+                                   request_type=request_type, request_path=downstream_url,
+                                   session_id=session_id, is_agent=is_agent)
 
         # 透传/转换判定
         if request_type == upstream_format and upstream_format:
             # 透传路径：request_type 与上游 format 匹配
             self._handle_passthrough(
                 request_type, model_name, target, request_ts, request_id,
-                upstream_cfg, body_raw, body
+                upstream_cfg, body_raw, body, session_id
             )
         else:
             # 转换路径：走 Chat Completions 中间格式
             self._handle_convert(
-                request_type, model_name, model_cfg, body, request_id, request_ts, target
+                request_type, model_name, model_cfg, body, request_id, request_ts, target, session_id
             )
 
     # ── 辅助路由 ─────────────────────────────────────────────────
@@ -276,7 +299,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
     # ── 透传路径 (_handle_passthrough) ──────────────────────────
 
     def _handle_passthrough(self, request_type, model_name, target, request_ts,
-                            request_id, upstream_cfg, body_raw, body):
+                            request_id, upstream_cfg, body_raw, body, session_id=None):
         """透传路径：原样转发原始 body 到上游。
 
         与 PassThroughHandler._handle_pass_through() 对应，
@@ -324,17 +347,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if is_stream:
             self._forward_pass_through_streaming(
                 body_raw, request_id, model_name, target, request_ts,
-                upstream_cfg, forward_path, request_type
+                upstream_cfg, forward_path, request_type, session_id
             )
         else:
             self._forward_pass_through_non_streaming(
                 body_raw, request_id, model_name, target, request_ts,
-                upstream_cfg, forward_path, request_type
+                upstream_cfg, forward_path, request_type, session_id
             )
 
     def _forward_pass_through_non_streaming(self, body_raw, request_id, model_name,
                                              target, request_ts, upstream_cfg,
-                                             forward_path, request_type):
+                                             forward_path, request_type, session_id=None):
         """非流式透传：原样转发请求到上游，原样返回响应。"""
         base_url = upstream_cfg["base_url"]
         api_key = upstream_cfg["api_key"]
@@ -404,6 +427,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             }
                             if upstream_cfg.get("id") is not None:
                                 ctx["upstream_id"] = upstream_cfg["id"]
+                            if session_id:
+                                ctx["session_id"] = session_id
                             record_token_stats(usage, ctx)
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         logging.warning("透传: 响应非 JSON，无法提取 usage")
@@ -430,7 +455,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
     def _forward_pass_through_streaming(self, body_raw, request_id, model_name,
                                          target, request_ts, upstream_cfg,
-                                         forward_path, request_type):
+                                         forward_path, request_type, session_id=None):
         """流式 SSE 透传：逐 chunk 原样中继，不注入代理事件。"""
         base_url = upstream_cfg["base_url"]
         api_key = upstream_cfg["api_key"]
@@ -443,6 +468,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         port = parsed.port or (80 if parsed.scheme == "http" else 443)
         content_type = self.headers.get("Content-Type", "application/json")
 
+        logger = get_logger()
         start = 0
         upstream_status = None
         headers_sent = False
@@ -468,6 +494,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 resp = conn.getresponse()
                 upstream_status = resp.status
                 start = time.time()
+                logger = get_logger()
 
                 if upstream_status != 200:
                     # 上游返回错误 → 直接转发错误响应（非流式）
@@ -477,6 +504,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.send_header("Content-Length", str(len(error_body)))
                     self.end_headers()
                     self.wfile.write(error_body)
+                    logger = get_logger()
                     if logger:
                         logger.log_upstream_response(
                             request_id, upstream_status,
@@ -577,6 +605,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     }
                     if upstream_cfg.get("id") is not None:
                         ctx["upstream_id"] = upstream_cfg["id"]
+                    if session_id:
+                        ctx["session_id"] = session_id
                     record_token_stats(final_usage, ctx)
 
                 self.close_connection = True
@@ -638,7 +668,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
     # ── 转换路径 (_handle_convert) ───────────────────────────────
 
     def _handle_convert(self, client_format, model_name, model_cfg, body,
-                        request_id, request_ts, target):
+                        request_id, request_ts, target, session_id=None):
         """转换路径：TransformRouter 路由 → SDK 调上游 → 响应转换。
 
         client_format: 客户端协议 (responses / messages / chat_completions)
@@ -733,14 +763,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._forward_streaming(
                 upstream_body, model_cfg, request_id, model_name, target, request_ts,
                 upstream_cfg, client_format, upstream_format,
-                store_enabled=store_enabled,
+                store_enabled=store_enabled, session_id=session_id,
             )
         else:
             self._forward_non_streaming(
                 upstream_body, request_id, model_name, target, request_ts,
                 upstream_cfg, client_format, upstream_format,
                 store_enabled=store_enabled,
-                is_responses_api=is_responses_api,
+                is_responses_api=is_responses_api, session_id=session_id,
             )
 
     # ── 转换路径内部方法（v2 SDK 驱动） ──────────────────────────
@@ -748,7 +778,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def _forward_non_streaming(self, upstream_body, request_id, model, target,
                                  request_ts, upstream_cfg, client_format,
                                  upstream_format, store_enabled=True,
-                                 is_responses_api=False):
+                                 is_responses_api=False, session_id=None):
         """非流式：http.client 连上游 → 响应转换。"""
         base_url = upstream_cfg["base_url"]
         api_key = upstream_cfg["api_key"]
@@ -839,6 +869,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         }
                         if upstream_cfg.get("id") is not None:
                             ctx["upstream_id"] = upstream_cfg["id"]
+                        if session_id:
+                            ctx["session_id"] = session_id
                         record_token_stats(usage, ctx)
                 except Exception as e:
                     logging.exception("响应转换失败")
@@ -877,7 +909,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
     def _forward_streaming(self, upstream_body, model_cfg, request_id, model_name,
                              target, request_ts, upstream_cfg, client_format,
-                             upstream_format, store_enabled=True):
+                             upstream_format, store_enabled=True, session_id=None):
         """流式：http.client 连上游 SSE → TransformRouter 逐事件转换。"""
         base_url = upstream_cfg["base_url"]
         api_key = upstream_cfg["api_key"]
@@ -1028,6 +1060,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             }
             if upstream_cfg.get("id") is not None:
                 ctx["upstream_id"] = upstream_cfg["id"]
+            if session_id:
+                ctx["session_id"] = session_id
             record_token_stats(final_usage, ctx)
         else:
             logging.warning(

@@ -20,12 +20,12 @@ async function loadTokenStats() {
     api(`/api/token_stats/by_model?period=${period}`),
     api(`/api/token_stats/trend?period=${period}`)
   ]);
-  
+
   allModels = byModel.models || [];
-  
+
   const periodLabels = { day: '24小时', week: '7天', month: '30天' };
   document.getElementById('chart-period-label').textContent = periodLabels[period] || '7天';
-  
+
   renderKPI(stats);
   renderTrendChart(trend.trends);
   renderModelTable(allModels);
@@ -110,13 +110,13 @@ function renderTrendChart(trends) {
   const wrapper = document.getElementById('chart-wrapper');
   const width = wrapper.clientWidth;
   const height = wrapper.clientHeight;
-  
+
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-  
+
   const margin = { top: 10, right: 60, bottom: 30, left: 50 };
   const chartWidth = width - margin.left - margin.right;
   const chartHeight = height - margin.top - margin.bottom;
-  
+
   function niceMax(max, ticks = 5) {
     if (max === 0) return 1;
     if (max < 10) return 10;
@@ -135,16 +135,16 @@ function renderTrendChart(trends) {
 
   const maxIndividual = Math.max(
     ...chartData.map(d => Math.max(
-      hiddenSeries.has('inputTokens')    ? 0 : (d.input_tokens      || 0),
-      hiddenSeries.has('outputTokens')   ? 0 : (d.output_tokens     || 0),
-      hiddenSeries.has('cacheReadTokens')  ? 0 : (d.cache_read_tokens  || 0),
+      hiddenSeries.has('inputTokens') ? 0 : (d.input_tokens || 0),
+      hiddenSeries.has('outputTokens') ? 0 : (d.output_tokens || 0),
+      hiddenSeries.has('cacheReadTokens') ? 0 : (d.cache_read_tokens || 0),
       hiddenSeries.has('cacheWriteTokens') ? 0 : (d.cache_write_tokens || 0)
     )),
     1
   );
   const yMax = niceMax(maxIndividual);
   const yTicks = 5;
-  
+
   const gridGroup = document.getElementById('chart-grid');
   const axesGroup = document.getElementById('chart-axes');
   let gridHtml = '', axesHtml = '';
@@ -171,8 +171,8 @@ function renderTrendChart(trends) {
 
   function formatCostAxis(v) {
     if (v === 0) return '¥0';
-    if (v >= 10)  return '¥' + v.toFixed(1);
-    if (v >= 1)   return '¥' + v.toFixed(2);
+    if (v >= 10) return '¥' + v.toFixed(1);
+    if (v >= 1) return '¥' + v.toFixed(2);
     if (v >= 0.1) return '¥' + v.toFixed(3);
     return '¥' + v.toFixed(6);
   }
@@ -240,15 +240,15 @@ function renderTrendChart(trends) {
   });
 
   axesGroup.innerHTML = axesHtml;
-  
+
   const areasGroup = document.getElementById('chart-areas');
   areasGroup.innerHTML = '';
 
   const series = [
-    { key: 'inputTokens',    label: '输入 Tokens', color: '#3b82f6', gradient: 'url(#gradientInput)',      class: 'area-path-input',       rawKey: 'input_tokens'       },
-    { key: 'outputTokens',   label: '输出 Tokens', color: '#22c55e', gradient: 'url(#gradientOutput)',     class: 'area-path-output',      rawKey: 'output_tokens'      },
-    { key: 'cacheReadTokens',  label: '缓存读取',  color: '#a855f7', gradient: 'url(#gradientCacheRead)',  class: 'area-path-cache-read',  rawKey: 'cache_read_tokens'  },
-    { key: 'cacheWriteTokens', label: '缓存写入',  color: '#f97316', gradient: 'url(#gradientCacheWrite)', class: 'area-path-cache-write', rawKey: 'cache_write_tokens' }
+    { key: 'inputTokens', label: '输入 Tokens', color: '#3b82f6', gradient: 'url(#gradientInput)', class: 'area-path-input', rawKey: 'input_tokens' },
+    { key: 'outputTokens', label: '输出 Tokens', color: '#22c55e', gradient: 'url(#gradientOutput)', class: 'area-path-output', rawKey: 'output_tokens' },
+    { key: 'cacheReadTokens', label: '缓存读取', color: '#a855f7', gradient: 'url(#gradientCacheRead)', class: 'area-path-cache-read', rawKey: 'cache_read_tokens' },
+    { key: 'cacheWriteTokens', label: '缓存写入', color: '#f97316', gradient: 'url(#gradientCacheWrite)', class: 'area-path-cache-write', rawKey: 'cache_write_tokens' }
   ];
 
   const chartBottom = margin.top + chartHeight;
@@ -308,16 +308,16 @@ function renderTrendChart(trends) {
   document.querySelectorAll('.legend-item').forEach(item => {
     item.classList.toggle('off', hiddenSeries.has(item.dataset.series));
   });
-  
+
   const overlay = document.getElementById('chart-overlay');
   const tooltip = document.getElementById('chart-tooltip');
   const cursorLine = document.getElementById('chart-cursor-line');
-  
+
   overlay.onmousemove = (e) => {
     const rect = svg.getBoundingClientRect();
     const x = e.clientX - rect.left - margin.left;
     const index = Math.round(x / xStep);
-    
+
     if (index >= 0 && index < chartData.length) {
       const d = chartData[index];
       const pointX = margin.left + index * xStep;
@@ -327,7 +327,7 @@ function renderTrendChart(trends) {
       showTooltip(e.clientX, e.clientY, d);
     }
   };
-  
+
   overlay.onmouseleave = () => {
     tooltip.classList.remove('show');
     cursorLine.style.display = 'none';
@@ -338,7 +338,7 @@ function showTooltip(mouseX, mouseY, data) {
   const tooltip = document.getElementById('chart-tooltip');
   const title = document.getElementById('tooltip-title');
   const content = document.getElementById('tooltip-content');
-  
+
   const dataCount = chartData.length;
   if (dataCount === 24) {
     title.textContent = data.date;
@@ -347,7 +347,7 @@ function showTooltip(mouseX, mouseY, data) {
   } else {
     title.textContent = data.date;
   }
-  
+
   const items = [
     { label: '输入 Tokens', value: data.input_tokens, color: '#3b82f6', key: 'inputTokens' },
     { label: '输出 Tokens', value: data.output_tokens, color: '#22c55e', key: 'outputTokens' },
@@ -355,7 +355,7 @@ function showTooltip(mouseX, mouseY, data) {
     { label: '缓存写入', value: data.cache_write_tokens, color: '#f97316', key: 'cacheWriteTokens' },
     { label: '成本', value: '¥' + data.estimated_cost_cny.toFixed(6), color: '#f43f5e', bold: true }
   ];
-  
+
   content.innerHTML = items.filter(item => !item.key || !hiddenSeries.has(item.key)).map(item => `
     <div class="tooltip-row">
       <div class="tooltip-label">
@@ -365,7 +365,7 @@ function showTooltip(mouseX, mouseY, data) {
       <span class="tooltip-value" style="color:${item.bold ? 'hsl(var(--foreground))' : ''}">${typeof item.value === 'number' ? item.value.toLocaleString() : item.value}</span>
     </div>
   `).join('');
-  
+
   const rect = document.getElementById('chart-wrapper').getBoundingClientRect();
   let left = mouseX - rect.left + 15;
   let top = mouseY - rect.top - 10;
@@ -415,7 +415,7 @@ function renderModelTable(models) {
     const dotColor = dotColors[idx % dotColors.length];
 
     const modelLabel = m.display_name || m.model;
-    const cacheBase = m.input_tokens + m.cache_read_tokens;
+    const cacheBase = m.input_tokens + m.cache_read_tokens + m.cache_write_tokens;
     const cacheRate = cacheBase > 0 ? (m.cache_read_tokens / cacheBase * 100) : 0;
 
     return `<tr data-model="${escHtml(m.model)}" class="model-row">
@@ -885,7 +885,7 @@ export function initTokenPage() {
   // Refresh button
   const refreshBtn = document.getElementById('refresh-token');
   if (refreshBtn) refreshBtn.addEventListener('click', loadTokenStats);
-  
+
   // Model search
   const modelSearch = document.getElementById('model-search');
   if (modelSearch) {
@@ -893,7 +893,7 @@ export function initTokenPage() {
       renderModelTable(allModels);
     });
   }
-  
+
   // Legend click toggle
   document.querySelectorAll('.legend-item').forEach(item => {
     item.addEventListener('click', () => {
@@ -907,7 +907,7 @@ export function initTokenPage() {
       renderTrendChart(chartData);
     });
   });
-  
+
   // Window resize for chart (150ms debounce)
   let resizeTimer;
   window.addEventListener('resize', () => {

@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from .schema import ensure_table
+
 
 # request_type 格式常量
 REQUEST_TYPE_RESPONSES = "responses"
@@ -28,42 +30,8 @@ class RequestLogger:
 
         conn = self._get_conn()
         try:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS debug_log (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    request_id  TEXT NOT NULL,
-                    stage       TEXT NOT NULL,
-                    model       TEXT,
-                    target_model TEXT,
-                    status_code INTEGER,
-                    proxy_type   TEXT,
-                    request_path TEXT,
-                    data         TEXT,
-                    created_at   TEXT NOT NULL
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_debug_request_id ON debug_log(request_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_debug_created_at ON debug_log(created_at)")
-
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS token_stats (
-                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                    request_id          TEXT NOT NULL,
-                    request_type        TEXT NOT NULL,
-                    model               TEXT NOT NULL,
-                    target_model        TEXT NOT NULL,
-                    request_ts          TEXT NOT NULL,
-                    duration_ms         INTEGER,
-                    input_tokens        INTEGER DEFAULT 0,
-                    output_tokens       INTEGER DEFAULT 0,
-                    cached_read_tokens  INTEGER DEFAULT 0,
-                    cached_write_tokens INTEGER DEFAULT 0,
-                    status              TEXT DEFAULT 'completed',
-                    created_at          TEXT NOT NULL
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_token_request_ts ON token_stats(request_ts)")
-
+            ensure_table(conn, 'debug_log')
+            ensure_table(conn, 'token_stats')
             conn.commit()
         finally:
             conn.close()
@@ -107,13 +75,19 @@ class RequestLogger:
                 shutil.copy2(self.db_path, backup_path)
                 conn.execute('ALTER TABLE debug_log ADD COLUMN request_path TEXT')
 
+            # session_id 列迁移
+            if 'session_id' not in cols_debug:
+                conn.execute('ALTER TABLE debug_log ADD COLUMN session_id TEXT')
+            if 'session_id' not in cols_stats:
+                conn.execute('ALTER TABLE token_stats ADD COLUMN session_id TEXT')
+
             conn.commit()
         finally:
             conn.close()
 
     def log_raw_request(self, request_id: str, model: str, target: str, body: str | dict,
                         request_type: str = None, request_path: str = None,
-                        is_agent: bool = False):
+                        session_id: str = None, is_agent: bool = False):
         """阶段 1：记录 agent 原始请求。"""
         try:
             conn = self._get_conn()
@@ -125,9 +99,9 @@ class RequestLogger:
                     data = body if isinstance(body, str) else json.dumps(body)
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 conn.execute(
-                    "INSERT INTO debug_log (request_id, stage, model, target_model, request_type, request_path, data, created_at) "
-                    "VALUES (?, 'raw_request', ?, ?, ?, ?, ?, ?)",
-                    (request_id, model, target, request_type, request_path, data, now),
+                    "INSERT INTO debug_log (request_id, stage, model, target_model, request_type, request_path, data, session_id, created_at) "
+                    "VALUES (?, 'raw_request', ?, ?, ?, ?, ?, ?, ?)",
+                    (request_id, model, target, request_type, request_path, data, session_id, now),
                 )
                 conn.commit()
             finally:
