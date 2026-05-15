@@ -5,7 +5,7 @@ PROXY_PIDFILE="$SCRIPT_DIR/.proxy.pid"
 
 start_data_browser() {
   local old_pid
-  old_pid=$(lsof -ti:18742 2>/dev/null)
+  old_pid=$(lsof -ti:18742 -sTCP:LISTEN 2>/dev/null)
   if [ -n "$old_pid" ]; then
     echo "Hermes Data Browser 已经在运行 (PID $old_pid)，访问 http://127.0.0.1:18742"
     echo "$old_pid" > "$PIDFILE"
@@ -19,7 +19,7 @@ start_data_browser() {
   while [ $i -lt 6 ]; do
     sleep 0.5
     local pid
-    pid=$(lsof -ti:18742 2>/dev/null)
+    pid=$(lsof -ti:18742 -sTCP:LISTEN 2>/dev/null)
     if [ -n "$pid" ]; then
       echo "$pid" > "$PIDFILE"
       echo "Hermes Data Browser 已启动 (PID $pid)，访问 http://127.0.0.1:18742"
@@ -33,7 +33,7 @@ start_data_browser() {
 
 stop_data_browser() {
   local pids
-  pids=$(lsof -ti:18742 2>/dev/null)
+  pids=$(lsof -ti:18742 -sTCP:LISTEN 2>/dev/null)
   if [ -n "$pids" ]; then
     for pid in $pids; do
       kill "$pid" 2>/dev/null
@@ -41,7 +41,7 @@ stop_data_browser() {
     rm -f "$PIDFILE"
     # 等待端口释放
     local i=0
-    while [ $i -lt 10 ] && lsof -ti:18742 >/dev/null 2>&1; do
+    while [ $i -lt 10 ] && lsof -ti:18742 -sTCP:LISTEN >/dev/null 2>&1; do
       sleep 0.3
       i=$((i + 1))
     done
@@ -55,7 +55,7 @@ stop_data_browser() {
 
 status_data_browser() {
   local pid
-  pid=$(lsof -ti:18742 2>/dev/null)
+  pid=$(lsof -ti:18742 -sTCP:LISTEN 2>/dev/null)
   if [ -n "$pid" ]; then
     echo "Hermes Data Browser 运行中 PID=$pid"
     return 0
@@ -66,7 +66,7 @@ status_data_browser() {
 
 start_proxy() {
   local old_pid
-  old_pid=$(lsof -ti:48743 2>/dev/null)
+  old_pid=$(lsof -ti:48743 -sTCP:LISTEN 2>/dev/null)
   if [ -n "$old_pid" ]; then
     echo "AI Proxy 已经在运行 (PID $old_pid)，访问 http://127.0.0.1:48743"
     echo "$old_pid" > "$PROXY_PIDFILE"
@@ -80,7 +80,7 @@ start_proxy() {
   while [ $i -lt 6 ]; do
     sleep 0.5
     local pid
-    pid=$(lsof -ti:48743 2>/dev/null)
+    pid=$(lsof -ti:48743 -sTCP:LISTEN 2>/dev/null)
     if [ -n "$pid" ]; then
       echo "$pid" > "$PROXY_PIDFILE"
       echo "AI Proxy 已启动 (PID $pid)，访问 http://127.0.0.1:48743"
@@ -94,7 +94,7 @@ start_proxy() {
 
 stop_proxy() {
   local pids
-  pids=$(lsof -ti:48743 2>/dev/null)
+  pids=$(lsof -ti:48743 -sTCP:LISTEN 2>/dev/null)
   if [ -n "$pids" ]; then
     for pid in $pids; do
       kill "$pid" 2>/dev/null
@@ -102,7 +102,7 @@ stop_proxy() {
     rm -f "$PROXY_PIDFILE"
     # 等待端口释放
     local i=0
-    while [ $i -lt 10 ] && lsof -ti:48743 >/dev/null 2>&1; do
+    while [ $i -lt 10 ] && lsof -ti:48743 -sTCP:LISTEN >/dev/null 2>&1; do
       sleep 0.3
       i=$((i + 1))
     done
@@ -116,7 +116,7 @@ stop_proxy() {
 
 status_proxy() {
   local pid
-  pid=$(lsof -ti:48743 2>/dev/null)
+  pid=$(lsof -ti:48743 -sTCP:LISTEN 2>/dev/null)
   if [ -n "$pid" ]; then
     echo "AI Proxy 运行中 PID=$pid"
     return 0
