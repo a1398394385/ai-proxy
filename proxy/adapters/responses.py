@@ -31,7 +31,7 @@ class ResponsesAdapter(ProtocolAdapter):
     def stream_from(self, upstream_format: str, chunks, *,
                     request_messages=None, response_store=None):
         if upstream_format == "chat_completions":
-            from proxy.transform_responses import create_codex_sse_stream
+            from proxy.transform_responses import create_responses_sse_stream as create_codex_sse_stream
             yield from create_codex_sse_stream(
                 chunks,
                 request_messages=request_messages,

@@ -4,14 +4,16 @@
 - generate_response_id: 来自 transform_responses
 - responses_to_chat: 来自 transform_responses（/v1/responses 路径）
 - chat_to_responses: 来自 transform_responses
-- create_codex_sse_stream: 来自 transform_responses
+- create_codex_sse_stream: 来自 transform_responses (旧名，别名 → create_responses_sse_stream)
 - _format_sse_event: 来自 sse_utils
 - _parse_sse_event: 来自 transform_responses
 - iter_sse_events: 来自 transform_responses
 - StreamState: 来自 transform_responses
-- CodexStreamConverter: 来自 transform_responses
+- CodexStreamConverter: 来自 transform_responses (旧名，别名 → ResponsesStreamConverter)
 - ToolBlockState: 来自 transform_responses
 - output_items_to_messages: 来自 transform_responses
+- ResponsesStreamConverter: 来自 transform_responses (Task 6-7 重命名)
+- create_responses_sse_stream: 来自 transform_responses (Task 6-7 重命名)
 - _map_tools: 来自 transform_responses
 - _map_response_format: 来自 transform_responses
 - anthropic_to_chat: 来自 transform_anthropic（/v1/messages 路径）— Task 4 后可用
