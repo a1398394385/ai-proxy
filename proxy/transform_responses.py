@@ -13,7 +13,7 @@ import uuid
 import time
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Generator, Any, Union
 
 from .token_stats import _find_first
 from .sse_utils import _format_sse_event
@@ -44,7 +44,10 @@ def responses_to_chat(body: dict, model_cfg: dict) -> dict:
     # reasoning 追踪：上游 thinking mode 要求 assistant 消息必须携带 reasoning_content
     # Responses API 中 reasoning 项紧跟在 assistant 交互之后，需要注入到下一条 assistant 消息
     pending_reasoning = None  # 待注入的 reasoning 文本
-    for item in body.get("input", []):
+    raw_input = body.get("input", [])
+    if isinstance(raw_input, str):
+        raw_input = [{"type": "message", "role": "user", "content": raw_input}]
+    for item in raw_input:
         if item.get("type") == "reasoning":
             # 收集 reasoning 文本，等待下一条 assistant 消息时注入
             summary = item.get("summary", [])
@@ -78,6 +81,7 @@ def responses_to_chat(body: dict, model_cfg: dict) -> dict:
 
     if "max_output_tokens" in body:
         chat["max_tokens"] = body["max_output_tokens"]
+        chat["max_completion_tokens"] = body["max_output_tokens"]
 
     # 工具转换：Responses API → Chat Completions
     if "tools" in body:
@@ -85,10 +89,19 @@ def responses_to_chat(body: dict, model_cfg: dict) -> dict:
     if "stream" in body:
         chat["stream"] = body["stream"]
         if body["stream"]:
-            chat["stream_options"] = {"include_usage": True}
+            chat["stream_options"] = {**body.get("stream_options", {}), "include_usage": True}
     for key in ("tool_choice", "parallel_tool_calls"):
         if key in body:
             chat[key] = body[key]
+    # 透传 Chat Completions 原生参数
+    for key in ("temperature", "top_p", "stop", "service_tier", "frequency_penalty", "presence_penalty", "n"):
+        if key in body:
+            chat[key] = body[key]
+    # Responses 专有字段 → 不透传上游，记录 warning
+    for key in ("metadata", "max_tool_calls", "truncation"):
+        if key in body:
+            logger.warning(f"[transform] Responses 专有字段 '{key}' 已丢弃 (不透传 Chat Completions 上游)"
+)
 
     # reasoning.effort → reasoning_effort
     # Responses API: {"reasoning": {"effort": "xhigh"}}
@@ -455,6 +468,7 @@ def chat_to_responses(response: dict) -> dict:
             "type": "reasoning",
             "id": f"rs_{uuid.uuid4().hex[:8]}",
             "summary": [{"type": "summary_text", "text": reasoning_content}],
+            "content": [{"type": "reasoning_text", "text": reasoning_content}],
         })
 
     # 文本和拒绝内容合并到同一 message item
@@ -488,10 +502,13 @@ def chat_to_responses(response: dict) -> dict:
 
     result = {
         "id": resp_id,
+        "object": "response",
         "model": response.get("model", ""),
         "status": FINISH_REASON_MAP.get(finish_reason, "completed"),
         "output": output,
     }
+
+    result["created_at"] = int(time.time())
 
     # incomplete_details
     if finish_reason in INCOMPLETE_REASON_MAP:
@@ -538,7 +555,7 @@ def _parse_sse_event(text: str) -> Optional[dict]:
         return None
 
 
-def iter_sse_events(upstream_response):
+def iter_sse_events(upstream_response) -> Generator[dict, None, None]:
     """逐 chunk 读取 HTTP 响应流，yield 解析后的 SSE 事件。
 
     upstream_response: 有 read(size) 方法的对象（http.client.HTTPResponse）
@@ -632,7 +649,7 @@ class CodexStreamConverter:
         events = [
             self._format_sse("response.created",     {"response": resp}),
             self._format_sse("response.in_progress", {"response": resp}),
-            self._format_sse("response.metadata",    {"headers": {"model": self.model}}),
+            self._format_sse("response.metadata",    {"headers": {"model": self.model}}),  # (NOT-STANDARD) 非标准扩展
         ]
         self.created_sent = True
         return events
@@ -1009,7 +1026,7 @@ class CodexStreamConverter:
 StreamState = CodexStreamConverter
 
 
-def create_codex_sse_stream(chunks_or_response, *, request_messages=None, response_store=None):
+def create_codex_sse_stream(chunks_or_response, *, request_messages=None, response_store=None) -> Generator[str, None, None]:
     """读取上游 SSE 流（file-like 或 SDK Iterable），生成 Responses API 格式的 SSE 事件。
 
     chunks_or_response:
