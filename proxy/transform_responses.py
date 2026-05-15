@@ -1114,9 +1114,13 @@ def output_items_to_messages(output_items: list) -> list:
             if text:
                 pending_reasoning = text
         elif itype == "message":
-            # 先 flush 积累的 tool_calls
+            # 先 flush 积累的 tool_calls（带 reasoning_content，DeepSeek Thinking Mode 要求）
             if tool_calls:
-                result.append({"role": "assistant", "content": None, "tool_calls": tool_calls})
+                tc_msg = {"role": "assistant", "content": None, "tool_calls": tool_calls}
+                if pending_reasoning:
+                    tc_msg["reasoning_content"] = pending_reasoning
+                    pending_reasoning = None
+                result.append(tc_msg)
                 tool_calls = []
             text = next(
                 (b["text"] for b in item.get("content", []) if b.get("type") == "output_text"),
@@ -1136,9 +1140,12 @@ def output_items_to_messages(output_items: list) -> list:
                     "arguments": item.get("arguments", ""),
                 },
             })
-
     if tool_calls:
-        result.append({"role": "assistant", "content": None, "tool_calls": tool_calls})
+        tc_msg = {"role": "assistant", "content": None, "tool_calls": tool_calls}
+        if pending_reasoning:
+            tc_msg["reasoning_content"] = pending_reasoning
+            pending_reasoning = None
+        result.append(tc_msg)
 
     return result
 create_codex_sse_stream = create_responses_sse_stream  # 向后兼容别名
