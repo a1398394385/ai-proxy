@@ -558,6 +558,8 @@ def _parse_sse_event(text: str) -> Optional[dict]:
 def iter_sse_events(upstream_response) -> Generator[dict, None, None]:
     """逐 chunk 读取 HTTP 响应流，yield 解析后的 SSE 事件。
 
+    遇到 [DONE] 事件后立即停止读取，避免上游连接未关闭导致阻塞。
+
     upstream_response: 有 read(size) 方法的对象（http.client.HTTPResponse）
     """
     buf = b""
@@ -571,7 +573,8 @@ def iter_sse_events(upstream_response) -> Generator[dict, None, None]:
             event = _parse_sse_event(raw.decode("utf-8", errors="replace"))
             if event:
                 yield event
-
+                if event.get("event") == "[DONE]":
+                    return  # [DONE] 后停止读取，不等上游关闭连接
 
 @dataclass
 class ToolBlockState:
