@@ -705,20 +705,18 @@ user → assistant(reasoning + tool_calls) → tool → tool → assistant(reaso
 3. **检查 SSE 流转换** — 流式处理时确保正确累积并回传 `reasoning_content`
 4. **检查非同轮的一致性** — 同一会话中，如果某些 assistant 消息有 `reasoning_content` 而有些没有，DeepSeek 会拒绝
 
-### 3.5 代理转换注意事项（proxy transform_responses）
+### 3.5 构造 assistant 消息时 reasoning_content 必须保留
 
-`output_items_to_messages()` 必须在 tool_call assistant 消息上保留 reasoning_content
+构建 Chat Completions 请求的 messages 数组时，如果请求中涉及 reasoning_content，必须遵守以下规则：
 
-当上游使用 DeepSeek Thinking Mode，且代理将 Responses API output items 反转为 Chat messages 时：
-
-- 如果 output 中有 reasoning item (type: reasoning)，其 summary 文本必须被收集
-- 如果 output 中还有 function_call items，它们会被合并为一条 tool_calls assistant 消息
-- 这条 tool_calls 消息必须携带 reasoning_content，否则 DeepSeek 返回 400
+**如果 assistant 消息包含 tool_calls，则必须同时携带 `reasoning_content`**。
+即使 tool_calls 和 reasoning_content 来自不同来源（例如从其他格式转换而来），
+最终拼装出的 assistant 消息也必须同时包含这两个字段。
 
 关键约束：
-- output_items_to_messages() 中两处 tool_calls flush（循环内 flush + 循环结束 flush）都必须附上 pending_reasoning
-- reasoning 和 tool_calls 的顺序无关，只要 tool_calls flush 时还有 pending_reasoning 就需要携带
-- 对于已经通过 message item 消费完 reasoning 的场景，tool_calls flush 时不应重复携带
+- 构建 messages 时，任何含有 tool_calls 的 assistant 消息都必须检查是否有对应的 reasoning_content 需要注入
+- reasoning 可能在 tool_calls 之前或之后出现，无论哪种顺序，最终 tool_calls 消息都必须带上 reasoning_content
+- 已通过其他 assistant 消息消费过的 reasoning_content，不再重复注入
 
 ## 四、完整工具调用示例
 
