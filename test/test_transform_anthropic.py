@@ -394,6 +394,112 @@ class TestAnthropicToChat(unittest.TestCase):
         result = anthropic_to_chat(body, {"target": "qwen3.6-plus"})
         self.assertTrue(result["stream"])
         self.assertEqual(result["stream_options"], {"include_usage": True})
+    def test_tool_result_multiple_text_blocks(self):
+        """tool_result content 有多个 type='text' block → \n 拼接。"""
+        from proxy.transform_anthropic import anthropic_to_chat
+        body = {
+            "model": "claude-sonnet-4-6",
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "call_1", "content": [
+                        {"type": "text", "text": "alpha"},
+                        {"type": "text", "text": "beta"},
+                        {"type": "thinking", "thinking": "skip"},
+                    ]},
+                ]}
+            ],
+            "max_tokens": 100,
+        }
+        result = anthropic_to_chat(body, {"target": "qwen3.6-plus"})
+        self.assertEqual(result["messages"][0]["role"], "tool")
+        self.assertEqual(result["messages"][0]["tool_call_id"], "call_1")
+        self.assertEqual(result["messages"][0]["content"], "alpha\nbeta")
+
+    def test_redacted_thinking_skipped(self):
+        """redacted_thinking block 静默忽略，不影响输出。"""
+        from proxy.transform_anthropic import anthropic_to_chat
+        body = {
+            "model": "claude-sonnet-4-6",
+            "messages": [
+                {"role": "assistant", "content": [
+                    {"type": "redacted_thinking", "data": "redacted"},
+                    {"type": "text", "text": "Hello"},
+                ]}
+            ],
+            "max_tokens": 100,
+        }
+        result = anthropic_to_chat(body, {"target": "qwen3.6-plus"})
+        self.assertEqual(len(result["messages"]), 1)
+        self.assertEqual(result["messages"][0]["role"], "assistant")
+        self.assertEqual(result["messages"][0]["content"], [{"type": "text", "text": "Hello"}])
+        self.assertNotIn("reasoning_content", result["messages"][0])
+
+    def test_empty_content_blocks(self):
+        """content 为空数组 [] → 跳过该消息。"""
+        from proxy.transform_anthropic import anthropic_to_chat
+        body = {
+            "model": "claude-sonnet-4-6",
+            "messages": [
+                {"role": "user", "content": []},
+                {"role": "user", "content": "real message"},
+            ],
+            "max_tokens": 100,
+        }
+        result = anthropic_to_chat(body, {"target": "qwen3.6-plus"})
+        self.assertEqual(len(result["messages"]), 1)
+        self.assertEqual(result["messages"][0]["content"], "real message")
+
+    def test_system_text_with_cache_control(self):
+        """system array 中 text block 含 cache_control → 只提取文本拼接。"""
+        from proxy.transform_anthropic import anthropic_to_chat
+        body = {
+            "model": "claude-sonnet-4-6",
+            "system": [
+                {"type": "text", "text": "part1"},
+                {"type": "text", "text": "part2", "cache_control": {"type": "ephemeral"}},
+            ],
+            "messages": [{"role": "user", "content": "Hi"}],
+            "max_tokens": 100,
+        }
+        result = anthropic_to_chat(body, {"target": "qwen3.6-plus"})
+        self.assertEqual(result["messages"][0]["role"], "system")
+        self.assertEqual(result["messages"][0]["content"], "part1\npart2")
+
+    def test_tool_choice_none(self):
+        """tool_choice: {"type": "none"} → 不抛异常。"""
+        from proxy.transform_anthropic import anthropic_to_chat
+        body = {
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "max_tokens": 100,
+            "tool_choice": {"type": "none"},
+        }
+        result = anthropic_to_chat(body, {"target": "qwen3.6-plus"})
+        self.assertEqual(result["tool_choice"], "none")
+
+    def test_message_with_both_text_and_tool_use(self):
+        """assistant 同时包含 text 和 tool_use → 单条消息含 content + tool_calls。"""
+        from proxy.transform_anthropic import anthropic_to_chat
+        body = {
+            "model": "claude-sonnet-4-6",
+            "messages": [
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "Let me search for that"},
+                    {"type": "tool_use", "id": "call_1", "name": "search", "input": {"query": "hello"}},
+                ]}
+            ],
+            "max_tokens": 100,
+        }
+        result = anthropic_to_chat(body, {"target": "qwen3.6-plus"})
+        self.assertEqual(len(result["messages"]), 1)
+        msg = result["messages"][0]
+        self.assertEqual(msg["role"], "assistant")
+        self.assertEqual(msg["content"], [{"type": "text", "text": "Let me search for that"}])
+        self.assertIn("tool_calls", msg)
+        self.assertEqual(len(msg["tool_calls"]), 1)
+        self.assertEqual(msg["tool_calls"][0]["id"], "call_1")
+        self.assertEqual(msg["tool_calls"][0]["function"]["name"], "search")
+        self.assertEqual(msg["tool_calls"][0]["function"]["arguments"], '{"query": "hello"}')
 
 
 if __name__ == "__main__":

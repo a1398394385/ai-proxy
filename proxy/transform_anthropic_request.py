@@ -99,6 +99,9 @@ def _fix_tool_message_order(messages: list) -> list:
                 "role": "assistant",
                 "tool_calls": all_tool_calls,
             }
+            # 保留第一个 assistant 消息的 content
+            if msg.get("content") is not None:
+                merged["content"] = msg["content"]
             if merged_reasoning:
                 merged["reasoning_content"] = merged_reasoning
 
@@ -172,6 +175,8 @@ def _map_tool_choice(tc) -> str | dict:
             return "required"
         elif tc_type == "tool":
             return {"type": "function", "function": {"name": tc.get("name", "")}}
+        elif tc_type == "none":
+            return "none"
     return tc
 
 
