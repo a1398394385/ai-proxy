@@ -1,7 +1,7 @@
 # 按模型统计 — 成本明细 + 对比计费设计
 
 **日期:** 2026-05-17  
-**状态:** 已审阅
+**状态:** 待实现
 
 ---
 
@@ -65,10 +65,10 @@ In ¥0.004150  Out ¥0.020700  Cache Rd ¥0.000103  Cache Wr ¥0.001560
 ```
 rate = (currency === "USD") ? 7 : 1
 
-input_cost    = input_tokens    / 1_000_000 × input_cost_per_million    × rate
-output_cost   = output_tokens   / 1_000_000 × output_cost_per_million   × rate
-cache_rd_cost = cache_read_tokens  / 1_000_000 × cache_read_cost_per_million  × rate
-cache_wr_cost = cache_write_tokens / 1_000_000 × cache_creation_cost_per_million × rate
+input_cost    = input_tokens    / 1_000_000 × input_cost_per_million    × rate × multiplier
+output_cost   = output_tokens   / 1_000_000 × output_cost_per_million   × rate × multiplier
+cache_rd_cost = cache_read_tokens  / 1_000_000 × cache_read_cost_per_million  × rate × multiplier
+cache_wr_cost = cache_write_tokens / 1_000_000 × cache_creation_cost_per_million × rate × multiplier
 ```
 
 注意：`input_includes_cache_read` 字段已在后端 `_fetch_unified_records` 阶段修正过 `input_tokens`，前端无需再处理。
@@ -104,3 +104,31 @@ cache_wr_cost = cache_write_tokens / 1_000_000 × cache_creation_cost_per_millio
 - 请求记录表格本身不改动
 - 不添加"按对比模型排序"等高级功能
 - 不做持久化（刷新后对比模型选择不保留）
+
+---
+
+## 审阅记录
+
+**审阅日期:** 2026-05-17
+
+### 必须修复
+
+1. **成本公式遗漏 `multiplier`** — 四项成本计算均未乘以 `model_pricing.multiplier`（默认 `1.0`，部分模型为非 1 值）。遗漏会导致前端计算与后端 `estimated_cost_cny` 不一致。已修正上方公式。
+
+2. **模型名大小写匹配** — 后端 `_CostCalculator.get_pricing()` 对 `model_id` 做 `.lower()` 后存缓存，查询时也 `.lower()`。前端从 `allModels[i].model` 与 `allPricings[j].model_id` 做匹配时必须 `.toLowerCase()`，否则可能匹配不上。`calcCost` 实现中需明确此要求。
+
+3. **下拉框显示字段** — `/api/pricing` 返回每条记录同时有 `model_id` 和 `display_name`。下拉框应优先显示 `display_name`，回退到 `model_id`，与后端 `get_display_name()` 行为一致。
+
+### 已知限制（接受）
+
+4. **跨模型对比计费为近似值** — 当前模型的 `input_tokens` 已按其自身的 `input_includes_cache_read` 修正。套用到对比模型定价时，若两模型的 `input_includes_cache_read` 设置不同，input 成本会有偏差。接受为近似对比。
+
+5. **汇率硬编码 `7`** — 前后端分别硬编码 `rate = 7` / `EXCHANGE_RATE = 7`，需保持同步。已知设计决策。
+
+6. **前端独立计算可能与后端 `estimated_cost_cny` 有细微差异** — 接受。
+
+### 已验证
+
+- `GET /api/pricing` 已存在，返回全量定价，确认 0 新增 API
+- 实现范围只改 `tokens.js` 一个文件，4 个改动点明确
+- 边界情况覆盖合理；补充：period 切换后 `allPricings` 不需要重新拉取（定价与时间无关）
