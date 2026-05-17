@@ -11,17 +11,20 @@ let debounceTimer = null;
 
 // Upstream stats state
 let upstreamStatsData = [];
+let allPricings = [];
 
 // ===== Token 统计 =====
 async function loadTokenStats() {
   const period = window.currentPeriod || 'week';
-  const [stats, byModel, trend] = await Promise.all([
+  const [stats, byModel, trend, pricingRes] = await Promise.all([
     api(`/api/token_stats?period=${period}`),
     api(`/api/token_stats/by_model?period=${period}`),
-    api(`/api/token_stats/trend?period=${period}`)
+    api(`/api/token_stats/trend?period=${period}`),
+    api(`/api/pricing`).catch(() => ({ pricings: [] })),
   ]);
 
   allModels = byModel.models || [];
+  allPricings = pricingRes.pricings || [];
 
   const periodLabels = { day: '24小时', week: '7天', month: '30天' };
   document.getElementById('chart-period-label').textContent = periodLabels[period] || '7天';
@@ -384,6 +387,25 @@ function showTooltip(mouseX, mouseY, data) {
   tooltip.style.top = top + 'px';
 }
 
+// ─── 成本计算 ───
+
+function findPricing(modelName) {
+  const key = (modelName || '').toLowerCase();
+  return allPricings.find(p => (p.model_id || '').toLowerCase() === key) || null;
+}
+
+function calcCost(modelData, pricingEntry) {
+  const rate = pricingEntry.currency === 'USD' ? 7 : 1;
+  const mult = parseFloat(pricingEntry.multiplier || '1.0');
+  const M = 1_000_000;
+  const input   = (modelData.input_tokens        || 0) / M * pricingEntry.input_cost_per_million          * rate * mult;
+  const output  = (modelData.output_tokens       || 0) / M * pricingEntry.output_cost_per_million         * rate * mult;
+  const cacheRd = (modelData.cache_read_tokens   || 0) / M * pricingEntry.cache_read_cost_per_million     * rate * mult;
+  const cacheWr = (modelData.cache_write_tokens  || 0) / M * pricingEntry.cache_creation_cost_per_million * rate * mult;
+  const r = v => Math.round(v * 1e6) / 1e6;
+  return { input: r(input), output: r(output), cacheRead: r(cacheRd), cacheWrite: r(cacheWr), total: r(input + output + cacheRd + cacheWr) };
+}
+
 function renderModelTable(models) {
   const filter = document.getElementById('model-search').value.toLowerCase();
   const filtered = filter ? models.filter(m => m.model.toLowerCase().includes(filter)) : models;
@@ -460,6 +482,84 @@ function renderModelTable(models) {
     });
   });
 }
+
+// ─── 成本明细条 ───
+
+function renderCostBar(modelName, detailContent) {
+  const modelData = allModels.find(m => m.model === modelName);
+  if (!modelData) return;
+
+  const period = window.currentPeriod || 'week';
+  const periodLabel = { day: '最近 24 小时', week: '最近 7 天', month: '最近 30 天' }[period] || '最近 7 天';
+
+  const wrap = document.createElement('div');
+  const pricing = findPricing(modelName);
+
+  if (!pricing) {
+    wrap.innerHTML = `
+      <div style="padding:8px 12px;border-bottom:1px solid hsl(var(--border));font-family:monospace;font-size:11px;color:hsl(var(--muted-foreground))">
+        成本明细 — ${periodLabel} · 未配置计费，成本按 ¥0 计算
+      </div>`;
+    detailContent.insertBefore(wrap, detailContent.firstChild);
+    return;
+  }
+
+  const c = calcCost(modelData, pricing);
+
+  wrap.innerHTML = `
+    <div style="padding:8px 12px;border-bottom:1px solid hsl(var(--border));font-family:monospace;font-size:11px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <span style="color:hsl(var(--muted-foreground))">成本明细 — ${periodLabel}</span>
+        <span>合计 <span style="color:#f43f5e">¥${c.total.toFixed(6)}</span></span>
+      </div>
+      <div style="display:flex;gap:16px">
+        <span><span style="color:#3b82f6">In</span> ¥${c.input.toFixed(6)}</span>
+        <span><span style="color:#22c55e">Out</span> ¥${c.output.toFixed(6)}</span>
+        <span><span style="color:#a855f7">Cache Rd</span> ¥${c.cacheRead.toFixed(6)}</span>
+        <span><span style="color:#f97316">Cache Wr</span> ¥${c.cacheWrite.toFixed(6)}</span>
+      </div>
+    </div>
+    <div style="padding:4px 12px;border-bottom:1px solid hsl(var(--border));display:flex;align-items:center;gap:8px;font-size:11px">
+      <span style="color:hsl(var(--muted-foreground))">套用计费:</span>
+      <select class="cost-bar-compare-select" style="background:hsl(var(--background));color:hsl(var(--foreground));border:1px solid hsl(var(--border));border-radius:4px;font-size:10px;padding:1px 6px">
+        <option value="">— 不对比 —</option>
+        ${allPricings.map(p => `<option value="${escHtml(p.model_id)}">${escHtml(p.display_name || p.model_id)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="cost-bar-compare" style="display:none;padding:8px 12px;border-bottom:1px solid hsl(var(--border));border-left:2px solid #f97316;font-family:monospace;font-size:11px"></div>`;
+
+  const sel = wrap.querySelector('.cost-bar-compare-select');
+  const compareDiv = wrap.querySelector('.cost-bar-compare');
+
+  sel.addEventListener('change', () => {
+    const compareId = sel.value;
+    if (!compareId) { compareDiv.style.display = 'none'; return; }
+    const cp = allPricings.find(p => p.model_id === compareId);
+    if (!cp) return;
+
+    const cc = calcCost(modelData, cp);
+    const delta = c.total > 0 ? ((cc.total - c.total) / c.total * 100) : 0;
+    const deltaHtml = delta >= 0
+      ? `<span style="color:#f43f5e">+${delta.toFixed(0)}%</span>`
+      : `<span style="color:#22c55e">${delta.toFixed(0)}%</span>`;
+
+    compareDiv.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <span style="color:hsl(var(--muted-foreground))">套用：${escHtml(cp.display_name || cp.model_id)}</span>
+        <span>合计 <span style="color:#f97316">¥${cc.total.toFixed(6)}</span> ${deltaHtml}</span>
+      </div>
+      <div style="display:flex;gap:16px">
+        <span><span style="color:#3b82f6">In</span> ¥${cc.input.toFixed(6)}</span>
+        <span><span style="color:#22c55e">Out</span> ¥${cc.output.toFixed(6)}</span>
+        <span><span style="color:#a855f7">Cache Rd</span> ¥${cc.cacheRead.toFixed(6)}</span>
+        <span><span style="color:#f97316">Cache Wr</span> ¥${cc.cacheWrite.toFixed(6)}</span>
+      </div>`;
+    compareDiv.style.display = 'block';
+  });
+
+  detailContent.insertBefore(wrap, detailContent.firstChild);
+}
+
 // ===== 展开/收起模型行 =====
 
 function expandModelRow(model, rowElement) {
@@ -474,14 +574,6 @@ function expandModelRow(model, rowElement) {
     .then(data => {
       const requests = data.requests || [];
       const limit = Math.min(requests.length, 50);
-
-      if (!requests.length) {
-        const tr = document.createElement('tr');
-        tr.className = 'model-detail-row';
-        tr.innerHTML = `<td colspan="10" class="empty-state">暂无详细请求记录</td>`;
-        rowElement.after(tr);
-        return;
-      }
 
       const rows = requests.slice(0, limit).map(r => {
         const typeBadge = r.upstream_id === 'hermes'
@@ -510,8 +602,19 @@ function expandModelRow(model, rowElement) {
 
       const tr = document.createElement('tr');
       tr.className = 'model-detail-row';
-      tr.innerHTML = `
-        <td colspan="10" class="detail-content">
+      tr.innerHTML = `<td colspan="10" class="detail-content"></td>`;
+      rowElement.after(tr);
+      const detailContent = tr.querySelector('.detail-content');
+      renderCostBar(model, detailContent);
+      rowElement.classList.add('expanded');
+
+      if (!requests.length) {
+        detailContent.insertAdjacentHTML('beforeend',
+          `<div class="empty-state" style="padding:12px">暂无详细请求记录</div>`);
+        return;
+      }
+
+      detailContent.insertAdjacentHTML('beforeend', `
           <div class="detail-header">
             <span class="detail-model">${escHtml(model)}</span>
             <span class="detail-count">最近 ${requests.length} 条记录</span>
@@ -524,16 +627,18 @@ function expandModelRow(model, rowElement) {
               </tr>
             </thead>
             <tbody>${rows}</tbody>
-          </table>
-        </td>`;
-      rowElement.after(tr);
-      rowElement.classList.add('expanded');
+        </table>`);
     })
     .catch(err => {
       const tr = document.createElement('tr');
       tr.className = 'model-detail-row';
-      tr.innerHTML = `<td colspan="10" class="empty-state">加载失败: ${escHtml(err.message)}</td>`;
+      tr.innerHTML = `<td colspan="10" class="detail-content"></td>`;
       rowElement.after(tr);
+      const detailContent = tr.querySelector('.detail-content');
+      renderCostBar(model, detailContent);
+      rowElement.classList.add('expanded');
+      detailContent.insertAdjacentHTML('beforeend',
+        `<div class="empty-state" style="padding:12px">加载失败: ${escHtml(err.message)}</div>`);
     });
 }
 
