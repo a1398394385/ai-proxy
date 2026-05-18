@@ -18,9 +18,9 @@ function Find-ProcessByPort($Port) {
     if ($connections) {
         foreach ($conn in $connections) {
             $parts = $conn -split '\s+'
-            $pid = $parts[-1]
-            if ($pid -match '^\d+$') {
-                return [int]$pid
+            $procId = $parts[-1]
+            if ($procId -match '^\d+$') {
+                return [int]$procId
             }
         }
     }
@@ -29,10 +29,10 @@ function Find-ProcessByPort($Port) {
 
 # ─── Data Browser 管理 ───
 function Start-DataBrowser {
-    $oldPid = Find-ProcessByPort 18742
-    if ($oldPid) {
-        Write-Host "Hermes Data Browser 已经在运行 (PID $oldPid)，访问 http://127.0.0.1:18742"
-        $oldPid | Out-File -FilePath $PidFile -Encoding ascii
+    $oldProcId = Find-ProcessByPort 18742
+    if ($oldProcId) {
+        Write-Host "Hermes Data Browser 已经在运行 (PID $oldProcId)，访问 http://127.0.0.1:18742"
+        $oldProcId | Out-File -FilePath $PidFile -Encoding ascii
         return $true
     }
     
@@ -47,10 +47,10 @@ function Start-DataBrowser {
         $ready = $false
         for ($i = 0; $i -lt 6; $i++) {
             Start-Sleep -Milliseconds 500
-            $pid = Find-ProcessByPort 18742
-            if ($pid) {
-                $pid | Out-File -FilePath $PidFile -Encoding ascii
-                Write-Host "Hermes Data Browser 已启动 (PID $pid)，访问 http://127.0.0.1:18742"
+            $procId = Find-ProcessByPort 18742
+            if ($procId) {
+                $procId | Out-File -FilePath $PidFile -Encoding ascii
+                Write-Host "Hermes Data Browser 已启动 (PID $procId)，访问 http://127.0.0.1:18742"
                 $ready = $true
                 break
             }
@@ -68,9 +68,9 @@ function Start-DataBrowser {
 }
 
 function Stop-DataBrowser {
-    $pid = Find-ProcessByPort 18742
-    if ($pid) {
-        Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+    $procId = Find-ProcessByPort 18742
+    if ($procId) {
+        Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
         if (Test-Path $PidFile) { Remove-Item $PidFile -Force }
         
         # 等待端口释放
@@ -88,9 +88,9 @@ function Stop-DataBrowser {
 }
 
 function Get-DataBrowserStatus {
-    $pid = Find-ProcessByPort 18742
-    if ($pid) {
-        Write-Host "Hermes Data Browser 运行中 PID=$pid"
+    $procId = Find-ProcessByPort 18742
+    if ($procId) {
+        Write-Host "Hermes Data Browser 运行中 PID=$procId"
         return $true
     }
     Write-Host "Hermes Data Browser 未运行"
@@ -99,10 +99,10 @@ function Get-DataBrowserStatus {
 
 # ─── AI Proxy 管理 ───
 function Start-Proxy {
-    $oldPid = Find-ProcessByPort 48743
-    if ($oldPid) {
-        Write-Host "AI Proxy 已经在运行 (PID $oldPid)，访问 http://127.0.0.1:48743"
-        $oldPid | Out-File -FilePath $ProxyPidFile -Encoding ascii
+    $oldProcId = Find-ProcessByPort 48743
+    if ($oldProcId) {
+        Write-Host "AI Proxy 已经在运行 (PID $oldProcId)，访问 http://127.0.0.1:48743"
+        $oldProcId | Out-File -FilePath $ProxyPidFile -Encoding ascii
         return $true
     }
     
@@ -117,10 +117,10 @@ function Start-Proxy {
         $ready = $false
         for ($i = 0; $i -lt 6; $i++) {
             Start-Sleep -Milliseconds 500
-            $pid = Find-ProcessByPort 48743
-            if ($pid) {
-                $pid | Out-File -FilePath $ProxyPidFile -Encoding ascii
-                Write-Host "AI Proxy 已启动 (PID $pid)，访问 http://127.0.0.1:48743"
+            $procId = Find-ProcessByPort 48743
+            if ($procId) {
+                $procId | Out-File -FilePath $ProxyPidFile -Encoding ascii
+                Write-Host "AI Proxy 已启动 (PID $procId)，访问 http://127.0.0.1:48743"
                 $ready = $true
                 break
             }
@@ -138,9 +138,9 @@ function Start-Proxy {
 }
 
 function Stop-Proxy {
-    $pid = Find-ProcessByPort 48743
-    if ($pid) {
-        Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+    $procId = Find-ProcessByPort 48743
+    if ($procId) {
+        Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
         if (Test-Path $ProxyPidFile) { Remove-Item $ProxyPidFile -Force }
         
         # 等待端口释放
@@ -158,9 +158,9 @@ function Stop-Proxy {
 }
 
 function Get-ProxyStatus {
-    $pid = Find-ProcessByPort 48743
-    if ($pid) {
-        Write-Host "AI Proxy 运行中 PID=$pid"
+    $procId = Find-ProcessByPort 48743
+    if ($procId) {
+        Write-Host "AI Proxy 运行中 PID=$procId"
         return $true
     }
     Write-Host "AI Proxy 未运行"
