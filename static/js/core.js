@@ -58,48 +58,40 @@ export function showSettings() {
           <div style="font-weight:600;margin-bottom:4px;">默认页面</div>
           <div style="font-size:13px;color:var(--muted);">打开网页时默认显示的页面</div>
         </div>
-        <select class="settings-select" id="modal-default-page-select">
-          <option value="facts">📋 Fact Store</option>
-          <option value="tokens">📊 Token 统计</option>
-          <option value="models">🔌 模型管理</option>
-          <option value="routes">🔀 路由映射</option>
-        </select>
+        <div style="min-width:150px">${customSelectHtml('modal-default-page-select', [
+          { value: 'facts', label: '📋 Fact Store', selected: defaultPage === 'facts' },
+          { value: 'tokens', label: '📊 Token 统计', selected: defaultPage === 'tokens' },
+          { value: 'models', label: '🔌 模型管理', selected: defaultPage === 'models' },
+          { value: 'routes', label: '🔀 路由映射', selected: defaultPage === 'routes' },
+        ], '选择页面')}</div>
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;">
         <div>
           <div style="font-weight:600;margin-bottom:4px;">默认 Token 周期</div>
           <div style="font-size:13px;color:var(--muted);">进入 Token 统计时默认显示的时间范围</div>
         </div>
-        <select class="settings-select" id="modal-default-period-select">
-          <option value="day">24小时</option>
-          <option value="week">7天</option>
-          <option value="month">30天</option>
-        </select>
+        <div style="min-width:150px">${customSelectHtml('modal-default-period-select', [
+          { value: 'day', label: '24小时', selected: defaultPeriod === 'day' },
+          { value: 'week', label: '7天', selected: defaultPeriod === 'week' },
+          { value: 'month', label: '30天', selected: defaultPeriod === 'month' },
+        ], '选择周期')}</div>
       </div>
     </div>`;
 
   showModal('⚙ 通用设置', body, '');
 
-  // 设置当前值（在 DOM 注入后）
   setTimeout(() => {
-    const pageSelect = document.getElementById('modal-default-page-select');
-    const periodSelect = document.getElementById('modal-default-period-select');
-    if (pageSelect) {
-      pageSelect.value = defaultPage;
-      pageSelect.addEventListener('change', (e) => saveDefaultPage(e.target.value));
-    }
-    if (periodSelect) {
-      periodSelect.value = defaultPeriod;
-      periodSelect.addEventListener('change', (e) => {
-        const val = e.target.value;
-        localStorage.setItem('defaultPeriod', val);
-        currentPeriod = val;
-        window.currentPeriod = val;
-        document.querySelectorAll('.period-btn').forEach(btn => {
-          btn.classList.toggle('active', btn.dataset.period === val);
-        });
+    wireCustomSelect('modal-default-page-select');
+    wireCustomSelect('modal-default-period-select');
+    document.getElementById('modal-default-page-select').addEventListener('change', (e) => saveDefaultPage(e.target.value));
+    document.getElementById('modal-default-period-select').addEventListener('change', (e) => {
+      localStorage.setItem('defaultPeriod', e.target.value);
+      currentPeriod = e.target.value;
+      window.currentPeriod = e.target.value;
+      document.querySelectorAll('.period-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.period === e.target.value);
       });
-    }
+    });
   }, 0);
 }
 
@@ -172,6 +164,172 @@ export function delegate(root = document) {
   root.addEventListener('click', handler);
   root.addEventListener('change', handler);
 }
+
+// ===== Custom Select 统一组件 =====
+const CS_CHEVRON = '<svg class="cs-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>';
+
+function csBuildDisplay(opt) {
+  return escHtml(opt.label) + (opt.hint ? `<span class="cs-hint-inline" style="${opt.hintStyle || ''}">${opt.hint}</span>` : '');
+}
+
+export function customSelectHtml(id, opts, placeholder) {
+  const sel = opts.find(o => o.selected && o.value) || opts.find(o => o.value) || null;
+  const display = sel ? csBuildDisplay(sel) : escHtml(placeholder);
+  const allDisabled = opts.every(o => !o.value || o.disabled);
+  const optionsHtml = opts.map(o => {
+    const cls = ['cs-option'];
+    if (o.selected) cls.push('selected');
+    if (o.disabled) cls.push('disabled');
+    if (!o.value) cls.push('cs-empty');
+    return `<div class="${cls.join(' ')}" data-value="${escHtml(o.value)}" ${o.disabled ? 'data-disabled="1"' : ''}>
+      <span class="cs-option-text">${escHtml(o.label)}</span>${o.hint ? `<span class="cs-option-hint" style="${o.hintStyle || ''}">${o.hint}</span>` : ''}
+    </div>`;
+  }).join('');
+  return `<input type="hidden" id="${id}" value="${sel ? escHtml(sel.value) : ''}">
+    <div class="custom-select${allDisabled ? ' disabled' : ''}" data-cs="${id}">
+      <button type="button" class="cs-trigger"><span class="cs-text">${display}</span>${CS_CHEVRON}</button>
+      <div class="cs-dropdown">${optionsHtml}</div>
+    </div>`;
+}
+
+export function wireCustomSelect(id) {
+  const cs = document.querySelector(`[data-cs="${id}"]`);
+  if (!cs || cs.dataset.wired) return;
+  cs.dataset.wired = '1';
+  const trigger = cs.querySelector('.cs-trigger');
+  const dropdown = cs.querySelector('.cs-dropdown');
+  const hidden = document.getElementById(id);
+
+  trigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (cs.classList.contains('disabled')) return;
+    closeAllCustomSelects();
+    cs.classList.toggle('open');
+  });
+
+  dropdown.addEventListener('click', (e) => {
+    const opt = e.target.closest('.cs-option');
+    if (!opt || opt.dataset.disabled || opt.classList.contains('cs-empty')) return;
+    e.stopPropagation();
+    const val = opt.dataset.value;
+    hidden.value = val;
+    const optText = opt.querySelector('.cs-option-text').textContent;
+    const optHint = opt.querySelector('.cs-option-hint');
+    trigger.querySelector('.cs-text').innerHTML = escHtml(optText) + (optHint ? `<span class="cs-hint-inline" style="${optHint.style.cssText}">${optHint.textContent}</span>` : '');
+    dropdown.querySelectorAll('.cs-option').forEach(o => o.classList.toggle('selected', o === opt));
+    cs.classList.remove('open');
+    hidden.dispatchEvent(new Event('change'));
+  });
+}
+
+export function updateCustomSelect(id, opts, placeholder) {
+  const cs = document.querySelector(`[data-cs="${id}"]`);
+  if (!cs) return;
+  const hidden = document.getElementById(id);
+  const dropdown = cs.querySelector('.cs-dropdown');
+  const textSpan = cs.querySelector('.cs-text');
+  const sel = opts.find(o => o.selected && o.value) || opts.find(o => o.value);
+  hidden.value = sel ? sel.value : '';
+  textSpan.innerHTML = sel ? csBuildDisplay(sel) : escHtml(placeholder || '--');
+  dropdown.innerHTML = opts.map(o => {
+    const cls = ['cs-option'];
+    if (o.selected) cls.push('selected');
+    if (o.disabled) cls.push('disabled');
+    if (!o.value) cls.push('cs-empty');
+    return `<div class="${cls.join(' ')}" data-value="${escHtml(o.value)}" ${o.disabled ? 'data-disabled="1"' : ''}>
+      <span class="cs-option-text">${escHtml(o.label)}</span>${o.hint ? `<span class="cs-option-hint" style="${o.hintStyle || ''}">${o.hint}</span>` : ''}
+    </div>`;
+  }).join('');
+  cs.classList.toggle('disabled', opts.every(o => !o.value || o.disabled));
+  cs.classList.remove('open');
+}
+
+export function closeAllCustomSelects() {
+  document.querySelectorAll('.custom-select.open').forEach(el => el.classList.remove('open'));
+}
+
+export function buildCustomSelect(parentEl, options, onChange) {
+  const container = document.createElement('div');
+  container.className = 'custom-select';
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'cs-trigger';
+  trigger.innerHTML = `<span class="cs-text">${escHtml(options[0]?.label || '')}</span>${CS_CHEVRON}`;
+
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:299;display:none;';
+
+  const dropdown = document.createElement('div');
+  dropdown.className = 'cs-dropdown';
+  dropdown.style.cssText = 'position:fixed;display:none;z-index:300;';
+  dropdown.innerHTML = options.map(opt => {
+    const cls = opt.value ? 'cs-option' : 'cs-option cs-empty';
+    return `<div class="${cls}" data-value="${escHtml(opt.value)}">${escHtml(opt.label)}</div>`;
+  }).join('');
+
+  let selectedValue = options[0]?.value || '';
+
+  function close() {
+    container.classList.remove('open');
+    dropdown.style.display = 'none';
+    overlay.style.display = 'none';
+  }
+
+  function positionDropdown() {
+    const rect = trigger.getBoundingClientRect();
+    dropdown.style.left = rect.left + 'px';
+    dropdown.style.width = rect.width + 'px';
+    dropdown.style.top = (rect.bottom + 4) + 'px';
+    const spaceBelow = window.innerHeight - rect.bottom - 8;
+    dropdown.style.maxHeight = Math.min(Math.max(spaceBelow, 100), 280) + 'px';
+  }
+
+  function open() {
+    closeAllCustomSelects();
+    positionDropdown();
+    dropdown.style.display = 'block';
+    overlay.style.display = 'block';
+    container.classList.add('open');
+  }
+
+  trigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    container.classList.contains('open') ? close() : open();
+  });
+
+  overlay.addEventListener('click', close);
+
+  dropdown.addEventListener('click', (e) => {
+    const opt = e.target.closest('.cs-option');
+    if (!opt || opt.classList.contains('cs-empty')) return;
+    e.stopPropagation();
+    selectedValue = opt.dataset.value;
+    trigger.querySelector('.cs-text').textContent = opt.textContent;
+    dropdown.querySelectorAll('.cs-option').forEach(o => o.classList.toggle('selected', o.dataset.value === selectedValue));
+    close();
+    onChange(selectedValue, options.find(o => o.value === selectedValue));
+  });
+
+  const onScroll = () => { if (container.classList.contains('open')) positionDropdown(); };
+  window.addEventListener('scroll', onScroll, true);
+
+  container.appendChild(trigger);
+  parentEl.appendChild(container);
+  document.body.appendChild(overlay);
+  document.body.appendChild(dropdown);
+
+  return {
+    selectOption(v, label) { selectedValue = v; trigger.querySelector('.cs-text').textContent = label || v; close(); },
+    getValue: () => selectedValue,
+    container,
+    destroy() { overlay.remove(); dropdown.remove(); window.removeEventListener('scroll', onScroll, true); },
+  };
+}
+
+// 全局点击关闭下拉框
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.custom-select')) closeAllCustomSelects();
+});
 
 // 仅保留跨模块同步必需的 window 挂载
 window.currentPeriod = currentPeriod;

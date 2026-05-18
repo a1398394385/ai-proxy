@@ -48,7 +48,7 @@ def handle_get(path, qs, handler) -> bool:
     else:
         handler.send_header("Content-Type", mime)
     handler.send_header("Content-Length", str(len(body)))
-    handler.send_header("Cache-Control", "public, max-age=60")
+    handler.send_header("Cache-Control", "no-cache")
     handler.end_headers()
     handler.wfile.write(body)
     return True

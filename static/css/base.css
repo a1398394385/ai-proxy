@@ -655,6 +655,166 @@ body {
   border-bottom: 1px dashed hsl(var(--muted-foreground));
 }
 
+/* ═══════════════════════════════════════════════
+   Custom Select — 统一自定义下拉框
+   ═══════════════════════════════════════════════ */
+
+.custom-select {
+  position: relative;
+  width: 100%;
+}
+
+.custom-select .cs-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--secondary));
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.custom-select .cs-trigger:hover {
+  border-color: hsl(var(--foreground) / 0.15);
+}
+
+.custom-select.open .cs-trigger {
+  border-color: hsl(var(--primary) / 0.5);
+  box-shadow: 0 0 0 3px hsl(var(--primary) / 0.1);
+}
+
+.custom-select .cs-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.custom-select .cs-hint-inline {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  letter-spacing: 0.3px;
+}
+
+.custom-select .cs-chevron {
+  flex-shrink: 0;
+  color: hsl(var(--muted-foreground));
+  transition: transform 0.2s ease;
+}
+
+.custom-select.open .cs-chevron {
+  transform: rotate(180deg);
+}
+
+.custom-select.disabled .cs-trigger {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 下拉面板 */
+.custom-select .cs-dropdown {
+  display: block;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  box-shadow: 0 12px 36px -4px rgba(0, 0, 0, 0.5),
+              0 0 0 1px hsl(var(--foreground) / 0.03);
+  z-index: 300;
+  padding: 4px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-6px);
+  transition: all 0.15s ease;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.custom-select.open .cs-dropdown {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.custom-select .cs-dropdown::-webkit-scrollbar {
+  width: 4px;
+}
+
+.custom-select .cs-dropdown::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-select .cs-dropdown::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 2px;
+}
+
+/* 选项 */
+.custom-select .cs-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  transition: all 0.1s ease;
+  border-radius: 6px;
+  margin: 1px 0;
+}
+
+.custom-select .cs-option:hover:not(.disabled):not(.cs-empty) {
+  background: hsl(var(--primary) / 0.08);
+}
+
+.custom-select .cs-option.selected {
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+  font-weight: 500;
+}
+
+.custom-select .cs-option.disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.custom-select .cs-option.cs-empty {
+  color: hsl(var(--muted-foreground));
+  cursor: default;
+}
+
+.custom-select .cs-option-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.custom-select .cs-option-hint {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
 /* 响应式 */
 @media (max-width: 768px) {
   .main-content { padding: 16px; }

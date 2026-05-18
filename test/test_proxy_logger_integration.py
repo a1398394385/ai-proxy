@@ -44,12 +44,29 @@ def _query_token_stats(db_path, request_id=None):
     return rows
 
 
+_FAKE_ROUTE = {
+    "target_name": "qwen3.6-plus",
+    "multimodal": True,
+    "upstream": {
+        "base_url": "http://127.0.0.1:4000/",
+        "api_key": "test-key",
+        "timeout": 120,
+        "connect_timeout": 10,
+        "ssl_verify": True,
+        "retry": 0,
+        "format": "chat_completions",
+    },
+    "format": "chat_completions",
+}
+
+
 def _load_proxy():
-    """动态加载 proxy.py，mock config_cache 返回 None，force handler fallback 到 CONFIG。"""
+    """动态加载 proxy.py，mock config_cache 返回合法路由，走完整转换流程。"""
     from proxy import common
     from proxy import handler as _handler
     mock_cache = MagicMock()
-    mock_cache.resolve = MagicMock(return_value=None)
+    mock_cache.resolve = MagicMock(return_value=_FAKE_ROUTE)
+    mock_cache.resolve_agent = MagicMock(return_value=None)
     mock_cache.get_all = MagicMock(return_value={})
     common.config_cache = mock_cache
     _handler.config_cache = mock_cache
@@ -245,10 +262,9 @@ class TestConversionException(unittest.TestCase):
         mock_conn.getresponse.return_value = mock_resp
         mock_conn.sock = MagicMock()
 
-        from proxy.adapters import get_adapter
-        adapter = get_adapter("responses")
+        from proxy.transform.router import TransformRouter
         with patch("http.client.HTTPConnection", return_value=mock_conn):
-            with patch.object(adapter, "response_from", side_effect=RuntimeError("conversion failed")):
+            with patch.object(TransformRouter, "convert_response", side_effect=RuntimeError("conversion failed")):
                 body = json.dumps({
                     "model": "gpt-4o",
                     "input": [{"type": "message", "role": "user", "content": "Hi"}],
@@ -361,15 +377,14 @@ class TestStreamingFlow(unittest.TestCase):
         mock_resp.getheader.return_value = "text/event-stream"
         mock_resp.read.return_value = b""
 
-        from proxy.adapters import get_adapter
-        adapter = get_adapter("responses")
+        from proxy.transform.router import TransformRouter
         with patch("http.client.HTTPConnection") as mock_conn_cls:
             mock_conn = MagicMock()
             mock_conn.getresponse.return_value = mock_resp
             mock_conn.sock = MagicMock()
             mock_conn_cls.return_value = mock_conn
 
-            with patch.object(adapter, "stream_from", return_value=iter(sse_events)):
+            with patch.object(TransformRouter, "stream_convert", return_value=iter(sse_events)):
                 body = json.dumps({
                     "model": "gpt-4o",
                     "input": [{"type": "message", "role": "user", "content": "Hi"}],
@@ -409,15 +424,14 @@ class TestStreamingFlow(unittest.TestCase):
         mock_resp.getheader.return_value = "text/event-stream"
         mock_resp.read.return_value = b""
 
-        from proxy.adapters import get_adapter
-        adapter = get_adapter("responses")
+        from proxy.transform.router import TransformRouter
         with patch("http.client.HTTPConnection") as mock_conn_cls:
             mock_conn = MagicMock()
             mock_conn.getresponse.return_value = mock_resp
             mock_conn.sock = MagicMock()
             mock_conn_cls.return_value = mock_conn
 
-            with patch.object(adapter, "stream_from", return_value=iter(sse_events)):
+            with patch.object(TransformRouter, "stream_convert", return_value=iter(sse_events)):
                 body = json.dumps({
                     "model": "gpt-4o",
                     "input": [{"type": "message", "role": "user", "content": "Hi"}],

@@ -1,4 +1,4 @@
-import { api, formatNumber, formatTokens, escHtml } from '../core.js';
+import { api, formatNumber, formatTokens, escHtml, buildCustomSelect, customSelectHtml, wireCustomSelect, updateCustomSelect } from '../core.js';
 
 // ===== Module-local state =====
 let allModels = [];
@@ -398,10 +398,15 @@ function calcCost(modelData, pricingEntry) {
   const rate = pricingEntry.currency === 'USD' ? 7 : 1;
   const mult = parseFloat(pricingEntry.multiplier || '1.0');
   const M = 1_000_000;
-  const input   = (modelData.input_tokens        || 0) / M * pricingEntry.input_cost_per_million          * rate * mult;
+  const hasCacheRd = parseFloat(pricingEntry.cache_read_cost_per_million || 0) > 0;
+  const hasCacheWr = parseFloat(pricingEntry.cache_creation_cost_per_million || 0) > 0;
+  const inputToks = (modelData.input_tokens || 0)
+    + (hasCacheRd ? 0 : (modelData.cache_read_tokens || 0))
+    + (hasCacheWr ? 0 : (modelData.cache_write_tokens || 0));
+  const input   = inputToks / M * pricingEntry.input_cost_per_million * rate * mult;
   const output  = (modelData.output_tokens       || 0) / M * pricingEntry.output_cost_per_million         * rate * mult;
-  const cacheRd = (modelData.cache_read_tokens   || 0) / M * pricingEntry.cache_read_cost_per_million     * rate * mult;
-  const cacheWr = (modelData.cache_write_tokens  || 0) / M * pricingEntry.cache_creation_cost_per_million * rate * mult;
+  const cacheRd = hasCacheRd ? (modelData.cache_read_tokens  || 0) / M * pricingEntry.cache_read_cost_per_million     * rate * mult : 0;
+  const cacheWr = hasCacheWr ? (modelData.cache_write_tokens || 0) / M * pricingEntry.cache_creation_cost_per_million * rate * mult : 0;
   const r = v => Math.round(v * 1e6) / 1e6;
   return { input: r(input), output: r(output), cacheRead: r(cacheRd), cacheWrite: r(cacheWr), total: r(input + output + cacheRd + cacheWr) };
 }
@@ -485,6 +490,22 @@ function renderModelTable(models) {
 
 // ─── 成本明细条 ───
 
+
+function costCard(label, value, type, baseValue) {
+  let deltaHtml = '';
+  if (baseValue !== undefined) {
+    const delta = baseValue > 0 ? ((value - baseValue) / baseValue * 100) : 0;
+    const cls = delta >= 0 ? 'up' : 'down';
+    const sign = delta >= 0 ? '+' : '';
+    deltaHtml = `<span class="cost-card-delta ${cls}">${sign}${delta.toFixed(0)}%</span>`;
+  }
+  return `<div class="cost-card ${type}">
+    <div class="cost-card-label">${label}</div>
+    <div class="cost-card-value">¥${value.toFixed(6)}</div>
+    ${deltaHtml}
+  </div>`;
+}
+
 function renderCostBar(modelName, detailContent) {
   const modelData = allModels.find(m => m.model === modelName);
   if (!modelData) return;
@@ -493,13 +514,14 @@ function renderCostBar(modelName, detailContent) {
   const periodLabel = { day: '最近 24 小时', week: '最近 7 天', month: '最近 30 天' }[period] || '最近 7 天';
 
   const wrap = document.createElement('div');
+  wrap.className = 'cost-panel';
   const pricing = findPricing(modelName);
 
   if (!pricing) {
-    wrap.innerHTML = `
-      <div style="padding:8px 12px;border-bottom:1px solid hsl(var(--border));font-family:monospace;font-size:11px;color:hsl(var(--muted-foreground))">
-        成本明细 — ${periodLabel} · 未配置计费，成本按 ¥0 计算
-      </div>`;
+    wrap.innerHTML = `<div class="cost-panel-none">
+      <span class="cost-panel-period-dot"></span>
+      成本明细 — ${periodLabel} · 未配置计费，成本按 ¥0 计算
+    </div>`;
     detailContent.insertBefore(wrap, detailContent.firstChild);
     return;
   }
@@ -507,57 +529,70 @@ function renderCostBar(modelName, detailContent) {
   const c = calcCost(modelData, pricing);
 
   wrap.innerHTML = `
-    <div style="padding:8px 12px;border-bottom:1px solid hsl(var(--border));font-family:monospace;font-size:11px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-        <span style="color:hsl(var(--muted-foreground))">成本明细 — ${periodLabel}</span>
-        <span>合计 <span style="color:#f43f5e">¥${c.total.toFixed(6)}</span></span>
-      </div>
-      <div style="display:flex;gap:16px">
-        <span><span style="color:#3b82f6">In</span> ¥${c.input.toFixed(6)}</span>
-        <span><span style="color:#22c55e">Out</span> ¥${c.output.toFixed(6)}</span>
-        <span><span style="color:#a855f7">Cache Rd</span> ¥${c.cacheRead.toFixed(6)}</span>
-        <span><span style="color:#f97316">Cache Wr</span> ¥${c.cacheWrite.toFixed(6)}</span>
+    <div class="cost-panel-top">
+      <span class="cost-panel-period">
+        <span class="cost-panel-period-dot"></span>
+        ${periodLabel}
+      </span>
+      <div class="cost-panel-total">
+        <div class="cost-panel-total-value">¥${c.total.toFixed(6)}</div>
+        <div class="cost-panel-total-label">合计成本</div>
       </div>
     </div>
-    <div style="padding:4px 12px;border-bottom:1px solid hsl(var(--border));display:flex;align-items:center;gap:8px;font-size:11px">
-      <span style="color:hsl(var(--muted-foreground))">套用计费:</span>
-      <select class="cost-bar-compare-select" style="background:hsl(var(--background));color:hsl(var(--foreground));border:1px solid hsl(var(--border));border-radius:4px;font-size:10px;padding:1px 6px">
-        <option value="">— 不对比 —</option>
-        ${allPricings.map(p => `<option value="${escHtml(p.model_id)}">${escHtml(p.display_name || p.model_id)}</option>`).join('')}
-      </select>
+    <div class="cost-cards">
+      ${costCard('Input', c.input, 'input')}
+      ${costCard('Output', c.output, 'output')}
+      ${costCard('Cache Read', c.cacheRead, 'cache-rd')}
+      ${costCard('Cache Write', c.cacheWrite, 'cache-wr')}
     </div>
-    <div class="cost-bar-compare" style="display:none;padding:8px 12px;border-bottom:1px solid hsl(var(--border));border-left:2px solid #f97316;font-family:monospace;font-size:11px"></div>`;
+    <div class="cost-compare-bar">
+      <span class="cost-compare-label">套用计费</span>
+      <span class="cs-drop-target"></span>
+    </div>
+    <div class="cost-compare-result"><div class="cost-compare-result-inner"></div></div>`;
 
-  const sel = wrap.querySelector('.cost-bar-compare-select');
-  const compareDiv = wrap.querySelector('.cost-bar-compare');
+  detailContent.insertBefore(wrap, detailContent.firstChild);
 
-  sel.addEventListener('change', () => {
-    const compareId = sel.value;
-    if (!compareId) { compareDiv.style.display = 'none'; return; }
-    const cp = allPricings.find(p => p.model_id === compareId);
+  // 自定义下拉
+  const dropTarget = wrap.querySelector('.cs-drop-target') || wrap.querySelector('.custom-select');
+  const compareResult = wrap.querySelector('.cost-compare-result');
+  const compareInner = wrap.querySelector('.cost-compare-result-inner');
+
+  const options = [
+    { value: '', label: '— 不对比 —' },
+    ...allPricings.map(p => ({ value: p.model_id, label: p.display_name || p.model_id })),
+  ];
+
+  buildCustomSelect(dropTarget, options, (value, _opt) => {
+    if (!value) {
+      compareResult.classList.remove('show');
+      return;
+    }
+    const cp = allPricings.find(p => p.model_id === value);
     if (!cp) return;
 
     const cc = calcCost(modelData, cp);
     const delta = c.total > 0 ? ((cc.total - c.total) / c.total * 100) : 0;
-    const deltaHtml = delta >= 0
-      ? `<span style="color:#f43f5e">+${delta.toFixed(0)}%</span>`
-      : `<span style="color:#22c55e">${delta.toFixed(0)}%</span>`;
+    const deltaClass = delta >= 0 ? 'up' : 'down';
+    const deltaSign = delta >= 0 ? '+' : '';
+    const deltaPct = deltaSign + delta.toFixed(0) + '%';
 
-    compareDiv.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-        <span style="color:hsl(var(--muted-foreground))">套用：${escHtml(cp.display_name || cp.model_id)}</span>
-        <span>合计 <span style="color:#f97316">¥${cc.total.toFixed(6)}</span> ${deltaHtml}</span>
+    compareInner.innerHTML = `
+      <div class="cost-compare-result-top">
+        <span class="cost-compare-result-model">${escHtml(cp.display_name || cp.model_id)}</span>
+        <div class="cost-compare-result-right">
+          <span class="cost-compare-result-total">¥${cc.total.toFixed(6)}</span>
+          <span class="cost-compare-delta ${deltaClass}">${deltaPct}</span>
+        </div>
       </div>
-      <div style="display:flex;gap:16px">
-        <span><span style="color:#3b82f6">In</span> ¥${cc.input.toFixed(6)}</span>
-        <span><span style="color:#22c55e">Out</span> ¥${cc.output.toFixed(6)}</span>
-        <span><span style="color:#a855f7">Cache Rd</span> ¥${cc.cacheRead.toFixed(6)}</span>
-        <span><span style="color:#f97316">Cache Wr</span> ¥${cc.cacheWrite.toFixed(6)}</span>
+      <div class="cost-cards">
+        ${costCard('Input', cc.input, 'input', c.input)}
+        ${costCard('Output', cc.output, 'output', c.output)}
+        ${costCard('Cache Read', cc.cacheRead, 'cache-rd', c.cacheRead)}
+        ${costCard('Cache Write', cc.cacheWrite, 'cache-wr', c.cacheWrite)}
       </div>`;
-    compareDiv.style.display = 'block';
+    compareResult.classList.add('show');
   });
-
-  detailContent.insertBefore(wrap, detailContent.firstChild);
 }
 
 // ===== 展开/收起模型行 =====
@@ -615,19 +650,34 @@ function expandModelRow(model, rowElement) {
       }
 
       detailContent.insertAdjacentHTML('beforeend', `
-          <div class="detail-header">
-            <span class="detail-model">${escHtml(model)}</span>
-            <span class="detail-count">最近 ${requests.length} 条记录</span>
-          </div>
-          <table class="detail-table">
-            <thead>
-              <tr>
-                <th>请求ID</th><th>时间</th><th>类型</th><th>Input</th><th>Output</th>
-                <th>Cache Read</th><th>Cache Create</th><th>总Token</th><th>耗时</th><th>成本</th>
-              </tr>
-            </thead>
-            <tbody>${rows}</tbody>
-        </table>`);
+          <div class="detail-requests-toggle" data-collapsed="true">
+            <div class="detail-header">
+              <span class="detail-model">${escHtml(model)}</span>
+              <span class="detail-count">最近 ${requests.length} 条记录</span>
+              <svg class="detail-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg>
+            </div>
+            <div class="detail-requests-body" style="display:none">
+              <table class="detail-table">
+                <thead>
+                  <tr>
+                    <th>请求ID</th><th>时间</th><th>类型</th><th>Input</th><th>Output</th>
+                    <th>Cache Read</th><th>Cache Create</th><th>总Token</th><th>耗时</th><th>成本</th>
+                  </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+              </table>
+            </div>
+          </div>`);
+
+      const toggle = detailContent.querySelector('.detail-requests-toggle');
+      const body = toggle.querySelector('.detail-requests-body');
+      const chevron = toggle.querySelector('.detail-chevron');
+      toggle.querySelector('.detail-header').addEventListener('click', () => {
+        const collapsed = toggle.dataset.collapsed === 'true';
+        toggle.dataset.collapsed = String(!collapsed);
+        body.style.display = collapsed ? '' : 'none';
+        chevron.style.transform = collapsed ? 'rotate(180deg)' : '';
+      });
     })
     .catch(err => {
       const tr = document.createElement('tr');
@@ -718,12 +768,12 @@ function renderRequestTable(requests) {
           <input type="text" class="search-input" id="req-filter-model" placeholder="model..." value="${escHtml(requestFilters.model || '')}" />
         </div>
         <label>Type</label>
-        <select id="req-filter-type">
-          <option value="">All</option>
-          <option value="proxy" ${requestFilters.requestType === 'proxy' ? 'selected' : ''}>Proxy</option>
-          <option value="hermes" ${requestFilters.requestType === 'hermes' ? 'selected' : ''}>Hermes</option>
-          <option value="opencode" ${requestFilters.requestType === 'opencode' ? 'selected' : ''}>OpenCode</option>
-        </select>
+        ${customSelectHtml('req-filter-type', [
+          { value: '', label: 'All', selected: !requestFilters.requestType },
+          { value: 'proxy', label: 'Proxy', selected: requestFilters.requestType === 'proxy' },
+          { value: 'hermes', label: 'Hermes', selected: requestFilters.requestType === 'hermes' },
+          { value: 'opencode', label: 'OpenCode', selected: requestFilters.requestType === 'opencode' },
+        ], 'All')}
         <button class="btn btn-secondary btn-sm" id="req-filter-clear">Clear</button>
       </div>
       <div id="request-log-container">
@@ -789,6 +839,7 @@ function renderRequestTable(requests) {
 }
 
 function setupRequestFilters() {
+  wireCustomSelect('req-filter-type');
   const modelInput = document.getElementById('req-filter-model');
   const typeSelect = document.getElementById('req-filter-type');
   const clearBtn = document.getElementById('req-filter-clear');
@@ -821,6 +872,12 @@ function setupRequestFilters() {
       if (mi) mi.value = '';
       const ts = document.getElementById('req-filter-type');
       if (ts) ts.value = '';
+      updateCustomSelect('req-filter-type', [
+        { value: '', label: 'All', selected: true },
+        { value: 'proxy', label: 'Proxy' },
+        { value: 'hermes', label: 'Hermes' },
+        { value: 'opencode', label: 'OpenCode' },
+      ], 'All');
       loadRequestLog();
     });
   }

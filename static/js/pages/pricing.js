@@ -1,4 +1,4 @@
-import { api, escHtml, showModal, closeModal, on } from '../core.js';
+import { api, escHtml, showModal, closeModal, on, customSelectHtml, wireCustomSelect } from '../core.js';
 
 const EXCHANGE_RATE = 7;
 
@@ -244,10 +244,10 @@ function showPricingModal(existing = null) {
       <div class="pricing-modal-section">币种</div>
       <div class="form-group full">
         <label class="form-label">结算币种</label>
-        <select class="form-input" id="pm-currency">
-          <option value="USD" ${existing?.currency !== 'RMB' ? 'selected' : ''}>USD（美元）</option>
-          <option value="RMB" ${existing?.currency === 'RMB' ? 'selected' : ''}>RMB（人民币）</option>
-        </select>
+        ${customSelectHtml('pm-currency', [
+          { value: 'USD', label: 'USD（美元）', selected: existing?.currency !== 'RMB' },
+          { value: 'RMB', label: 'RMB（人民币）', selected: existing?.currency === 'RMB' },
+        ], '选择币种')}
       </div>
 
       <div class="pricing-modal-section">统计扣除</div>
@@ -265,6 +265,7 @@ function showPricingModal(existing = null) {
     <button class="btn btn-primary" data-action="savePricing" data-edit-id="${escHtml(existing ? existing.model_id : '')}">保存</button>`;
 
   showModal(isEdit ? '编辑定价' : '新增定价', content, footer);
+  setTimeout(() => wireCustomSelect('pm-currency'), 0);
 }
 
 async function savePricing(editModelId) {

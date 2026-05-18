@@ -1,45 +1,32 @@
+# ═══════════════════════════════════════════════════════════════════════
+# AI Proxy & Hermes Data Browser 配置
+# ═══════════════════════════════════════════════════════════════════════
+#
+# 模型路由已由 ConfigDB（data db 的 upstreams/target_models/model_routes 表）
+# 动态管理，不再使用静态 model_map。通过 POST /admin/reload 热重载。
+#
+
+# ─── Proxy 服务绑定 ────────────────────────────────────────────────────
 proxy:
   host: "127.0.0.1"
   port: 48743
-  log_level: "INFO" # DEBUG / INFO / WARNING
+  log_level: "INFO"  # DEBUG / INFO / WARNING
 
+# ─── 服务端口注册 ──────────────────────────────────────────────────────
+# data_browser: Hermes Data Browser 监听地址
+#（codex_proxy 已在 proxy 段声明，此处不再重复）
 ports:
   data_browser:
     host: "127.0.0.1"
     port: 18742
-  codex_proxy:
-    host: "127.0.0.1"
-    port: 48743
 
-upstream:
-  base_url: "https://llm-open-api.cargoware.com/v1"
-  api_key: "sk-1f5H4uYz1mKZvEONUuQrQw"
-  timeout: 1800 # SSE 流总超时（秒）
-  connect_timeout: 60
-  ssl_verify: false # 内网自签证书时可设为 false
-  retry: 1 # 上游 5xx/超时时自动重试次数（0 = 不重试）
-  proxy: "http://192.168.20.18:9090" # 上游请求代理（HTTP 格式，留空则直连）
-  enable_proxy: false # 是否启用代理（true/false）。http.client 不读取环境变量，须显式路由
-
-model_map:
-  "codex-mini-latest":
-    target: "kimi-k2.5"
-    multimodal: true
-  "o4-mini":
-    target: "kimi-k2.5"
-    multimodal: true
-  "gpt-4o":
-    target: "kimi-k2.5"
-    multimodal: true
-  "*":
-    target: "kimi-k2.5"
-    multimodal: true
-
+# ─── 日志配置 ───────────────────────────────────────────────────────────
 logging:
-  debug_retention_days: 7
+  debug_retention_days: 3
   log_dir: "~/.ai-agent-tools/data"
   log_file: "access_log.db"
 
+# ─── Response Store（response_id 缓存，支持多轮对话）───────────────────
 response_store:
-  max_entries: 1000
-  ttl_seconds: 3600
+  max_entries: 3000
+  ttl_seconds: 43200    # 12 小时

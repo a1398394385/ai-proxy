@@ -1,16 +1,15 @@
 """Anthropic Messages API ↔ Chat Completions 转换模块。
 
-请求转换（Anthropic → Chat）已迁移到 .transform_anthropic_request。
+请求转换（Anthropic → Chat）已迁移到 request.anthropic。
 响应转换和 SSE 流式转换保留在此文件。
 """
 import json
 import logging
 from dataclasses import dataclass, field
 
-from .transform_anthropic_request import anthropic_to_chat  # noqa: F401
 
-from .sse_utils import _format_sse_event
-from .transform_responses import _parse_sse_event, iter_sse_events
+from ...sse_utils import _format_sse_event
+from ...sse_utils import _parse_sse_event, iter_sse_events
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +106,7 @@ class AnthropicStreamState:
     message_id: str = ""
     model: str = ""
     content_index: int = 0
+    current_block_index: int = 0
     current_block_type: str = ""
     tool_blocks: dict = field(default_factory=dict)  # int → ToolBlockState
     finish_reason: str = ""
@@ -248,8 +248,10 @@ def _process_anthropic_delta(delta: dict, state: AnthropicStreamState) -> list:
                 }))
                 state.current_block_type = "thinking"
                 state.open_blocks.add(idx)
+                state.current_block_index = idx
+                state.content_index = idx + 1
             events.append(_format_sse_event("content_block_delta", {
-                "index": state.content_index,
+                "index": state.current_block_index,
                 "delta": {"type": "thinking_delta", "thinking": reasoning_text},
             }))
             break
@@ -266,8 +268,10 @@ def _process_anthropic_delta(delta: dict, state: AnthropicStreamState) -> list:
             }))
             state.current_block_type = "text"
             state.open_blocks.add(idx)
+            state.current_block_index = idx
+            state.content_index = idx + 1
         events.append(_format_sse_event("content_block_delta", {
-            "index": state.content_index,
+            "index": state.current_block_index,
             "delta": {"type": "text_delta", "text": content},
         }))
 
@@ -342,3 +346,9 @@ def _process_anthropic_delta(delta: dict, state: AnthropicStreamState) -> list:
         events.append(_format_sse_event("message_delta", delta_event))
 
     return events
+
+
+# ─── 自注册 ───
+from ..registry import register_response, register_stream  # noqa: E402
+register_response("messages", "chat_completions", chat_to_anthropic)
+register_stream("messages", "chat_completions", create_anthropic_sse_stream)

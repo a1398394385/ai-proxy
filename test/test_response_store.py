@@ -127,7 +127,7 @@ class TestConversationChain(unittest.TestCase):
         轮次2: 从 store 取 conversation → 注入到新 messages → system 在首位、历史在中间、新 user 在末尾
         """
         import json
-        from proxy.transform_responses import create_codex_sse_stream
+        from proxy.transform import create_codex_sse_stream
         from proxy.response_store import ResponseStore
 
         store = ResponseStore()
@@ -232,7 +232,7 @@ class TestConversationChain(unittest.TestCase):
 
     def test_pure_refusal_streaming_conversation_uses_empty_string(self):
         """流式路径：纯拒绝响应存入 store 后，conversation 的 assistant content 为空字符串（不是 None）。"""
-        from proxy.transform_responses import create_codex_sse_stream
+        from proxy.transform import create_codex_sse_stream
         from proxy.response_store import ResponseStore
 
         store = ResponseStore()
@@ -271,7 +271,7 @@ class TestStreamingStorePath(unittest.TestCase):
 
     def test_streaming_stores_record_in_store(self):
         """耗尽 create_codex_sse_stream 生成器后，store 应有对应的 record。"""
-        from proxy.transform_responses import create_codex_sse_stream
+        from proxy.transform import create_codex_sse_stream
         from proxy.response_store import ResponseStore
 
         store = ResponseStore()
@@ -308,7 +308,7 @@ class TestStreamingStorePath(unittest.TestCase):
 
     def test_streaming_no_store_when_none(self):
         """response_store=None 时不报错，正常流式输出。"""
-        from proxy.transform_responses import create_codex_sse_stream
+        from proxy.transform import create_codex_sse_stream
         chunks = [
             b'data: {"id":"c1","model":"test","choices":[{"delta":{"content":"Hi"},"index":0}]}\n\n',
             b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n',

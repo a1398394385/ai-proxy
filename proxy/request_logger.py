@@ -21,7 +21,7 @@ REQUEST_TYPE_CHAT_COMPLETIONS = "chat_completions"
 class RequestLogger:
     """请求日志记录器，短连接方案：每次写入时创建/关闭 SQLite 连接。"""
 
-    def __init__(self, db_path: Path, debug_retention_days: int = 7):
+    def __init__(self, db_path: Path, debug_retention_days: int = 3):
         """初始化：创建目录、建表、WAL 模式、清理过期数据。"""
         self.db_path = db_path
         self.debug_retention_days = debug_retention_days

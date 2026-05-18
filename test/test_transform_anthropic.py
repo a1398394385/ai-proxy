@@ -14,7 +14,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_simple_text_message(self):
         """user 角色 + 字符串 content → Chat message。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [
@@ -31,7 +31,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_system_string(self):
         """system: 'You are helpful' → messages[0] 为 {role:'system', content:'You are helpful'}"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "system": "You are helpful",
@@ -45,7 +45,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_system_array(self):
         """system: [{type:'text', text:'part1'}, ...] → \n 连接。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "system": [
@@ -60,7 +60,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_system_array_filters_empty(self):
         """system block 无 text 字段 → 跳过，不产生空行。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "system": [
@@ -75,7 +75,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_multimodal_image(self):
         """image source base64 → image_url。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [
@@ -91,7 +91,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_tool_use_conversion(self):
         """tool_use block → tool_calls[] + arguments 序列化。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [
@@ -110,7 +110,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_tool_result_conversion(self):
         """tool_result → 独立 {role:'tool', tool_call_id, content}。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [
@@ -127,7 +127,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_tool_result_array_content(self):
         """tool_result content 为数组 → json.dumps。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [
@@ -142,7 +142,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_tool_result_null_content(self):
         """tool_result content 为 null → content: ''。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [
@@ -157,7 +157,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_tool_result_complex_content(self):
         """content 含 image 块等非文本 → 取第一个 type:'text' 块的 text 字段。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [
@@ -175,7 +175,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_thinking_discarded(self):
         """消息中的 thinking block → 不出现在 Chat messages 中。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [
@@ -192,7 +192,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_o_series_max_completion_tokens(self):
         """o3 模型 → max_completion_tokens，普通模型 → max_tokens。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [{"role": "user", "content": "Hi"}],
@@ -209,7 +209,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_tool_definitions_conversion(self):
         """Anthropic tools → {type:'function', function:{name,description,parameters}}。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [{"role": "user", "content": "Search for cats"}],
@@ -228,7 +228,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_thinking_to_reasoning_effort_adaptive(self):
         """thinking: {type:'adaptive'} → reasoning_effort: 'xhigh'。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [{"role": "user", "content": "Hi"}],
@@ -240,7 +240,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_thinking_to_reasoning_effort_budget(self):
         """thinking: {type:'enabled', budget_tokens: 16000} → reasoning_effort: 'high'。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [{"role": "user", "content": "Hi"}],
@@ -262,7 +262,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_reasoning_effort_on_gpt5_model(self):
         """目标模型 gpt-5.1 → 注入 reasoning_effort。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [{"role": "user", "content": "Hi"}],
@@ -274,7 +274,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_reasoning_effort_skipped_on_qwen(self):
         """目标模型 qwen3.6-plus → 不注入 reasoning_effort。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [{"role": "user", "content": "Hi"}],
@@ -286,7 +286,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_tool_choice_auto(self):
         """{type:'auto'} → 'auto'。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [{"role": "user", "content": "Hi"}],
@@ -298,7 +298,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_tool_choice_any(self):
         """{type:'any'} → 'required'。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [{"role": "user", "content": "Hi"}],
@@ -310,7 +310,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_tool_choice_tool(self):
         """{type:'tool', name:'x'} → {type:'function', function:{name:'x'}}。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [{"role": "user", "content": "Hi"}],
@@ -323,7 +323,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_tool_choice_string_fallback(self):
         """'auto' → 'auto', 'any' → 'required'。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body1 = {
             "model": "claude-sonnet-4-6",
             "messages": [{"role": "user", "content": "Hi"}],
@@ -339,7 +339,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_unknown_fields_not_crash(self):
         """含 output_config.format、context_management、speed 等未知字段不抛异常。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [{"role": "user", "content": "Hi"}],
@@ -356,7 +356,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_empty_messages(self):
         """空 messages → Chat messages 不含奇怪数据。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [],
@@ -367,7 +367,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_cache_control_preserved(self):
         """text block 上的 cache_control → 保留在 output 中。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [
@@ -384,7 +384,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_stream_options_added(self):
         """stream: true → stream_options: {include_usage: true}。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [{"role": "user", "content": "Hi"}],
@@ -396,7 +396,7 @@ class TestAnthropicToChat(unittest.TestCase):
         self.assertEqual(result["stream_options"], {"include_usage": True})
     def test_tool_result_multiple_text_blocks(self):
         """tool_result content 有多个 type='text' block → \n 拼接。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [
@@ -415,9 +415,9 @@ class TestAnthropicToChat(unittest.TestCase):
         self.assertEqual(result["messages"][0]["tool_call_id"], "call_1")
         self.assertEqual(result["messages"][0]["content"], "alpha\nbeta")
 
-    def test_redacted_thinking_skipped(self):
-        """redacted_thinking block 静默忽略，不影响输出。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+    def test_redacted_thinking_produces_empty_reasoning(self):
+        """redacted_thinking block → reasoning_content: ""（无法提取原文，用空字符串占位）。"""
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [
@@ -432,11 +432,11 @@ class TestAnthropicToChat(unittest.TestCase):
         self.assertEqual(len(result["messages"]), 1)
         self.assertEqual(result["messages"][0]["role"], "assistant")
         self.assertEqual(result["messages"][0]["content"], [{"type": "text", "text": "Hello"}])
-        self.assertNotIn("reasoning_content", result["messages"][0])
+        self.assertEqual(result["messages"][0]["reasoning_content"], "")
 
     def test_empty_content_blocks(self):
         """content 为空数组 [] → 跳过该消息。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [
@@ -451,7 +451,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_system_text_with_cache_control(self):
         """system array 中 text block 含 cache_control → 只提取文本拼接。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "system": [
@@ -467,7 +467,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_tool_choice_none(self):
         """tool_choice: {"type": "none"} → 不抛异常。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [{"role": "user", "content": "Hi"}],
@@ -479,7 +479,7 @@ class TestAnthropicToChat(unittest.TestCase):
 
     def test_message_with_both_text_and_tool_use(self):
         """assistant 同时包含 text 和 tool_use → 单条消息含 content + tool_calls。"""
-        from proxy.transform_anthropic import anthropic_to_chat
+        from proxy.transform import anthropic_to_chat
         body = {
             "model": "claude-sonnet-4-6",
             "messages": [
@@ -524,7 +524,7 @@ class TestAnthropicSSEStream(unittest.TestCase):
 
     def test_message_start(self):
         """首个 chunk 含 id/model → event: message_start。"""
-        from proxy.transform_anthropic import create_anthropic_sse_stream
+        from proxy.transform import create_anthropic_sse_stream
         sse = (
             'data: {"id":"chatcmpl-1","model":"qwen","usage":{"prompt_tokens":10,"completion_tokens":2},"choices":[]}\n\n'
             'data: [DONE]\n\n'
@@ -539,7 +539,7 @@ class TestAnthropicSSEStream(unittest.TestCase):
 
     def test_text_stream(self):
         """delta.content 多次出现 → content_block_start/delta/stop。"""
-        from proxy.transform_anthropic import create_anthropic_sse_stream
+        from proxy.transform import create_anthropic_sse_stream
         sse = (
             'data: {"id":"c1","model":"m","choices":[{"delta":{"content":"Hello"}}]}\n\n'
             'data: {"id":"c1","model":"m","choices":[{"delta":{"content":" world"}}]}\n\n'
@@ -557,7 +557,7 @@ class TestAnthropicSSEStream(unittest.TestCase):
 
     def test_thinking_stream_reasoning_content(self):
         """delta.reasoning_content 出现 → content_block_start(thinking)。"""
-        from proxy.transform_anthropic import create_anthropic_sse_stream
+        from proxy.transform import create_anthropic_sse_stream
         sse = (
             'data: {"id":"c1","model":"m","choices":[{"delta":{"reasoning_content":"Let me think"}}]}\n\n'
             'data: {"id":"c1","model":"m","choices":[{"delta":{"reasoning_content":" more"}}]}\n\n'
@@ -572,7 +572,7 @@ class TestAnthropicSSEStream(unittest.TestCase):
 
     def test_thinking_stream_reasoning(self):
         """delta.reasoning 出现 → content_block_start(thinking)。"""
-        from proxy.transform_anthropic import create_anthropic_sse_stream
+        from proxy.transform import create_anthropic_sse_stream
         sse = (
             'data: {"id":"c1","model":"m","choices":[{"delta":{"reasoning":"thinking..."}}]}\n\n'
             'data: {"id":"c1","model":"m","choices":[{"delta":{"content":"","finish_reason":"stop"}]}\n\n'
@@ -585,7 +585,7 @@ class TestAnthropicSSEStream(unittest.TestCase):
 
     def test_message_delta(self):
         """delta.finish_reason 出现 → event: message_delta + stop_reason + usage。"""
-        from proxy.transform_anthropic import create_anthropic_sse_stream
+        from proxy.transform import create_anthropic_sse_stream
         sse = (
             'data: {"id":"c1","model":"m","choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":2}}}\n\n'
             'data: [DONE]\n\n'
@@ -600,7 +600,7 @@ class TestAnthropicSSEStream(unittest.TestCase):
 
     def test_message_stop(self):
         """[DONE] → event: message_stop。"""
-        from proxy.transform_anthropic import create_anthropic_sse_stream
+        from proxy.transform import create_anthropic_sse_stream
         sse = 'data: [DONE]\n\n'
         events = list(create_anthropic_sse_stream(_mock_upstream_stream(sse)))
         self.assertEqual(len(events), 1)
@@ -609,7 +609,7 @@ class TestAnthropicSSEStream(unittest.TestCase):
 
     def test_arguments_null_skip(self):
         """tool_calls[i].function.arguments 为 null → 不发送 input_json_delta。"""
-        from proxy.transform_anthropic import create_anthropic_sse_stream
+        from proxy.transform import create_anthropic_sse_stream
         sse = (
             'data: {"id":"c1","model":"m","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"fn"}}]}}]}\n\n'
             'data: {"id":"c1","model":"m","choices":[{"delta":{"content":"","finish_reason":"stop"}]}\n\n'
@@ -622,7 +622,7 @@ class TestAnthropicSSEStream(unittest.TestCase):
 
     def test_finish_reason_mapping(self):
         """finish_reason: 'stop' → stop_reason: 'end_turn'。"""
-        from proxy.transform_anthropic import create_anthropic_sse_stream
+        from proxy.transform import create_anthropic_sse_stream
         sse = (
             'data: {"id":"c1","model":"m","choices":[{"delta":{"content":"hi"},"finish_reason":"length"}]}\n\n'
             'data: [DONE]\n\n'
@@ -638,7 +638,7 @@ class TestChatToAnthropic(unittest.TestCase):
 
     def test_basic_text_response(self):
         """content: 'hello', finish_reason: 'stop' → content: [{type:'text', text:'hello'}], stop_reason: 'end_turn'。"""
-        from proxy.transform_anthropic import chat_to_anthropic
+        from proxy.transform import chat_to_anthropic
         response = {
             "id": "chatcmpl-123",
             "model": "qwen3.6-plus",
@@ -657,7 +657,7 @@ class TestChatToAnthropic(unittest.TestCase):
 
     def test_tool_calls_response(self):
         """tool_calls → content: [{type:'tool_use', id, name, input:{...}}]。"""
-        from proxy.transform_anthropic import chat_to_anthropic
+        from proxy.transform import chat_to_anthropic
         response = {
             "id": "chatcmpl-456",
             "model": "qwen3.6-plus",
@@ -683,7 +683,7 @@ class TestChatToAnthropic(unittest.TestCase):
 
     def test_refusal_response(self):
         """refusal → content: [{type:'text', text: refusal}]。"""
-        from proxy.transform_anthropic import chat_to_anthropic
+        from proxy.transform import chat_to_anthropic
         response = {
             "id": "chatcmpl-789",
             "model": "qwen3.6-plus",
@@ -699,7 +699,7 @@ class TestChatToAnthropic(unittest.TestCase):
 
     def test_finish_reason_stop(self):
         """finish_reason: 'stop' → stop_reason: 'end_turn'。"""
-        from proxy.transform_anthropic import chat_to_anthropic
+        from proxy.transform import chat_to_anthropic
         response = {
             "id": "c1", "model": "m",
             "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
@@ -708,7 +708,7 @@ class TestChatToAnthropic(unittest.TestCase):
 
     def test_finish_reason_length(self):
         """finish_reason: 'length' → stop_reason: 'max_tokens'。"""
-        from proxy.transform_anthropic import chat_to_anthropic
+        from proxy.transform import chat_to_anthropic
         response = {
             "id": "c1", "model": "m",
             "choices": [{"message": {"content": "hi"}, "finish_reason": "length"}],
@@ -717,7 +717,7 @@ class TestChatToAnthropic(unittest.TestCase):
 
     def test_finish_reason_tool_calls(self):
         """finish_reason: 'tool_calls' → stop_reason: 'tool_use'。"""
-        from proxy.transform_anthropic import chat_to_anthropic
+        from proxy.transform import chat_to_anthropic
         response = {
             "id": "c1", "model": "m",
             "choices": [{"message": {"content": None}, "finish_reason": "tool_calls"}],
@@ -726,7 +726,7 @@ class TestChatToAnthropic(unittest.TestCase):
 
     def test_finish_reason_content_filter(self):
         """finish_reason: 'content_filter' → stop_reason: 'end_turn'。"""
-        from proxy.transform_anthropic import chat_to_anthropic
+        from proxy.transform import chat_to_anthropic
         response = {
             "id": "c1", "model": "m",
             "choices": [{"message": {"content": "hi"}, "finish_reason": "content_filter"}],
@@ -735,7 +735,7 @@ class TestChatToAnthropic(unittest.TestCase):
 
     def test_usage_mapping(self):
         """usage: {prompt_tokens, completion_tokens, prompt_tokens_details.cached_tokens} → Anthropic usage。"""
-        from proxy.transform_anthropic import chat_to_anthropic
+        from proxy.transform import chat_to_anthropic
         response = {
             "id": "c1", "model": "m",
             "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
@@ -752,7 +752,7 @@ class TestChatToAnthropic(unittest.TestCase):
 
     def test_hardcoded_fields(self):
         """type: 'message', role: 'assistant', stop_sequence: null 始终注入。"""
-        from proxy.transform_anthropic import chat_to_anthropic
+        from proxy.transform import chat_to_anthropic
         response = {
             "id": "c1", "model": "m",
             "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
@@ -764,7 +764,7 @@ class TestChatToAnthropic(unittest.TestCase):
 
     def test_tool_calls_empty_arguments(self):
         """function.arguments: '' → input: {}（空字符串降级为空 dict）。"""
-        from proxy.transform_anthropic import chat_to_anthropic
+        from proxy.transform import chat_to_anthropic
         response = {
             "id": "c1", "model": "m",
             "choices": [{
@@ -780,7 +780,7 @@ class TestChatToAnthropic(unittest.TestCase):
 
     def test_tool_calls_invalid_arguments_json(self):
         """function.arguments: 'not valid json' → input: {}。"""
-        from proxy.transform_anthropic import chat_to_anthropic
+        from proxy.transform import chat_to_anthropic
         response = {
             "id": "c1", "model": "m",
             "choices": [{

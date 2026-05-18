@@ -1,5 +1,6 @@
 import unittest
-from proxy.transform_router import TransformRouter
+from proxy.transform.router import TransformRouter
+from proxy.transform.registry import UnsupportedFormat
 
 
 class TestTransformRouter(unittest.TestCase):
@@ -17,9 +18,9 @@ class TestTransformRouter(unittest.TestCase):
         self.assertIn("messages", result)
 
     def test_unknown_pair_raises_keyerror(self):
-        """未注册的客户端协议抛出 KeyError。"""
+        """未注册的客户端协议抛出 UnsupportedFormat。"""
         router = TransformRouter
-        with self.assertRaises(KeyError):
+        with self.assertRaises(UnsupportedFormat):
             router.convert_request(
                 {"model": "gpt-4"},
                 client_format="no_such_format",
@@ -50,9 +51,9 @@ class TestTransformRouter(unittest.TestCase):
         self.assertIs(result2, resp)
 
     def test_stream_unknown_format_raises_keyerror(self):
-        """未知客户端格式的流转换抛出 KeyError。"""
+        """未知客户端格式的流转换抛出 UnsupportedFormat。"""
         router = TransformRouter
-        with self.assertRaises(KeyError):
+        with self.assertRaises(UnsupportedFormat):
             list(router.stream_convert(
                 iter([]), upstream_format="chat_completions", client_format="no_such_format",
             ))

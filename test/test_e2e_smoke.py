@@ -102,7 +102,7 @@ class TestProxyConfigHasLogging(unittest.TestCase):
         cfg = _read_config(PROXY_CONFIG)
         logging_cfg = cfg["logging"]
         self.assertIn("debug_retention_days", logging_cfg)
-        self.assertEqual(logging_cfg["debug_retention_days"], 7)
+        self.assertEqual(logging_cfg["debug_retention_days"], 3)
 
     def test_logging_log_dir(self):
         cfg = _read_config(PROXY_CONFIG)

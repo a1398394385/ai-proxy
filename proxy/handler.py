@@ -42,8 +42,8 @@ from .request_logger import (
 )
 
 from .token_stats import record_token_stats
-from .transform_router import TransformRouter  # noqa: E402
-from .transform_responses import _parse_sse_event  # noqa: E402 — v2 流式使用
+from .transform.router import TransformRouter  # noqa: E402
+from .sse_utils import _parse_sse_event  # noqa: E402 — v2 流式使用
 from .agent_detector import detect_subagent
 
 
@@ -231,17 +231,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
             raw_cfg = config_cache.resolve(model_name, request_type)
 
         if raw_cfg is None:
-            model_cfg = {"target": model_name, "multimodal": False}
-            upstream_cfg = CONFIG.get("upstream", {})
-            upstream_format = ""
-        else:
-            model_cfg = {
-                "target": raw_cfg["target_name"],
-                "multimodal": bool(raw_cfg["multimodal"]),
-                "upstream": raw_cfg["upstream"],
-            }
-            upstream_cfg = model_cfg["upstream"]
-            upstream_format = raw_cfg.get("format", "")
+            err_msg = f"模型 {model_name} 不可用（无匹配路由）"
+            logging.error(err_msg)
+            self._send_json(500, {
+                "error": {"type": "internal_error", "message": err_msg}
+            })
+            return
+
+        model_cfg = {
+            "target": raw_cfg["target_name"],
+            "multimodal": bool(raw_cfg["multimodal"]),
+            "upstream": raw_cfg["upstream"],
+        }
+        upstream_cfg = model_cfg["upstream"]
+        upstream_format = raw_cfg.get("format", "")
 
         target = model_cfg["target"]
 
@@ -675,7 +678,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         upstream_format: 上游协议（取自 upstream_cfg.format）
         """
         is_stream = body.get("stream", False)
-        upstream_cfg = model_cfg.get("upstream") or CONFIG.get("upstream", {})
+        upstream_cfg = model_cfg.get("upstream") or {}
         upstream_format = upstream_cfg.get("format", "chat_completions")
         logger = get_logger()
 
@@ -847,7 +850,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     )
 
                 try:
-                    from .transform_router import TransformRouter
+                    from .transform.router import TransformRouter
                     output = TransformRouter.convert_response(
                         chat_response, upstream_format, client_format
                     )
@@ -883,7 +886,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     return
 
                 if store_enabled and is_responses_api:
-                    from .transform_responses import output_items_to_messages as _oitm
+                    from .transform import output_items_to_messages as _oitm
                     assistant_msgs = _oitm(output.get("output", []))
                     messages_for_conv = [
                         m for m in upstream_body.get("messages", [])
@@ -984,13 +987,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
+            self.close_connection = True
 
             # 核心：TransformRouter 逐事件转换
             _rstore = (
                 getattr(self.server, "response_store", None)
                 if store_enabled else None
             )
-            from .transform_router import TransformRouter
+            from .transform.router import TransformRouter
             for sse_event in TransformRouter.stream_convert(
                 resp, upstream_format, client_format,
                 request_messages=upstream_body.get("messages") if _rstore else None,

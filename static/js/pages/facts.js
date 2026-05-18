@@ -1,4 +1,4 @@
-import { api, escHtml, showModal, closeModal, catLabels, catIcons, on } from '../core.js';
+import { api, escHtml, showModal, closeModal, catLabels, catIcons, on, customSelectHtml, wireCustomSelect } from '../core.js';
 
 // ===== Mutable State =====
 let allFacts = [];
@@ -114,12 +114,12 @@ async function editFact(id) {
     </div>
     <div class="form-group">
       <label class="form-label">类别</label>
-      <select class="form-select" id="m-category">
-        <option value="general" ${f.category==='general'?'selected':''}>通用</option>
-        <option value="project" ${f.category==='project'?'selected':''}>项目</option>
-        <option value="tool" ${f.category==='tool'?'selected':''}>工具</option>
-        <option value="user_pref" ${f.category==='user_pref'?'selected':''}>偏好</option>
-      </select>
+      ${customSelectHtml('m-category', [
+        { value: 'general', label: '📝 通用', selected: f.category==='general' },
+        { value: 'project', label: '📁 项目', selected: f.category==='project' },
+        { value: 'tool', label: '🔧 工具', selected: f.category==='tool' },
+        { value: 'user_pref', label: '✨ 偏好', selected: f.category==='user_pref' },
+      ], '选择类别')}
     </div>
     <div class="form-group">
       <label class="form-label">标签 (逗号分隔)</label>
@@ -133,6 +133,7 @@ async function editFact(id) {
     <button class="btn btn-secondary" data-action="closeModal">取消</button>
     <button class="btn btn-primary" data-action="saveFact">保存</button>
   `);
+  setTimeout(() => wireCustomSelect('m-category'), 0);
 }
 
 async function saveFact() {
@@ -213,6 +214,7 @@ function initFactPage() {
         <button class="btn btn-secondary" data-action="closeModal">取消</button>
         <button class="btn btn-primary" data-action="saveFact">保存</button>
       `);
+      setTimeout(() => wireCustomSelect('m-category'), 0);
     });
   }
 }

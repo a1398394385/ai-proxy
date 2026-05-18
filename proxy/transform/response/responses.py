@@ -1,12 +1,4 @@
-"""Responses API ↔ Chat Completions 转换模块。
-
-包含：
-- responses_to_chat(): Responses API → Chat Completions
-- chat_to_responses(): Chat Completions → Responses API
-- StreamState + create_codex_sse_stream(): SSE 流转换
-- SSE 解析器 iter_sse_events + _parse_sse_event
-- generate_response_id(): 生成 resp-{timestamp_ms}-{random_hex8}
-"""
+"""Chat Completions → OpenAI Responses API 响应转换模块。"""
 
 import json
 import uuid
@@ -15,426 +7,16 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional, Generator, Any, Union
 
-from .token_stats import _find_first
-from .sse_utils import _format_sse_event
+from ...token_stats import _find_first
+from ...sse_utils import _format_sse_event, iter_sse_events
 
 logger = logging.getLogger(__name__)
-
 
 def generate_response_id() -> str:
     """生成 OpenAI 规范 response ID: resp-{timestamp_ms}-{random_hex8}"""
     ts = int(time.time() * 1000)
     rand = uuid.uuid4().hex[:8]
     return f"resp-{ts}-{rand}"
-
-
-def responses_to_chat(body: dict, model_cfg: dict) -> dict:
-    """Responses API → Chat Completions 请求转换。
-
-    model_cfg: model_map 中命中的条目，如 {"target": "claude-sonnet-4-6", "multimodal": False}
-    """
-    messages = []
-
-    # instructions → system message
-    instructions = body.get("instructions", "")
-    if instructions:
-        messages.append({"role": "system", "content": instructions})
-
-    # input → messages
-    # reasoning 追踪：上游 thinking mode 要求 assistant 消息必须携带 reasoning_content
-    # Responses API 中 reasoning 项紧跟在 assistant 交互之后，需要注入到下一条 assistant 消息
-    pending_reasoning = None  # 待注入的 reasoning 文本
-    raw_input = body.get("input", [])
-    if isinstance(raw_input, str):
-        raw_input = [{"type": "message", "role": "user", "content": raw_input}]
-    for item in raw_input:
-        if item.get("type") == "reasoning":
-            # 收集 reasoning 文本，等待下一条 assistant 消息时注入
-            summary = item.get("summary", [])
-            text = "".join(s.get("text", "") for s in summary if s.get("type") == "summary_text")
-            if text:
-                pending_reasoning = text
-            continue
-        if item.get("type") in ("web_search_call", "code_interpreter_call", "mcp_call"):
-            logger.warning(f"[transform] 丢弃不支持的 input 类型: {item.get('type')}")
-            continue
-
-        msg = _map_input_item(item, model_cfg)
-        if msg is not None:
-            # 如果有 pending 的 reasoning，仅在实际注入到 assistant 消息后才消费
-            if pending_reasoning:
-                for m in msg:
-                    if m.get("role") == "assistant":
-                        m["reasoning_content"] = pending_reasoning
-                        pending_reasoning = None  # 仅在实际注入后消费
-            messages.extend(msg)
-
-    # 修复：Responses API 允许 assistant 文本消息出现在 tool_call/tool 对之间，
-    # 但 Chat Completions 不允许。将中间的 assistant 纯文本消息推迟到 tool 序列结束后。
-    messages = _fix_tool_message_order(messages)
-
-    # 基础字段映射
-    chat = {
-        "model": model_cfg["target"],
-        "messages": messages,
-    }
-
-    if "max_output_tokens" in body:
-        chat["max_tokens"] = body["max_output_tokens"]
-        chat["max_completion_tokens"] = body["max_output_tokens"]
-
-    # 工具转换：Responses API → Chat Completions
-    if "tools" in body:
-        chat["tools"] = _map_tools(body["tools"])
-    if "stream" in body:
-        chat["stream"] = body["stream"]
-        if body["stream"]:
-            chat["stream_options"] = {**body.get("stream_options", {}), "include_usage": True}
-    for key in ("tool_choice", "parallel_tool_calls"):
-        if key in body:
-            chat[key] = body[key]
-    # 透传 Chat Completions 原生参数
-    for key in ("temperature", "top_p", "stop", "service_tier", "frequency_penalty", "presence_penalty", "n"):
-        if key in body:
-            chat[key] = body[key]
-    # Responses 专有字段 → 不透传上游，记录 warning
-    for key in ("metadata", "max_tool_calls", "truncation"):
-        if key in body:
-            logger.warning(f"[transform] Responses 专有字段 '{key}' 已丢弃 (不透传 Chat Completions 上游)"
-)
-
-    # reasoning.effort → reasoning_effort
-    # Responses API: {"reasoning": {"effort": "xhigh"}}
-    # Chat Completions API: "reasoning_effort": "xhigh"
-    reasoning = body.get("reasoning", {})
-    if isinstance(reasoning, dict):
-        effort = reasoning.get("effort")
-        if effort in ("xhigh", "high", "medium", "low"):
-            chat["reasoning_effort"] = effort
-
-    # 结构化输出映射
-    text_format = body.get("text", {}).get("format")
-    if text_format:
-        chat["response_format"] = _map_response_format(text_format)
-
-    return chat
-
-
-def _map_input_item(item: dict, model_cfg: dict) -> list:
-    """将单个 input 条目映射为 Chat Completions messages。返回 list 因为某些类型可能展开为多条。"""
-    item_type = item.get("type")
-
-    if item_type == "message":
-        return [_map_message(item, model_cfg)]
-    elif item_type == "function_call":
-        return [_map_function_call(item)]
-    elif item_type == "computer_call":
-        return [_map_function_call(item)]
-    elif item_type == "function_call_output":
-        return [_map_function_call_output(item)]
-    elif item_type == "computer_call_output":
-        return [_map_computer_call_output(item)]
-    elif item_type == "reasoning":
-        return []
-    elif item_type in ("web_search_call", "code_interpreter_call", "mcp_call"):
-        logger.warning(f"[transform] 丢弃不支持的 input 类型: {item_type}")
-        return []
-    else:
-        logger.warning(f"[transform] 丢弃未知 input 类型: {item_type}")
-        return []
-
-
-def _map_message(item: dict, model_cfg: dict) -> dict:
-    """映射 message 类型的 input 条目。"""
-    role = item.get("role", "user")
-    if role == "developer":
-        role = "system"
-    content = item.get("content")
-
-    if isinstance(content, str):
-        return {"role": role, "content": content}
-
-    if isinstance(content, list):
-        mapped = []
-        for part in content:
-            part_type = part.get("type")
-            if part_type == "input_text":
-                mapped.append({"type": "text", "text": part.get("text", "")})
-            elif part_type == "output_text":
-                # assistant 消息的标准 content 类型
-                mapped.append({"type": "text", "text": part.get("text", "")})
-            elif part_type == "input_image":
-                mapped.append(_map_input_image(part, model_cfg))
-            elif part_type == "input_file":
-                mapped.append(_map_input_file(part))
-            else:
-                logger.warning(f"[transform] 丢弃不支持的 content 类型: {part_type}")
-        return {"role": role, "content": mapped} if mapped else {"role": role, "content": ""}
-
-    return {"role": role, "content": str(content) if content else ""}
-
-
-def _map_input_image(part: dict, model_cfg: dict) -> dict:
-    """映射 input_image，根据 multimodal 配置分支。"""
-    if model_cfg.get("multimodal", False):
-        image_url = part.get("image_url", "")
-        detail = part.get("detail", "auto")
-        return {
-            "type": "image_url",
-            "image_url": {"url": image_url, "detail": detail},
-        }
-    else:
-        logger.warning("[transform] 模型不支持多模态，input_image 已替换为占位文本")
-        return {"type": "text", "text": "[image: unsupported]"}
-
-
-def _map_input_file(part: dict) -> dict:
-    """映射 input_file 为占位文本。"""
-    filename = part.get("filename", "unknown")
-    logger.debug(f"[transform] 文件内容 {part.get('file_id', '?')} 无法转换，已替换为占位标记 [{filename}]")
-    return {"type": "text", "text": f"[file: {filename}]"}
-
-
-def _map_function_call(item: dict) -> dict:
-    """映射 function_call → assistant + tool_calls。"""
-    call_id = item.get("call_id") or item.get("id", "")
-    name = item.get("name", "")
-    arguments = item.get("arguments", "")
-    if isinstance(arguments, dict):
-        arguments = json.dumps(arguments)
-    return {
-        "role": "assistant",
-        "tool_calls": [{
-            "id": call_id,
-            "type": "function",
-            "function": {"name": name, "arguments": arguments},
-        }],
-    }
-
-
-def _map_function_call_output(item: dict) -> dict:
-    """映射 function_call_output → tool message。"""
-    return {
-        "role": "tool",
-        "tool_call_id": item.get("call_id") or item.get("tool_call_id", ""),
-        "content": item.get("output", ""),
-    }
-
-
-def _map_computer_call_output(item: dict) -> dict:
-    """映射 computer_call_output → tool message。"""
-    return {
-        "role": "tool",
-        "tool_call_id": item.get("call_id") or item.get("tool_call_id", ""),
-        "content": item.get("output", ""),
-    }
-
-
-def _fix_tool_message_order(messages: list) -> list:
-    """修复 Chat Completions 消息顺序。
-
-    Responses API 允许：
-    (a) assistant 纯文本消息出现在 tool_call/tool 对之间
-    (b) 多条 assistant+tool_calls 消息连续出现
-
-    但 Chat Completions 要求：
-    (a) assistant+tool_calls 必须紧跟对应的 tool 消息，中间不能有其他消息
-    (b) 不允许连续的 assistant 消息
-
-    策略：
-    1. 将夹在 assistant+tool_calls ↔ tool 之间的 user/system 消息推迟到 tool 消息之后
-    2. 将连续的 assistant+tool_calls 合并为单条消息
-    3. 将连续的 assistant 消息合并（text+tool_calls 或 text+text）
-    """
-    result = []
-    deferred = []
-
-    i = 0
-    while i < len(messages):
-        msg = messages[i]
-        role = msg.get("role")
-        has_tool_calls = msg.get("tool_calls")
-
-        if role == "assistant" and has_tool_calls:
-            # 合并连续的所有 assistant+tool_calls 为单条消息
-            all_tool_calls = []
-            merged_reasoning = None
-            while i < len(messages):
-                m = messages[i]
-                if m.get("role") == "assistant" and m.get("tool_calls"):
-                    all_tool_calls.extend(m["tool_calls"])
-                    if "reasoning_content" in m and merged_reasoning is None:
-                        merged_reasoning = m["reasoning_content"]
-                    i += 1
-                else:
-                    break
-
-            merged = {
-                "role": "assistant",
-                "tool_calls": all_tool_calls,
-            }
-            if merged_reasoning:
-                merged["reasoning_content"] = merged_reasoning
-
-            # 收集对应的 tool 消息（允许中间穿插 user/system 等非 tool 消息）
-            tool_call_ids = {tc.get("id") for tc in all_tool_calls}
-            tool_msgs = []
-            while i < len(messages) and tool_call_ids:
-                m = messages[i]
-                if m.get("role") == "tool":
-                    if m.get("tool_call_id") in tool_call_ids:
-                        tool_msgs.append(m)
-                        tool_call_ids.discard(m.get("tool_call_id"))
-                    else:
-                        break  # 不属于当前 tool_calls 的 tool 消息，停止
-                elif m.get("role") == "assistant" and m.get("tool_calls"):
-                    break  # 新的 assistant+tool_calls 块，停止
-                else:
-                    deferred.append(m)  # user/system 等消息推迟
-                i += 1
-
-            result.append(merged)
-            result.extend(tool_msgs)
-        else:
-            result.append(msg)
-            i += 1
-
-    result.extend(deferred)
-    return _merge_consecutive_assistants(result)
-
-
-def _merge_consecutive_assistants(messages: list) -> list:
-    """合并连续的 assistant 消息，确保 Chat Completions 格式合法。
-
-    处理场景：
-    - assistant(text) + assistant(tool_calls) → assistant(content + tool_calls)
-    - assistant(text) + assistant(text) → assistant(merged content)
-    - assistant(tool_calls) + assistant(text) → assistant(tool_calls + content)
-    """
-    result = []
-    for msg in messages:
-        if msg.get("role") != "assistant":
-            result.append(msg)
-            continue
-        if result and result[-1].get("role") == "assistant":
-            prev = result[-1]
-            # 合并 content
-            curr_content = msg.get("content")
-            if curr_content is not None and curr_content != "":
-                prev_content = prev.get("content")
-                if prev_content is None or prev_content == "":
-                    prev["content"] = curr_content
-                elif isinstance(prev_content, str) and isinstance(curr_content, str):
-                    prev["content"] = prev_content + "\n" + curr_content
-                elif isinstance(prev_content, list) and isinstance(curr_content, list):
-                    prev["content"] = prev_content + curr_content
-                else:
-                    parts = []
-                    for c in (prev_content, curr_content):
-                        if isinstance(c, str):
-                            parts.append({"type": "text", "text": c})
-                        elif isinstance(c, list):
-                            parts.extend(c)
-                    prev["content"] = parts
-            # 合并 tool_calls
-            curr_tc = msg.get("tool_calls")
-            if curr_tc:
-                if prev.get("tool_calls"):
-                    prev["tool_calls"].extend(curr_tc)
-                else:
-                    prev["tool_calls"] = list(curr_tc)
-            # 合并 reasoning_content（如果当前消息有但前一条没有）
-            if "reasoning_content" in msg and "reasoning_content" not in prev:
-                prev["reasoning_content"] = msg["reasoning_content"]
-        else:
-            result.append(msg)
-    return result
-
-
-def _map_tools(tools: list) -> list:
-    """将 Responses API 工具格式转换为 Chat Completions 格式。
-
-    Responses API: {"type":"function", "name":"...", "parameters":{...}, "description":"...", "strict":...}
-    Chat Completions: {"type":"function", "function": {"name":"...", "parameters":{...}, ...}}
-
-    已有 "function" 键的工具保持不变（幂等）。
-    非 "function" 类型的工具（custom、web_search 等）降级为 function 格式：
-    优先提取已有 schema，没有则兜底为 {"input": "string"} 参数。
-    """
-    result = []
-    for tool in tools:
-        tool_type = tool.get("type", "function")
-        tool_name = tool.get("name", "")
-        if not tool_name and isinstance(tool.get("function"), dict):
-            tool_name = tool["function"].get("name", "")
-
-        if not tool_name:
-            logger.warning(f"[transform] 跳过 name 为空的 tool: {tool}")
-            continue
-
-        if tool_type == "function":
-            if "function" in tool:
-                result.append(tool)
-            else:
-                func = {}
-                for key in ("name", "description", "parameters", "strict"):
-                    if key in tool:
-                        func[key] = tool[key]
-                result.append({"type": "function", "function": func})
-        else:
-            # 非标准 tool 降级为 function 格式
-            logger.info(f"[transform] 非标准 tool 降级为 function: type={tool_type}, name={tool_name}")
-            params = _extract_freeform_tool_params(tool)
-            desc = tool.get("description", "")
-            if desc:
-                desc = f"{desc}\n[原始工具类型: {tool_type}]"
-            result.append({
-                "type": "function",
-                "function": {
-                    "name": tool_name,
-                    "description": desc,
-                    "parameters": params,
-                },
-            })
-    return result
-
-
-def _extract_freeform_tool_params(tool: dict) -> dict:
-    """从非标准 tool 中提取 parameters schema，无 schema 则兜底为 input 字符串参数。
-
-    优先级：input_schema → schema → parameters → 兜底 input 字符串。
-    """
-    for key in ("input_schema", "schema", "parameters"):
-        schema = tool.get(key)
-        if isinstance(schema, dict) and schema:
-            return schema
-    return {
-        "type": "object",
-        "properties": {
-            "input": {
-                "type": "string",
-                "description": "工具输入内容（原始文本）",
-            },
-        },
-        "required": ["input"],
-    }
-
-
-def _map_response_format(text_format: dict) -> dict:
-    """映射 text.format → response_format。"""
-    fmt_type = text_format.get("type", "text")
-
-    if fmt_type == "json_schema":
-        return {
-            "type": "json_schema",
-            "json_schema": {
-                "name": text_format.get("name", ""),
-                "schema": text_format.get("schema", {}),
-                "strict": text_format.get("strict", False),
-            },
-        }
-    else:
-        return {"type": fmt_type}
 
 
 FINISH_REASON_MAP = {
@@ -448,7 +30,6 @@ INCOMPLETE_REASON_MAP = {
     "length": "max_tokens",
     "content_filter": "content_filter",
 }
-
 
 def chat_to_responses(response: dict) -> dict:
     """Chat Completions → Responses API 非流式响应转换。"""
@@ -535,51 +116,6 @@ def chat_to_responses(response: dict) -> dict:
 
     return result
 
-
-def _parse_sse_event(text: str) -> Optional[dict]:
-    """解析单个 SSE 事件文本，返回 {event, data} 或 None。"""
-    event_type = "message"
-    data_lines = []
-    for line in text.splitlines():
-        stripped = line.lstrip()
-        if stripped.startswith("event: "):
-            event_type = stripped[7:]
-        elif stripped.startswith("data: "):
-            data_lines.append(stripped[6:])
-        # ": " 开头为 keepalive，跳过
-    raw = "\n".join(data_lines)
-    if not raw:
-        return None
-    if raw == "[DONE]":
-        return {"event": "[DONE]", "data": None}
-    try:
-        return {"event": event_type, "data": json.loads(raw)}
-    except json.JSONDecodeError:
-        return None
-
-
-def iter_sse_events(upstream_response) -> Generator[dict, None, None]:
-    """逐 chunk 读取 HTTP 响应流，yield 解析后的 SSE 事件。
-
-    遇到 [DONE] 事件后立即停止读取，避免上游连接未关闭导致阻塞。
-
-    upstream_response: 有 read(size) 方法的对象（http.client.HTTPResponse）
-    """
-    buf = b""
-    while True:
-        chunk = upstream_response.read(4096)
-        if not chunk:
-            break
-        buf += chunk
-        while b"\n\n" in buf:
-            raw, buf = buf.split(b"\n\n", 1)
-            event = _parse_sse_event(raw.decode("utf-8", errors="replace"))
-            if event:
-                yield event
-                if event.get("event") == "[DONE]":
-                    return  # [DONE] 后停止读取，不等上游关闭连接
-
-@dataclass
 class ToolBlockState:
     """工具调用块的中间状态，每个 tool_calls index 对应一个实例。"""
     output_index: int = -1
@@ -1032,7 +568,6 @@ class ResponsesStreamConverter:
 CodexStreamConverter = ResponsesStreamConverter  # 向后兼容别名
 StreamState = ResponsesStreamConverter
 
-
 def create_responses_sse_stream(chunks_or_response, *, request_messages=None, response_store=None) -> Generator[str, None, None]:
     """create_responses_sse_stream: 读取上游 SSE 流（file-like 或 SDK Iterable），生成 Responses API 格式的 SSE 事件。
 
@@ -1076,7 +611,7 @@ def create_responses_sse_stream(chunks_or_response, *, request_messages=None, re
 
     # finish() 返回后：存储 response
     if response_store is not None:
-        from .response_store import ResponseRecord
+        from ...response_store import ResponseRecord
         output_list = [item for _, item in converter.output_items]
         # output_items_to_messages 在同文件的 module 层级已导入，直接调用
         assistant_msgs = output_items_to_messages(output_list)
@@ -1096,7 +631,6 @@ def create_responses_sse_stream(chunks_or_response, *, request_messages=None, re
             expires_at=time.time() + response_store.ttl_seconds,
         )
         response_store.put(record.response_id, record)
-
 
 def output_items_to_messages(output_items: list) -> list:
     """将 Responses API output items 反转为 Chat Messages 格式（用于 conversation 历史）。
@@ -1152,3 +686,13 @@ def output_items_to_messages(output_items: list) -> list:
 
     return result
 create_codex_sse_stream = create_responses_sse_stream  # 向后兼容别名
+
+# ─── 向后兼容别名 ───
+CodexStreamConverter = ResponsesStreamConverter  # noqa: F401
+StreamState = ResponsesStreamConverter  # noqa: F401
+create_codex_sse_stream = create_responses_sse_stream  # noqa: F401
+
+# ─── 自注册 ───
+from ..registry import register_response, register_stream  # noqa: E402
+register_response("responses", "chat_completions", chat_to_responses)
+register_stream("responses", "chat_completions", create_responses_sse_stream)

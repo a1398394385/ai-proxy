@@ -1,4 +1,4 @@
-import { api, escHtml, showModal, closeModal, bus, on, FORMAT_LABELS, FORMAT_COLORS } from '../core.js';
+import { api, escHtml, showModal, closeModal, bus, on, FORMAT_LABELS, FORMAT_COLORS, customSelectHtml, wireCustomSelect } from '../core.js';
 
 // ===== 上游管理 =====
 
@@ -154,11 +154,12 @@ async function showUpstreamModal(editId) {
        <div class="form-group"><label class="form-label">连接超时 (s)</label><input type="number" class="form-input" id="up-conn-timeout" value="${data.connect_timeout}" min="1"></div>
      </div>
      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-       <div class="form-group"><label class="form-label">SSL</label><select class="form-input" id="up-ssl"><option value="1" ${data.ssl_verify ? 'selected' : ''}>开启</option><option value="0" ${!data.ssl_verify ? 'selected' : ''}>关闭</option></select></div>
+       <div class="form-group"><label class="form-label">SSL</label>${customSelectHtml('up-ssl', [{ value: '1', label: '开启', selected: data.ssl_verify }, { value: '0', label: '关闭', selected: !data.ssl_verify }], '选择')}</div>
        <div class="form-group"><label class="form-label">重试</label><input type="number" class="form-input" id="up-retry" value="${data.retry}" min="0"></div>
      </div>
-     <div class="form-group"><label class="form-label">请求格式</label><select class="form-input" id="up-format"><option value="chat_completions" ${data.format === 'chat_completions' ? 'selected' : ''}>Chat</option><option value="responses" ${data.format === 'responses' ? 'selected' : ''}>Responses</option><option value="messages" ${data.format === 'messages' ? 'selected' : ''}>Messages</option></select></div>`,
+     <div class="form-group"><label class="form-label">请求格式</label>${customSelectHtml('up-format', [{ value: 'chat_completions', label: 'Chat', selected: data.format === 'chat_completions' }, { value: 'responses', label: 'Responses', selected: data.format === 'responses' }, { value: 'messages', label: 'Messages', selected: data.format === 'messages' }], '选择格式')}</div>`,
     `<button class="btn btn-secondary" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="saveUpstream" data-edit-id="${editId || ''}">保存</button>`);
+  setTimeout(() => { wireCustomSelect('up-ssl'); wireCustomSelect('up-format'); }, 0);
 }
 
 async function saveUpstream(editId) {
@@ -250,17 +251,18 @@ async function showModelModal(editId, defaultUpstreamId) {
   }
   const upstreams = await api('/api/upstreams');
   const activeUpstreams = upstreams.upstreams.filter(u => u.is_active);
-  const upstreamOpts = activeUpstreams.map(u => '<option value="' + u.id + '" ' + (String(data.upstream_id) === String(u.id) ? 'selected' : '') + '>' + escHtml(u.name) + '</option>').join('');
+  const upstreamOpts = activeUpstreams.map(u => ({ value: String(u.id), label: u.name, selected: String(data.upstream_id) === String(u.id) }));
 
   const upstreamField = defaultUpstreamId
     ? `<input type="hidden" id="m-upstream" value="${escHtml(defaultUpstreamId)}"><div class="form-group"><label class="form-label">所属上游</label><input type="text" class="form-input" value="${escHtml(upstreamDataMap[defaultUpstreamId]?.name || defaultUpstreamId)}" readonly style="background:hsl(var(--muted));color:hsl(var(--muted-foreground));cursor:not-allowed"></div>`
-    : `<div class="form-group"><label class="form-label">所属上游</label><select class="form-input" id="m-upstream">${upstreamOpts}</select></div>`;
+    : `<div class="form-group"><label class="form-label">所属上游</label>${customSelectHtml('m-upstream', upstreamOpts, '选择上游')}</div>`;
 
   showModal(title,
     `<div class="form-group"><label class="form-label">模型名</label><input type="text" class="form-input" id="m-name" value="${escHtml(data.name)}"></div>
      ${upstreamField}
-     <div class="form-group"><label class="form-label">Multimodal</label><select class="form-input" id="m-multimodal"><option value="1" ${data.multimodal ? 'selected' : ''}>✅ 支持</option><option value="0" ${!data.multimodal ? 'selected' : ''}>❌ 不支持</option></select></div>`,
+     <div class="form-group"><label class="form-label">Multimodal</label>${customSelectHtml('m-multimodal', [{ value: '1', label: '✅ 支持', selected: data.multimodal }, { value: '0', label: '❌ 不支持', selected: !data.multimodal }], '选择')}</div>`,
     `<button class="btn btn-secondary" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="saveModel" data-edit-id="${editId || 0}">保存</button>`);
+  setTimeout(() => { if (!defaultUpstreamId) wireCustomSelect('m-upstream'); wireCustomSelect('m-multimodal'); }, 0);
 }
 
 function showModelModalForUpstream(upstreamId) {

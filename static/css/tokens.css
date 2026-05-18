@@ -653,13 +653,30 @@
   padding: 16px 24px !important;
 }
 
-.detail-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid hsl(var(--border));
+.detail-requests-toggle {
+  border-top: 1px solid hsl(var(--border) / 0.4);
+  margin-top: 4px;
+}
+
+.detail-requests-toggle .detail-header {
+  cursor: pointer;
+  user-select: none;
+  margin-bottom: 0;
+  padding: 10px 0;
+  border-bottom: none;
+  transition: color 0.15s ease;
+}
+
+.detail-requests-toggle .detail-header:hover {
+  color: hsl(var(--primary));
+}
+
+.detail-chevron {
+  width: 14px;
+  height: 14px;
+  opacity: 0.4;
+  margin-left: auto;
+  transition: transform 0.2s ease;
 }
 
 .detail-model {
@@ -773,20 +790,15 @@
   text-transform: uppercase;
   letter-spacing: 1px;
 }
-.filter-terminal select {
+.filter-terminal .custom-select {
+  width: auto;
+  min-width: 110px;
+}
+.filter-terminal .custom-select .cs-trigger {
   padding: 5px 10px;
-  border: 1px solid hsl(var(--border));
+  font-size: 12px;
   border-radius: 5px;
   background: hsl(var(--background));
-  color: hsl(var(--foreground));
-  font-size: 12px;
-  cursor: pointer;
-  outline: none;
-  transition: border-color 0.2s;
-}
-.filter-terminal select:focus {
-  border-color: hsl(190 80% 50% / 0.5);
-  box-shadow: 0 0 0 2px hsl(190 80% 50% / 0.08);
 }
 .filter-terminal .search-wrap {
   position: relative;
@@ -1047,4 +1059,288 @@
   color: hsl(190 80% 50%);
   border-color: hsl(190 80% 50% / 0.4);
   background: hsl(190 80% 50% / 0.08);
+}
+
+/* ═══════════════════════════════════════════════
+   成本面板 — 全宽命令台风格
+   ═══════════════════════════════════════════════ */
+
+.cost-panel {
+  margin: -16px -24px 24px;          /* 突破 detail-content padding，底部留白呼吸 */
+  background: linear-gradient(
+    175deg,
+    hsl(var(--card) / 0.85) 0%,
+    hsl(var(--secondary) / 0.3) 100%
+  );
+  border-bottom: 1px solid hsl(var(--border));
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  overflow: visible;                 /* 下拉面板需要溢出 */
+  position: relative;
+  z-index: 10;
+}
+
+/* ─── 顶部：period 指示 + 总计 ─── */
+
+.cost-panel-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 28px 0;
+}
+
+.cost-panel-period {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 10px;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+}
+
+.cost-panel-period-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: hsl(var(--primary));
+  opacity: 0.6;
+  animation: periodPulse 3s ease-in-out infinite;
+}
+
+@keyframes periodPulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.9; }
+}
+
+.cost-panel-total {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.cost-panel-total-value {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 26px;
+  font-weight: 700;
+  color: hsl(var(--red));
+  letter-spacing: -1px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.cost-panel-total-label {
+  font-size: 9px;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-top: 2px;
+}
+
+/* ─── 四张成本卡 ─── */
+
+.cost-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  padding: 20px 28px;
+}
+
+.cost-card {
+  background: hsl(var(--card) / 0.6);
+  border: 1px solid hsl(var(--border) / 0.6);
+  border-radius: 10px;
+  padding: 14px 16px;
+  transition: all 0.2s ease;
+  position: relative;
+  overflow: hidden;
+  cursor: default;
+}
+
+.cost-card::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  opacity: 0.85;
+}
+
+.cost-card.input::after  { background: #3b82f6; }
+.cost-card.output::after { background: #22c55e; }
+.cost-card.cache-rd::after { background: #a855f7; }
+.cost-card.cache-wr::after { background: #f97316; }
+
+.cost-card:hover {
+  border-color: hsl(var(--border));
+  background: hsl(var(--card) / 0.9);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px -2px rgba(0,0,0,0.15);
+}
+
+.cost-card-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 6px;
+  margin-top: 2px;
+}
+
+.cost-card-value {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 17px;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.3px;
+}
+
+.cost-card-delta {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  margin-top: 4px;
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.3px;
+}
+
+.cost-card-delta.up {
+  color: #f43f5e;
+  background: rgba(244, 63, 94, 0.1);
+}
+
+.cost-card-delta.down {
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.cost-card.input .cost-card-value  { color: #3b82f6; }
+.cost-card.output .cost-card-value { color: #22c55e; }
+.cost-card.cache-rd .cost-card-value { color: #a855f7; }
+.cost-card.cache-wr .cost-card-value { color: #f97316; }
+
+/* ─── 无定价态 ─── */
+
+.cost-panel-none {
+  padding: 16px 28px;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+}
+
+/* ─── 对比控制栏 ─── */
+
+.cost-compare-bar {
+  border-top: 1px solid hsl(var(--border) / 0.45);
+  padding: 14px 28px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: hsl(var(--secondary) / 0.12);
+}
+
+.cost-compare-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+.cost-compare-bar .cs-drop-target {
+  flex: 1;
+  max-width: 260px;
+}
+
+/* ─── 对比结果 ─── */
+
+.cost-compare-result {
+  display: none;
+  border-top: 1px solid hsl(var(--border) / 0.4);
+  animation: compareSlideIn 0.3s ease;
+}
+
+.cost-compare-result.show {
+  display: block;
+}
+
+@keyframes compareSlideIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.cost-compare-result-inner {
+  padding: 16px 28px;
+  background: linear-gradient(90deg, hsl(var(--orange) / 0.05) 0%, transparent 40%);
+  border-left: 3px solid #f97316;
+}
+
+.cost-compare-result-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.cost-compare-result-model {
+  font-size: 13px;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+}
+
+.cost-compare-result-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.cost-compare-result-total {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 20px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #f97316;
+}
+
+.cost-compare-delta {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 5px;
+}
+
+.cost-compare-delta.up {
+  color: #f43f5e;
+  background: hsl(var(--red) / 0.1);
+  border: 1px solid hsl(var(--red) / 0.15);
+}
+
+.cost-compare-delta.down {
+  color: #22c55e;
+  background: hsl(160 60% 45% / 0.1);
+  border: 1px solid hsl(160 60% 45% / 0.15);
+}
+
+/* 响应式：成本卡在小屏 2 列 */
+@media (max-width: 800px) {
+  .cost-cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .cost-panel-top {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
 }

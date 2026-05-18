@@ -1788,7 +1788,7 @@ class TestProxyErrorPathsDone(unittest.TestCase):
     def test_iter_sse_buffer_size(self):
         """iter_sse_events 读缓冲区应为 4096 字节。"""
         import pathlib
-        src = (pathlib.Path(__file__).parent.parent / "proxy" / "transform_responses.py").read_text()
+        src = (pathlib.Path(__file__).parent.parent / "proxy" / "sse_utils.py").read_text()
         self.assertIn("read(4096)", src, "iter_sse_events 缓冲区应从 256 增大到 4096")
         self.assertNotIn("read(256)", src, "旧 256 字节缓冲区应已删除")
 
@@ -2100,7 +2100,7 @@ class TestResponsesStreamConverterCreated(unittest.TestCase):
     def test_codex_alias_importable(self):
         """CodexStreamConverter 仍可作为别名导入。"""
         from proxy.transform import CodexStreamConverter as Alias
-        import proxy.transform_responses as mod
+        import proxy.transform as mod
         self.assertIs(Alias, mod.ResponsesStreamConverter)
 
 
@@ -2162,7 +2162,7 @@ class TestFixToolMessageOrder(unittest.TestCase):
     """验证 _fix_tool_message_order：assistant 纯文本消息不能夹在 tool_call/tool 对之间。"""
 
     def test_text_between_tool_pairs_merged(self):
-        from proxy.transform_responses import _fix_tool_message_order
+        from proxy.transform import _fix_tool_message_order
         # 模拟问题场景：assistant+tool_calls → tool → assistant(纯文本) → assistant+tool_calls → tool
         # 连续的 assistant 消息应合并，而非推迟到末尾
         messages = [
@@ -2188,7 +2188,7 @@ class TestFixToolMessageOrder(unittest.TestCase):
         self.assertEqual(len(merged_msg["tool_calls"]), 1)
 
     def test_no_tool_calls_unchanged(self):
-        from proxy.transform_responses import _fix_tool_message_order
+        from proxy.transform import _fix_tool_message_order
         messages = [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi"},
@@ -2197,7 +2197,7 @@ class TestFixToolMessageOrder(unittest.TestCase):
         self.assertEqual(result, messages)
 
     def test_proper_order_unchanged(self):
-        from proxy.transform_responses import _fix_tool_message_order
+        from proxy.transform import _fix_tool_message_order
         messages = [
             {"role": "assistant", "tool_calls": [{"id": "call_0", "type": "function"}]},
             {"role": "tool", "tool_call_id": "call_0"},
@@ -2208,7 +2208,7 @@ class TestFixToolMessageOrder(unittest.TestCase):
 
     def test_real_scenario(self):
         """复现 e3d3e3fb52a94d5c 的消息序列。"""
-        from proxy.transform_responses import _fix_tool_message_order
+        from proxy.transform import _fix_tool_message_order
         messages = [
             {"role": "system", "content": "..."},
             {"role": "system", "content": "..."},
@@ -2247,7 +2247,7 @@ class TestFixToolMessageOrder(unittest.TestCase):
 
     def test_user_between_tool_calls_and_tool(self):
         """复现 ce91a35cdad14ffa：Anthropic user 消息夹在 assistant+tool_calls 和 tool 之间。"""
-        from proxy.transform_responses import _fix_tool_message_order
+        from proxy.transform import _fix_tool_message_order
         messages = [
             {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "帮我提交者 3 个文件"},
@@ -2283,7 +2283,7 @@ class TestFixToolMessageOrder(unittest.TestCase):
 
     def test_consecutive_tool_calls_merged(self):
         """复现 d71205a904704afc 场景：连续多条 assistant+tool_calls 合并为单条。"""
-        from proxy.transform_responses import _fix_tool_message_order
+        from proxy.transform import _fix_tool_message_order
         messages = [
             {"role": "assistant", "tool_calls": [{"id": "call_00_u8Yt", "type": "function"}]},
             {"role": "tool", "tool_call_id": "call_00_u8Yt"},
@@ -2326,7 +2326,7 @@ class TestResponsesStreamConverterCompat(unittest.TestCase):
                       "create_codex_sse_stream 应作为别名指向 create_responses_sse_stream")
 
     def test_stream_state_alias(self):
-        from proxy.transform_responses import ResponsesStreamConverter, StreamState
+        from proxy.transform import ResponsesStreamConverter, StreamState
         self.assertIs(StreamState, ResponsesStreamConverter,
                       "StreamState 应指向 ResponsesStreamConverter")
 

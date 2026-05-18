@@ -1,4 +1,4 @@
-import { api, escHtml, showModal, closeModal, bus, on, FORMAT_LABELS, FORMAT_COLORS } from '../core.js';
+import { api, escHtml, showModal, closeModal, bus, on, FORMAT_LABELS, FORMAT_COLORS, customSelectHtml, wireCustomSelect, updateCustomSelect } from '../core.js';
 
 // ===== 路由管理 =====
 
@@ -9,99 +9,6 @@ const RT_CONFIG = {
   messages: { icon: '✉️', label: 'Messages' },
   chat_completions: { icon: '🔗', label: 'Chat Completions' }
 };
-
-// ─── Custom Select 组件 ───
-const CS_CHEVRON = '<svg class="cs-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>';
-
-function buildTriggerDisplay(opt) {
-  return escHtml(opt.label) + (opt.hint ? `<span class="cs-hint-inline" style="${opt.hintStyle || ''}">${opt.hint}</span>` : '');
-}
-
-function customSelectHtml(id, opts, placeholder) {
-  const sel = opts.find(o => o.selected && o.value) || opts.find(o => o.value) || null;
-  const display = sel ? buildTriggerDisplay(sel) : escHtml(placeholder);
-  const allDisabled = opts.every(o => !o.value || o.disabled);
-
-  const optionsHtml = opts.map(o => {
-    const cls = ['cs-option'];
-    if (o.selected) cls.push('selected');
-    if (o.disabled) cls.push('disabled');
-    if (!o.value) cls.push('cs-empty');
-    return `<div class="${cls.join(' ')}" data-value="${escHtml(o.value)}" ${o.disabled ? 'data-disabled="1"' : ''}>
-      <span class="cs-option-text">${escHtml(o.label)}</span>${o.hint ? `<span class="cs-option-hint" style="${o.hintStyle || ''}">${o.hint}</span>` : ''}
-    </div>`;
-  }).join('');
-
-  return `<input type="hidden" id="${id}" value="${sel ? escHtml(sel.value) : ''}">
-    <div class="custom-select${allDisabled ? ' disabled' : ''}" data-cs="${id}">
-      <button type="button" class="cs-trigger"><span class="cs-text">${display}</span>${CS_CHEVRON}</button>
-      <div class="cs-dropdown">${optionsHtml}</div>
-    </div>`;
-}
-
-function wireCustomSelect(id) {
-  const cs = document.querySelector(`[data-cs="${id}"]`);
-  if (!cs || cs.dataset.wired) return;
-  cs.dataset.wired = '1';
-  const trigger = cs.querySelector('.cs-trigger');
-  const dropdown = cs.querySelector('.cs-dropdown');
-  const hidden = document.getElementById(id);
-
-  trigger.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (cs.classList.contains('disabled')) return;
-    document.querySelectorAll('.custom-select.open').forEach(el => el !== cs && el.classList.remove('open'));
-    cs.classList.toggle('open');
-  });
-
-  dropdown.addEventListener('click', (e) => {
-    const opt = e.target.closest('.cs-option');
-    if (!opt || opt.dataset.disabled || opt.classList.contains('cs-empty')) return;
-    e.stopPropagation();
-    const val = opt.dataset.value;
-    hidden.value = val;
-    const optText = opt.querySelector('.cs-option-text').textContent;
-    const optHint = opt.querySelector('.cs-option-hint');
-    trigger.querySelector('.cs-text').innerHTML = escHtml(optText) + (optHint ? `<span class="cs-hint-inline" style="${optHint.style.cssText}">${optHint.textContent}</span>` : '');
-    dropdown.querySelectorAll('.cs-option').forEach(o => o.classList.toggle('selected', o === opt));
-    cs.classList.remove('open');
-    hidden.dispatchEvent(new Event('change'));
-  });
-}
-
-function updateCustomSelect(id, opts, placeholder) {
-  const cs = document.querySelector(`[data-cs="${id}"]`);
-  if (!cs) return;
-  const hidden = document.getElementById(id);
-  const dropdown = cs.querySelector('.cs-dropdown');
-  const textSpan = cs.querySelector('.cs-text');
-
-  const sel = opts.find(o => o.selected && o.value) || opts.find(o => o.value);
-  hidden.value = sel ? sel.value : '';
-  textSpan.innerHTML = sel ? buildTriggerDisplay(sel) : escHtml(placeholder || '--');
-
-  dropdown.innerHTML = opts.map(o => {
-    const cls = ['cs-option'];
-    if (o.selected) cls.push('selected');
-    if (o.disabled) cls.push('disabled');
-    if (!o.value) cls.push('cs-empty');
-    return `<div class="${cls.join(' ')}" data-value="${escHtml(o.value)}" ${o.disabled ? 'data-disabled="1"' : ''}>
-      <span class="cs-option-text">${escHtml(o.label)}</span>${o.hint ? `<span class="cs-option-hint" style="${o.hintStyle || ''}">${o.hint}</span>` : ''}
-    </div>`;
-  }).join('');
-
-  cs.classList.toggle('disabled', opts.every(o => !o.value || o.disabled));
-  cs.classList.remove('open');
-}
-
-function closeAllCustomSelects() {
-  document.querySelectorAll('.custom-select.open').forEach(el => el.classList.remove('open'));
-}
-
-// 全局点击/ESC 关闭下拉
-document.addEventListener('click', (e) => {
-  if (!e.target.closest('.custom-select')) closeAllCustomSelects();
-});
 
 // ─── 页面逻辑 ───
 

@@ -26,9 +26,6 @@ from .common import (  # noqa: F401 — re-export
     DATA_DB,
 )
 
-# 新架构: ProtocolAdapter + 注册表
-from .adapters import get_adapter, UnsupportedFormat  # noqa: F401
-
 # SSE 工具单独导出
 from .sse_utils import _format_sse_event  # noqa: F401
 
@@ -43,11 +40,11 @@ from .transform import (  # noqa: F401
     create_anthropic_sse_stream,
     ResponsesStreamConverter,
     CodexStreamConverter,
+    TransformRouter,
+    UnsupportedFormat,
 )
 
 from .token_stats import record_token_stats  # noqa: F401 — re-export
 
 from .agent_detector import detect_subagent  # noqa: F401
 from .handler import ProxyHandler  # noqa: F401
-
-from .transform_router import TransformRouter  # noqa: F401 — re-export
