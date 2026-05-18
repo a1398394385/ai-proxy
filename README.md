@@ -6,12 +6,26 @@
 
 ## 快速开始
 
+**Linux / macOS**
+
 ```bash
 ./server.sh start          # 启动 Data Browser + AI Proxy
 ./server.sh stop           # 停止
 ./server.sh restart        # 重启（无热重载）
 ./server.sh status         # 查看状态
 ```
+
+**Windows**
+
+```powershell
+# PowerShell（推荐）
+.\server.ps1 start
+.\server.ps1 stop
+.\server.ps1 restart
+.\server.ps1 status
+```
+
+或使用 `server.bat`（CMD 兼容）。
 
 | 服务 | 端口 | 用途 |
 |------|------|------|
