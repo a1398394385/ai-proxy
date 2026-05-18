@@ -12,6 +12,9 @@ _STATIC_DIR = os.path.join(
 _REAL_STATIC = os.path.realpath(_STATIC_DIR)
 
 mimetypes.init()
+# Windows 注册表可能把 .js 映射为 text/plain，强制修正
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("application/javascript", ".mjs")
 
 
 def handle_get(path, qs, handler) -> bool:

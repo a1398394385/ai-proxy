@@ -1,4 +1,4 @@
-# Windows 启动脚本 - 管理 Hermes Data Browser 和 AI Proxy
+﻿# Windows 启动脚本 - 管理 Hermes Data Browser 和 AI Proxy
 # 用法: .\server.ps1 {start|stop|status|restart}
 
 param(

@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 setlocal enabledelayedexpansion
 
 :: Windows 启动脚本 - 管理 Hermes Data Browser 和 AI Proxy

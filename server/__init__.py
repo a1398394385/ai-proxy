@@ -15,8 +15,8 @@ from .handler import HermesDataHandler  # noqa: F401
 
 def main():
     if not os.path.exists(DB_PATH):
-        print(f"Database not found: {DB_PATH}")
-        return
+        print(f"Warning: Fact database not found: {DB_PATH}")
+        print("Fact Store API will not be available.")
     if not os.path.exists(STATE_DB_PATH):
         print(f"Warning: State database not found: {STATE_DB_PATH}")
         print("Token statistics will not be available.")

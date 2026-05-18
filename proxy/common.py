@@ -46,7 +46,7 @@ def load_config(config_path: Path = None):
         print(f"FATAL: 配置文件不存在: {path}", file=sys.stderr)
         sys.exit(1)
 
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         new_config = _parse_yaml(f.read())
     CONFIG.clear()
     CONFIG.update(new_config)
