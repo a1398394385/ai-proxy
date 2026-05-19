@@ -223,14 +223,22 @@ class ProxyHandler(BaseHTTPRequestHandler):
             f"model={model_name}, type={request_type}, path={self.path}"
         )
 
-        # 解析模型路由：先查 agent 路由覆盖层，未命中或上游禁用则回退主路由
+        # 解析模型路由：直线路由 → agent 路由覆盖层 → 主路由
         raw_cfg = None
-        if is_agent:
+        # 1. 直线路由（最高优先级，匹配"上游名/模型名"前缀）
+        raw_cfg = config_cache.resolve_direct(model_name)
+        if raw_cfg:
+            logging.info(f"直线路由: upstream_id={raw_cfg['upstream'].get('id','?')}, "
+                         f"model={raw_cfg['target_name']}")
+        # 2. 子代理路由
+        if raw_cfg is None and is_agent:
             raw_cfg = config_cache.resolve_agent(model_name, request_type)
+        # 3. 路由表（精确匹配 → * fallback）
         if raw_cfg is None:
             raw_cfg = config_cache.resolve(model_name, request_type)
 
         if raw_cfg is None:
+            logging.debug(f"直线路由未命中: model={model_name}")
             err_msg = f"模型 {model_name} 不可用（无匹配路由）"
             logging.error(err_msg)
             self._send_json(500, {

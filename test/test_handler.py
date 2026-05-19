@@ -130,6 +130,7 @@ class TestHandlerRouting(unittest.TestCase):
         with patch("proxy.handler.config_cache") as mock_cc,\
              patch("proxy.handler.get_logger") as mock_gl,\
              patch("proxy.handler.CONFIG") as mock_cfg:
+            mock_cc.resolve_direct.return_value = None
             mock_cc.resolve.return_value = upstream
             mock_gl.return_value = self.logger
             mock_cfg.get.return_value = _default_upstream_cfg()
@@ -192,6 +193,57 @@ class TestHandlerRouting(unittest.TestCase):
         handler.send_response.assert_called_with(426)
 
 
+    # ─── 直线路由集成测试 ──────────────────────────────────
+
+    def test_direct_route_called_first(self):
+        """直线路由优先级最高：先调 resolve_direct 再走正常路由。"""
+        handler = _make_real_handler(b'{"model":"up-a/qwen"}')
+        handler._handle_passthrough = MagicMock()
+        handler._handle_convert = MagicMock()
+        upstream = _resolve_result(target_name="qwen")
+
+        with patch("proxy.handler.config_cache") as mock_cc,\
+             patch("proxy.handler.get_logger") as mock_gl,\
+             patch("proxy.handler.CONFIG"):
+            mock_cc.resolve.return_value = upstream
+            mock_gl.return_value = self.logger
+            handler.do_POST()
+
+        mock_cc.resolve_direct.assert_called_once()
+
+    def test_direct_route_miss_falls_back(self):
+        """直线路由未命中 → 回退到 agent/normal 路由。"""
+        handler = _make_real_handler(b'{"model":"gpt-4o"}')
+        handler._handle_passthrough = MagicMock()
+        upstream = _resolve_result()
+
+        with patch("proxy.handler.config_cache") as mock_cc,\
+             patch("proxy.handler.get_logger") as mock_gl,\
+             patch("proxy.handler.CONFIG"):
+            mock_cc.resolve_direct.return_value = None
+            mock_cc.resolve.return_value = upstream
+            mock_gl.return_value = self.logger
+            handler.do_POST()
+
+        mock_cc.resolve_direct.assert_called_once()
+        mock_cc.resolve.assert_called_once()
+
+    def test_direct_route_priority_over_agent(self):
+        """直线路由优先级高于 agent 路由。"""
+        handler = _make_real_handler(b'{"model":"up-a/qwen"}')
+        handler._handle_passthrough = MagicMock()
+        upstream = _resolve_result(target_name="qwen")
+
+        with patch("proxy.handler.config_cache") as mock_cc,\
+             patch("proxy.handler.get_logger") as mock_gl,\
+             patch("proxy.handler.detect_subagent") as mock_detect,\
+             patch("proxy.handler.CONFIG"):
+            mock_detect.return_value = True
+            handler.do_POST()
+
+        mock_cc.resolve_direct.assert_called_once()
+        mock_cc.resolve_agent.assert_not_called()
+
 # ─── 透传判定测试 ──────────────────────────────────────────────────────
 
 
@@ -217,6 +269,7 @@ class TestHandlerPassthrough(unittest.TestCase):
         with patch("proxy.handler.config_cache") as mock_cc,\
              patch("proxy.handler.get_logger") as mock_gl,\
              patch("proxy.handler.CONFIG") as mock_cfg:
+            mock_cc.resolve_direct.return_value = None
             mock_cc.resolve.return_value = upstream
             mock_gl.return_value = self.logger
             mock_cfg.get.return_value = _default_upstream_cfg()
@@ -379,6 +432,7 @@ class TestHandlerConvert(unittest.TestCase):
         with patch("proxy.handler.config_cache") as mock_cc,\
              patch("proxy.handler.get_logger") as mock_gl,\
              patch("proxy.handler.CONFIG") as mock_cfg:
+            mock_cc.resolve_direct.return_value = None
             mock_cc.resolve.return_value = upstream
             mock_gl.return_value = self.logger
             mock_cfg.get.return_value = _default_upstream_cfg()
@@ -496,6 +550,7 @@ class TestHandlerEndToEnd(unittest.TestCase):
              patch("proxy.handler.record_token_stats"),\
              patch("proxy.handler.urllib.parse.urlparse") as mock_parse,\
              patch("proxy.handler._create_upstream_conn") as mock_cconn:
+            mock_cc.resolve_direct.return_value = None
             mock_cc.resolve.return_value = upstream
             mock_gl.return_value = self.logger
             mock_cfg.get.return_value = _default_upstream_cfg()
@@ -539,6 +594,7 @@ class TestHandlerEndToEnd(unittest.TestCase):
              patch("proxy.handler.CONFIG") as mock_cfg,\
              patch("proxy.handler.record_token_stats"),\
              patch("proxy.handler._create_upstream_conn") as mock_conn_fn:
+            mock_cc.resolve_direct.return_value = None
             mock_cc.resolve.return_value = upstream
             mock_gl.return_value = self.logger
             mock_cfg.get.return_value = _default_upstream_cfg()

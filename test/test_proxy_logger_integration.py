@@ -67,6 +67,7 @@ def _load_proxy():
     mock_cache = MagicMock()
     mock_cache.resolve = MagicMock(return_value=_FAKE_ROUTE)
     mock_cache.resolve_agent = MagicMock(return_value=None)
+    mock_cache.resolve_direct = MagicMock(return_value=None)
     mock_cache.get_all = MagicMock(return_value={})
     common.config_cache = mock_cache
     _handler.config_cache = mock_cache
