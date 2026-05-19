@@ -462,6 +462,56 @@ class TestConfigCache(unittest.TestCase):
         all_routes = cache.get_all()
         self.assertIn("*", all_routes)
 
+    def test_resolve_direct_match(self):
+        """直线路由：匹配已注册上游+模型 → 返回配置。"""
+        from proxy.config_manager import ConfigCache
+        cache = ConfigCache(self.db_path)
+        cfg = cache.resolve_direct("up-a/qwen")
+        self.assertIsNotNone(cfg)
+        self.assertEqual(cfg["target_name"], "qwen")
+        self.assertEqual(cfg["upstream"]["id"], self.id_a)
+
+    def test_resolve_direct_no_slash(self):
+        """直线路由：model 不含 / → 不命中。"""
+        from proxy.config_manager import ConfigCache
+        cache = ConfigCache(self.db_path)
+        self.assertIsNone(cache.resolve_direct("qwen"))
+
+    def test_resolve_direct_model_not_registered(self):
+        """直线路由：模型未注册 → 不命中。"""
+        from proxy.config_manager import ConfigCache
+        cache = ConfigCache(self.db_path)
+        self.assertIsNone(cache.resolve_direct("up-a/unknown-model"))
+
+    def test_resolve_direct_case_sensitive(self):
+        """直线路由：上游名大小写敏感 → 不命中。"""
+        from proxy.config_manager import ConfigCache
+        cache = ConfigCache(self.db_path)
+        self.assertIsNone(cache.resolve_direct("Up-A/qwen"))
+
+    def test_resolve_direct_longest_prefix(self):
+        """直线路由：长上游名优先匹配。"""
+        from proxy.config_manager import ConfigCache
+        id_b = self.db.add_upstream({"name": "up-a-longer", "base_url": "http://b"})
+        self.db.add_model({"name": "qwen", "upstream_id": id_b})
+        cache = ConfigCache(self.db_path)
+        cfg = cache.resolve_direct("up-a-longer/qwen")
+        self.assertIsNotNone(cfg)
+        self.assertEqual(cfg["upstream"]["id"], id_b)
+
+    def test_resolve_direct_cache_reload(self):
+        """直线路由：reload 后缓存重建。"""
+        from proxy.config_manager import ConfigCache
+        cache = ConfigCache(self.db_path)
+        cfg1 = cache.resolve_direct("up-a/qwen")
+        self.assertIsNotNone(cfg1)
+        id_b = self.db.add_upstream({"name": "up-b", "base_url": "http://b"})
+        self.db.add_model({"name": "claude", "upstream_id": id_b})
+        cache.reload()
+        cfg2 = cache.resolve_direct("up-b/claude")
+        self.assertIsNotNone(cfg2)
+        self.assertEqual(cfg2["target_name"], "claude")
+
 
 class TestRouteProxyType(unittest.TestCase):
     def setUp(self):

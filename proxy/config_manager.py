@@ -1448,6 +1448,9 @@ class ConfigCache:
         self._lock = threading.Lock()
         self._routes: dict = {}
         self._agent_routes: dict = {}
+        self._upstream_name_to_id: dict[str, int] = {}
+        self._upstream_model_map: dict[int, dict[str, bool]] = {}
+        self._upstream_config_map: dict[int, dict] = {}
         self._loaded_at: float = 0
 
     def reload(self):
@@ -1467,6 +1470,33 @@ class ConfigCache:
             self._refresh_if_stale()
             key = (source_name, request_type)
             return self._agent_routes.get(key)
+
+    def resolve_direct(self, model_name: str) -> Optional[dict]:
+        """直线路由：按'上游名/模型名'前缀匹配，优先级高于路由表。
+
+        遍历所有活跃上游名（长度降序），做前缀匹配。
+        命中且模型已注册时返回完整路由配置，否则返回 None。
+        """
+        with self._lock:
+            self._refresh_if_stale()
+            for up_name in sorted(self._upstream_name_to_id, key=len, reverse=True):
+                prefix = up_name + "/"
+                if not model_name.startswith(prefix):
+                    continue
+                model_suffix = model_name[len(prefix):]
+                up_id = self._upstream_name_to_id[up_name]
+                if model_suffix not in self._upstream_model_map.get(up_id, {}):
+                    continue
+                up_cfg = self._upstream_config_map.get(up_id)
+                if up_cfg is None:
+                    return None
+                return {
+                    "target_name": model_suffix,
+                    "multimodal": self._upstream_model_map[up_id][model_suffix],
+                    "format": up_cfg["format"],
+                    "upstream": dict(up_cfg),
+                }
+        return None
 
     def get_all(self, request_type: Optional[str] = None) -> dict:
         with self._lock:
@@ -1507,6 +1537,38 @@ class ConfigCache:
                 except Exception:
                     logging.warning("[ConfigCache] agent_routes 加载失败", exc_info=True)
                 self._agent_routes = new_agent_routes
+                # 加载上游缓存（直线路由用）
+                try:
+                    all_upstreams = db.list_upstreams(active_only=True)
+                    new_name_to_id = {}
+                    new_config_map = {}
+                    for u in all_upstreams:
+                        uid = u["id"]
+                        new_name_to_id[u["name"]] = uid
+                        new_config_map[uid] = {
+                            "id": uid,
+                            "base_url": u["base_url"],
+                            "api_key": u["api_key"],
+                            "timeout": u["timeout"],
+                            "connect_timeout": u["connect_timeout"],
+                            "ssl_verify": bool(u["ssl_verify"]),
+                            "retry": u["retry"],
+                            "format": u["format"],
+                        }
+                    all_models = [m for m in db.list_models()
+                                  if m["upstream_id"] in new_config_map]
+                    new_model_map: dict[int, dict[str, bool]] = {}
+                    for m in all_models:
+                        uid = m["upstream_id"]
+                        if uid not in new_model_map:
+                            new_model_map[uid] = {}
+                        new_model_map[uid][m["name"]] = bool(m["multimodal"])
+                    self._upstream_name_to_id = new_name_to_id
+                    self._upstream_model_map = new_model_map
+                    self._upstream_config_map = new_config_map
+                except Exception:
+                    logging.warning("[ConfigCache] 上游缓存加载失败，保留旧缓存", exc_info=True)
+
                 self._loaded_at = time.time()
             finally:
                 db.close()
