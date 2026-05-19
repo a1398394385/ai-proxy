@@ -2,7 +2,7 @@
 import json
 import logging
 
-from ._utils import _fix_tool_message_order
+from ._utils import _ensure_reasoning_consistency, _fix_tool_message_order
 
 logger = logging.getLogger(__name__)
 
@@ -11,19 +11,6 @@ def _is_o_series(model: str) -> bool:
     """检测 o-series 模型（o + 数字开头），大小写不敏感。"""
     import re
     return bool(re.match(r'^o\d', model.lower()))
-
-
-def _ensure_reasoning_consistency(messages: list) -> None:
-    """确保 assistant 消息的 reasoning_content 一致：有则全有。"""
-    has_reasoning = any(
-        m.get("role") == "assistant" and "reasoning_content" in m
-        for m in messages
-    )
-    if not has_reasoning:
-        return
-    for m in messages:
-        if m.get("role") == "assistant" and "reasoning_content" not in m:
-            m["reasoning_content"] = ""
 
 
 def supports_reasoning_effort(model: str) -> bool:
@@ -235,13 +222,12 @@ def _convert_message_to_chat(role: str, content) -> list:
                 tool_results[-1]["content"] = (tool_results[-1].get("content") or "") + "\n" + extra
         return tool_results
 
-    # ② assistant + tool_use → assistant + tool_calls
+    # ② assistant + tool_use → assistant + tool_calls（所有模型默认推理模型，必须带 reasoning_content）
     if role == "assistant" and tool_calls:
         msg = {"role": "assistant", "tool_calls": tool_calls, "content": None}
         if text_parts:
             msg["content"] = text_parts
-        if reasoning_parts:
-            msg["reasoning_content"] = "".join(reasoning_parts)
+        msg["reasoning_content"] = "".join(reasoning_parts) if reasoning_parts else "thinking"
         return [msg]
 
     # ③ 普通消息（user 文本/图片，assistant 纯文本）

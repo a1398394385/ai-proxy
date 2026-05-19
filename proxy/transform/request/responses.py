@@ -2,7 +2,7 @@
 
 import logging
 
-from ._utils import _fix_tool_message_order
+from ._utils import _ensure_reasoning_consistency, _fix_tool_message_order
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +95,8 @@ def responses_to_chat(body: dict, model_cfg: dict) -> dict:
     if text_format:
         chat["response_format"] = _map_response_format(text_format)
 
+    # 所有模型默认推理模型，assistant 消息的 reasoning_content 必须一致存在
+    _ensure_reasoning_consistency(chat["messages"])
     return chat
 
 def _map_input_item(item: dict, model_cfg: dict) -> list:
@@ -169,7 +171,7 @@ def _map_input_file(part: dict) -> dict:
     return {"type": "text", "text": f"[file: {filename}]"}
 
 def _map_function_call(item: dict) -> dict:
-    """映射 function_call → assistant + tool_calls。"""
+    """映射 function_call → assistant + tool_calls（所有模型默认推理模型，必须带 reasoning_content）。"""
     call_id = item.get("call_id") or item.get("id", "")
     name = item.get("name", "")
     arguments = item.get("arguments", "")
@@ -182,6 +184,7 @@ def _map_function_call(item: dict) -> dict:
             "type": "function",
             "function": {"name": name, "arguments": arguments},
         }],
+        "reasoning_content": "thinking",
     }
 
 def _map_function_call_output(item: dict) -> dict:

@@ -1,6 +1,7 @@
 """Chat Completions → OpenAI Responses API 响应转换模块。"""
 
 import json
+import re
 import uuid
 import time
 import logging
@@ -11,6 +12,47 @@ from ...token_stats import _find_first
 from ...sse_utils import _format_sse_event, iter_sse_events
 
 logger = logging.getLogger(__name__)
+
+# MCP 命名空间模式：mcp__{server}__（以 __ 结尾，表示 namespace 级别的调用）
+_MCP_NAMESPACE_RE = re.compile(r'^mcp__(.+)__$')
+
+
+def _expand_mcp_namespace_call(name: str, arguments: str) -> tuple:
+    """展开 MCP namespace 调用为全限定工具调用。
+
+    Chat 模型将 namespace 工具 `mcp__codegraph__` 视为普通函数，
+    以 `{"input": "codegraph_status"}` 调用。本函数识别这种情况，
+    将其展开为 Codex 能识别的格式：
+
+        name: "mcp__codegraph__codegraph_status"
+        namespace: "mcp__codegraph__"
+        arguments: "{}"  (input 字段被消费为工具名，剩余参数保留)
+
+    返回 (expanded_name, namespace, expanded_arguments)。
+    非 MCP namespace 调用返回 (name, None, arguments) 不变。
+    """
+    m = _MCP_NAMESPACE_RE.match(name)
+    if not m:
+        return name, None, arguments
+
+    try:
+        args = json.loads(arguments) if isinstance(arguments, str) else arguments
+    except (json.JSONDecodeError, TypeError):
+        return name, None, arguments
+
+    if not isinstance(args, dict):
+        return name, None, arguments
+
+    tool_name = args.pop("input", None)
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        return name, None, arguments
+
+    namespace = name  # "mcp__codegraph__"
+    # name = "mcp__codegraph__" + "codegraph_status" = "mcp__codegraph__codegraph_status"
+    expanded_name = f"{namespace}{tool_name}"
+    new_arguments = json.dumps(args) if args else "{}"
+
+    return expanded_name, namespace, new_arguments
 
 def generate_response_id() -> str:
     """生成 OpenAI 规范 response ID: resp-{timestamp_ms}-{random_hex8}"""
@@ -76,13 +118,19 @@ def chat_to_responses(response: dict) -> dict:
     tool_calls = message.get("tool_calls", [])
     for tc in tool_calls:
         func = tc.get("function", {})
-        output.append({
+        name = func.get("name", "")
+        arguments = func.get("arguments", "")
+        expanded_name, namespace, expanded_args = _expand_mcp_namespace_call(name, arguments)
+        item = {
             "type": "function_call",
             "id": tc.get("id", ""),
             "call_id": tc.get("id", ""),
-            "name": func.get("name", ""),
-            "arguments": func.get("arguments", ""),
-        })
+            "name": expanded_name,
+            "arguments": expanded_args,
+        }
+        if namespace:
+            item["namespace"] = namespace
+        output.append(item)
 
     result = {
         "id": resp_id,
@@ -504,20 +552,25 @@ class ResponsesStreamConverter:
         return events
 
     def _emit_tool_block_done(self, block: "ToolBlockState") -> list:
+        expanded_name, namespace, expanded_args = _expand_mcp_namespace_call(
+            block.name, block.accumulated_args
+        )
         item = {
             "type": "function_call",
             "id": block.item_id,
             "call_id": block.call_id,
-            "name": block.name,
-            "arguments": block.accumulated_args,
+            "name": expanded_name,
+            "arguments": expanded_args,
             "status": "completed",
         }
+        if namespace:
+            item["namespace"] = namespace
         self.output_items.append((block.output_index, item))
         return [
             self._format_sse("response.function_call_arguments.done", {
                 "output_index": block.output_index,
                 "call_id": block.call_id,
-                "arguments": block.accumulated_args,
+                "arguments": expanded_args,
             }),
             self._format_sse("response.output_item.done", {
                 "output_index": block.output_index,

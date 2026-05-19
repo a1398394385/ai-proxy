@@ -1,7 +1,7 @@
 """请求转换通用工具函数。
 
-包含 _merge_consecutive_assistants 和 _fix_tool_message_order，
-供 anthropic.py 和 responses.py 共用。
+包含 _merge_consecutive_assistants、_fix_tool_message_order 和
+_ensure_reasoning_consistency，供 anthropic.py 和 responses.py 共用。
 """
 
 
@@ -127,3 +127,16 @@ def _fix_tool_message_order(messages: list) -> list:
 
     result.extend(deferred)
     return _merge_consecutive_assistants(result)
+
+
+def _ensure_reasoning_consistency(messages: list) -> None:
+    """确保 assistant 消息的 reasoning_content 一致：有则全有。"""
+    has_reasoning = any(
+        m.get("role") == "assistant" and "reasoning_content" in m
+        for m in messages
+    )
+    if not has_reasoning:
+        return
+    for m in messages:
+        if m.get("role") == "assistant" and "reasoning_content" not in m:
+            m["reasoning_content"] = "thinking"
