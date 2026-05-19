@@ -173,6 +173,7 @@ async function saveUpstream(editId) {
     format: document.getElementById('up-format').value,
   };
   data.name = document.getElementById('up-name').value.trim();
+  if (data.name.includes('/')) { alert('上游名不能包含 /'); return; }
   if (!data.base_url) { alert('Base URL 不能为空'); return; }
   if (editId) {
     await api('/api/upstreams/' + editId, { method: 'PUT', body: JSON.stringify(data) });
@@ -276,6 +277,7 @@ async function saveModel(editId) {
     multimodal: parseInt(document.getElementById('m-multimodal').value),
   };
   if (!data.name) { alert('模型名不能为空'); return; }
+  if (data.name.includes('/')) { alert('模型名不能包含 /'); return; }
   if (editId) {
     await api('/api/models/' + editId, { method: 'PUT', body: JSON.stringify(data) });
   } else {
