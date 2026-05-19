@@ -311,6 +311,10 @@ def handle_post(path, handler) -> bool:
         data = _read_json(handler)
         if not data:
             return True
+        name = data.get("name", "")
+        if "/" in name:
+            json_response(handler, {"error": "上游名不能包含 /"}, 400)
+            return True
         try:
             with config_db() as db:
                 uid = db.add_upstream(data)
@@ -370,6 +374,10 @@ def handle_post(path, handler) -> bool:
         if not isinstance(models, list):
             json_response(handler, {"error": "缺少 models 数组"}, 400)
             return True
+        for m in models:
+            if "/" in m.get("name", ""):
+                json_response(handler, {"error": f"模型名 '{m['name']}' 不能包含 /"}, 400)
+                return True
         with config_db() as db:
             u = db.get_upstream(uid)
             if not u:
@@ -383,6 +391,10 @@ def handle_post(path, handler) -> bool:
     if path == "/api/models":
         data = _read_json(handler)
         if not data:
+            return True
+        name = data.get("name", "")
+        if "/" in name:
+            json_response(handler, {"error": "模型名不能包含 /"}, 400)
             return True
         try:
             with config_db() as db:
@@ -434,6 +446,9 @@ def handle_put(path, handler) -> bool:
         data = _read_json(handler)
         if not data:
             return True
+        if "/" in data.get("name", ""):
+            json_response(handler, {"error": "上游名不能包含 /"}, 400)
+            return True
         try:
             with config_db() as db:
                 db.update_upstream(int(m.group(1)), data)
@@ -448,6 +463,9 @@ def handle_put(path, handler) -> bool:
     if m:
         data = _read_json(handler)
         if not data:
+            return True
+        if "/" in data.get("name", ""):
+            json_response(handler, {"error": "模型名不能包含 /"}, 400)
             return True
         try:
             with config_db() as db:
