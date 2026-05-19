@@ -238,6 +238,7 @@ class TestHandlerRouting(unittest.TestCase):
              patch("proxy.handler.get_logger") as mock_gl,\
              patch("proxy.handler.detect_subagent") as mock_detect,\
              patch("proxy.handler.CONFIG"):
+            mock_cc.resolve_direct.return_value = upstream
             mock_detect.return_value = True
             handler.do_POST()
 
