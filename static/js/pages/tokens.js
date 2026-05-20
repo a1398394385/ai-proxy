@@ -1,4 +1,4 @@
-import { api, formatNumber, formatTokens, escHtml, buildCustomSelect, customSelectHtml, wireCustomSelect, updateCustomSelect } from '../core.js';
+import { api, formatNumber, formatTokens, escHtml, customSelectHtml, wireCustomSelect, updateCustomSelect } from '../core.js';
 
 // ===== Module-local state =====
 let allModels = [];
@@ -527,6 +527,12 @@ function renderCostBar(modelName, detailContent) {
   }
 
   const c = calcCost(modelData, pricing);
+  const csId = 'cc-' + modelName.replace(/[^a-zA-Z0-9]/g, '-');
+
+  const options = [
+    { value: '', label: '— 不对比 —' },
+    ...allPricings.map(p => ({ value: p.model_id, label: p.display_name || p.model_id })),
+  ];
 
   wrap.innerHTML = `
     <div class="cost-panel-top">
@@ -547,23 +553,20 @@ function renderCostBar(modelName, detailContent) {
     </div>
     <div class="cost-compare-bar">
       <span class="cost-compare-label">套用计费</span>
-      <span class="cs-drop-target"></span>
+      ${customSelectHtml(csId, options, '— 不对比 —')}
     </div>
     <div class="cost-compare-result"><div class="cost-compare-result-inner"></div></div>`;
 
   detailContent.insertBefore(wrap, detailContent.firstChild);
 
-  // 自定义下拉
-  const dropTarget = wrap.querySelector('.cs-drop-target') || wrap.querySelector('.custom-select');
   const compareResult = wrap.querySelector('.cost-compare-result');
   const compareInner = wrap.querySelector('.cost-compare-result-inner');
+  const hidden = document.getElementById(csId);
 
-  const options = [
-    { value: '', label: '— 不对比 —' },
-    ...allPricings.map(p => ({ value: p.model_id, label: p.display_name || p.model_id })),
-  ];
+  wireCustomSelect(csId);
 
-  buildCustomSelect(dropTarget, options, (value, _opt) => {
+  hidden.addEventListener('change', () => {
+    const value = hidden.value;
     if (!value) {
       compareResult.classList.remove('show');
       return;
@@ -611,11 +614,9 @@ function expandModelRow(model, rowElement) {
       const limit = Math.min(requests.length, 50);
 
       const rows = requests.slice(0, limit).map(r => {
-        const typeBadge = r.upstream_id === 'hermes'
-          ? '<span class="type-badge-term hermes">[hermes]</span>'
-          : r.upstream_id === 'opencode'
-            ? '<span class="type-badge-term opencode">[opencode]</span>'
-            : '<span class="type-badge-term proxy">>_proxy</span>';
+        const typeBadge = r.upstream_id === 'opencode'
+          ? '<span class="type-badge-term opencode">[opencode]</span>'
+          : '<span class="type-badge-term proxy">>_proxy</span>';
         const timeStr = r.created_at || r.request_ts || r.timestamp || '-';
         const costStr = ((r.input_cost_cny || 0) + (r.output_cost_cny || 0) + (r.cache_read_cost_cny || 0) + (r.cache_write_cost_cny || 0)).toFixed(6);
 
@@ -771,7 +772,6 @@ function renderRequestTable(requests) {
         ${customSelectHtml('req-filter-type', [
           { value: '', label: 'All', selected: !requestFilters.requestType },
           { value: 'proxy', label: 'Proxy', selected: requestFilters.requestType === 'proxy' },
-          { value: 'hermes', label: 'Hermes', selected: requestFilters.requestType === 'hermes' },
           { value: 'opencode', label: 'OpenCode', selected: requestFilters.requestType === 'opencode' },
         ], 'All')}
         <button class="btn btn-secondary btn-sm" id="req-filter-clear">Clear</button>
@@ -811,12 +811,10 @@ function renderRequestTable(requests) {
   }
 
   tbody.innerHTML = requests.map(r => {
-    const typeAttr = r.upstream_id === 'hermes' ? 'hermes' : r.upstream_id === 'opencode' ? 'opencode' : 'proxy';
-    const typeBadge = r.upstream_id === 'hermes'
-      ? '<span class="type-badge-term hermes">[hermes]</span>'
-      : r.upstream_id === 'opencode'
-        ? '<span class="type-badge-term opencode">[opencode]</span>'
-        : '<span class="type-badge-term proxy">>_proxy</span>';
+    const typeAttr = r.upstream_id === 'opencode' ? 'opencode' : 'proxy';
+    const typeBadge = r.upstream_id === 'opencode'
+      ? '<span class="type-badge-term opencode">[opencode]</span>'
+      : '<span class="type-badge-term proxy">>_proxy</span>';
     const timeStr = r.created_at || r.request_ts || r.timestamp || '-';
     const costStr = ((r.input_cost_cny || 0) + (r.output_cost_cny || 0) + (r.cache_read_cost_cny || 0) + (r.cache_write_cost_cny || 0)).toFixed(6);
 
@@ -875,7 +873,6 @@ function setupRequestFilters() {
       updateCustomSelect('req-filter-type', [
         { value: '', label: 'All', selected: true },
         { value: 'proxy', label: 'Proxy' },
-        { value: 'hermes', label: 'Hermes' },
         { value: 'opencode', label: 'OpenCode' },
       ], 'All');
       loadRequestLog();
@@ -1005,7 +1002,7 @@ function renderUpstreamTable(data) {
 
   tbody.innerHTML = sorted.map(u => {
     const upstreamId = u.upstream_id || '';
-    const isSpecial = upstreamId === '__unknown__' || upstreamId === '__hermes__' || upstreamId === '__opencode__';
+    const isSpecial = upstreamId === '__unknown__' || upstreamId === '__opencode__';
     const rowClass = isSpecial ? ' class="is-unknown"' : '';
     const displayName = u.upstream_name || u.upstream_id || 'Unknown';
     const costStr = (u.estimated_cost_cny || 0).toFixed(6);

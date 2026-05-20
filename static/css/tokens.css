@@ -1257,7 +1257,7 @@
   white-space: nowrap;
 }
 
-.cost-compare-bar .cs-drop-target {
+.cost-compare-bar .custom-select {
   flex: 1;
   max-width: 260px;
 }

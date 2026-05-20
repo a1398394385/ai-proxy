@@ -167,7 +167,4 @@ def ensure_table(conn, table_name: str):
         conn.execute(idx_sql)
 
 
-def ensure_all_tables(conn):
-    """确保所有表存在（幂等）。按依赖顺序创建。"""
-    for table_name in _TABLE_ORDER:
-        ensure_table(conn, table_name)
+

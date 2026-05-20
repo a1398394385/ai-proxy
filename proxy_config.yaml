@@ -14,7 +14,6 @@ proxy:
 
 # ─── 服务端口注册 ──────────────────────────────────────────────────────
 # data_browser: Hermes Data Browser 监听地址
-#（codex_proxy 已在 proxy 段声明，此处不再重复）
 ports:
   data_browser:
     host: "127.0.0.1"

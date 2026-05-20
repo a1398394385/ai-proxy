@@ -738,12 +738,6 @@ def output_items_to_messages(output_items: list) -> list:
         result.append(tc_msg)
 
     return result
-create_codex_sse_stream = create_responses_sse_stream  # 向后兼容别名
-
-# ─── 向后兼容别名 ───
-CodexStreamConverter = ResponsesStreamConverter  # noqa: F401
-StreamState = ResponsesStreamConverter  # noqa: F401
-create_codex_sse_stream = create_responses_sse_stream  # noqa: F401
 
 # ─── 自注册 ───
 from ..registry import register_response, register_stream  # noqa: E402

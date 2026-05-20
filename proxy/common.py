@@ -24,7 +24,7 @@ from .request_logger import (
 from .token_stats import record_token_stats
 
 # ─── 配置变量 ──────────────────────────────────────────────────────────
-from .paths import DATA_DIR, get_data_path, DATA_DB  # noqa: F401
+from .paths import DATA_DB  # noqa: F401
 
 CONFIG = {}
 CONFIG_PATH = Path(__file__).parent.parent / "proxy_config.yaml"

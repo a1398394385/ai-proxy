@@ -537,7 +537,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 final_usage = None
 
                 buf = b""
-                final_usage = None
                 done_received = False
                 while True:
                     chunk = resp.read(4096)

@@ -1,10 +1,9 @@
-"""proxy 包 — Codex Proxy / Anthropic Proxy 统一入口。
+"""proxy 包 — AI Proxy 统一入口。
 
 提供请求格式转换、配置管理、日志记录、Token 统计等公共接口。
 所有内部模块以相对导入方式引用。
 
 使用示例：
-    from proxy import proxy_handler
     from proxy.common import CONFIG
 """
 

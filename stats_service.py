@@ -410,121 +410,6 @@ class _CostCalculator:
         }
 
 
-class _SessionDao:
-    """Sessions 表数据访问对象 — 从 state.db 读取 AI Coding Session 数据。
-
-    将 sessions 包装为与 token_stats 统一的记录格式，支持按模型聚合。
-    state.db 不存在时返回空列表，不抛异常。
-
-    Args:
-        db_path: state.db 路径
-    """
-
-    def __init__(self, db_path: Path) -> None:
-        self.db_path = db_path
-
-    # ─── 工具方法 ───
-
-    @staticmethod
-    def _period_to_condition(period: str) -> str:
-        """将 period 转换为 SQLite 时间条件（Unix 时间戳比较）。"""
-        mapping = {
-            "day": "strftime('%s', 'now', '-1 day')",
-            "24h": "strftime('%s', 'now', '-1 day')",
-            "week": "strftime('%s', 'now', '-7 days')",
-            "7d": "strftime('%s', 'now', '-7 days')",
-            "month": "strftime('%s', 'now', '-30 days')",
-            "30d": "strftime('%s', 'now', '-30 days')",
-        }
-        threshold = mapping.get(period, "strftime('%s', 'now', '-7 days')")
-        return f"started_at >= {threshold}"
-
-    @staticmethod
-    def _normalize_model_name(name: str) -> str:
-        """去掉模型名中的 [xxx] 上下文后缀。"""
-        if not name:
-            return name
-        bracket_pos = name.find("[")
-        if bracket_pos >= 0:
-            return name[:bracket_pos].rstrip()
-        return name
-
-    def _get_conn(self) -> sqlite3.Connection | None:
-        """创建数据库连接，state.db 不存在时返回 None。"""
-        if not self.db_path.exists():
-            return None
-        conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    # ─── 查询方法 ───
-
-    def query_raw(
-        self,
-        period: str,
-        model: str | None = None,
-    ) -> list[dict]:
-        """查询原始 sessions 记录，返回统一格式 dict 列表。
-
-        Args:
-            period: 时间周期
-            model: 可选，按规范化模型名过滤（匹配 model 或 model[ctx] 前缀）
-
-        Returns:
-            统一格式记录列表。state.db 不存在时返回空列表。
-        """
-        conn = self._get_conn()
-        if conn is None:
-            return []
-        try:
-            time_condition = self._period_to_condition(period)
-            conditions = [time_condition, "input_tokens IS NOT NULL"]
-            params: list = []
-
-            if model:
-                conditions.append("(model = ? OR model LIKE ?)")
-                params.extend([model, f"{model}[%"])
-
-            where_clause = " AND ".join(conditions)
-
-            rows = conn.execute(
-                f"""
-                SELECT id, model, started_at, input_tokens, output_tokens,
-                       cache_read_tokens, cache_write_tokens
-                FROM sessions
-                WHERE {where_clause}
-                ORDER BY started_at DESC
-                """,
-                params,
-            ).fetchall()
-
-            records = []
-            for row in rows:
-                model_name = row["model"] or ""
-                normalized = self._normalize_model_name(model_name)
-                ts = row["started_at"]
-                if isinstance(ts, (int, float)):
-                    ts = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")  # localtime
-                records.append({
-                    "request_id": f"sess-{row['id']}",
-                    "model": normalized,
-                    "request_type": "session",
-                    "request_ts": ts,
-                    "duration_ms": None,
-                    "status": "completed",
-                    "input_tokens": row["input_tokens"] or 0,
-                    "output_tokens": row["output_tokens"] or 0,
-                    "cache_read_tokens": row["cache_read_tokens"] or 0,
-                    "cache_write_tokens": row["cache_write_tokens"] or 0,
-                    "upstream_id": "hermes",
-                })
-            return records
-        except Exception:
-            return []
-        finally:
-            conn.close()
-
-
 class _OpenCodeDao:
     """OpenCode 数据访问对象 — 从 opencode.db 读取 session/message token 数据。
 
@@ -645,11 +530,9 @@ class StatsService:
     def __init__(
         self,
         data_db_path: str,
-        state_db_path: str,
         opencode_db_path: str | None = None,
     ) -> None:
         self.data_db_path = Path(data_db_path) if data_db_path else DATA_DB
-        self.state_db_path = Path(state_db_path)
 
         self.opencode_db_path = Path(opencode_db_path) if opencode_db_path else self._OPENCODE_DB_DEFAULT
         self._opencode_dao = None  # 懒加载
@@ -686,16 +569,12 @@ class StatsService:
             有分页: ([record, ...], total_count)
         """
         # 1. 模型名规范化
-        normalized_model = _SessionDao._normalize_model_name(model) if model else None
+        normalized_model = model
 
-        # 2. 查询三源
+        # 2. 查询两源
         records = []
         try:
             records.extend(self._get_dao().query_raw(period, normalized_model, request_type))
-        except Exception:
-            pass
-        try:
-            records.extend(self._get_session_dao().query_raw(period, normalized_model))
         except Exception:
             pass
         opencode_dao = self._get_opencode_dao()
@@ -713,7 +592,7 @@ class StatsService:
         #    在查询时从 input_tokens 扣除，避免成本重复计算。token_stats 原始值不变。
         pricing = calculator.get_pricing()
         for r in records:
-            if r["upstream_id"] not in ("hermes", "opencode"):
+            if r["upstream_id"] != "opencode":
                 key = r["model"].lower() if r["model"] else ""
                 p = pricing.get(key)
                 if p and p.get("input_includes_cache_read", 0):
@@ -735,10 +614,10 @@ class StatsService:
             r["cache_write_cost_cny"] = breakdown["cache_write_cost_cny"]
 
         # 4. 按 source 过滤数据来源
-        if source and source in ("hermes", "opencode"):
+        if source == "opencode":
             records = [r for r in records if r["upstream_id"] == source]
         elif source == "proxy":
-            records = [r for r in records if r["upstream_id"] not in ("hermes", "opencode")]
+            records = [r for r in records if r["upstream_id"] != "opencode"]
 
         # 5. 按 request_ts DESC 排序
         records.sort(key=lambda r: r["request_ts"], reverse=True)
@@ -755,9 +634,15 @@ class StatsService:
         """获取 TokenStatsDao 实例。"""
         return _TokenStatsDao(self.data_db_path)
 
-    def _get_session_dao(self) -> _SessionDao:
-        """获取 SessionDao 实例。"""
-        return _SessionDao(self.state_db_path)
+    @staticmethod
+    def _normalize_model_name(name: str) -> str:
+        """去掉模型名中的 [xxx] 上下文后缀。"""
+        if not name:
+            return name
+        bracket_pos = name.find("[")
+        if bracket_pos >= 0:
+            return name[:bracket_pos].rstrip()
+        return name
 
     def _get_opencode_dao(self):
         """获取 OpenCodeDao 实例，数据库不存在时返回 None。"""
@@ -863,10 +748,7 @@ class StatsService:
 
         result = []
         for uid, agg in grouped.items():
-            if uid == "hermes":
-                upstream_name = "[Hermes]"
-                base_url = None
-            elif uid == "opencode":
+            if uid == "opencode":
                 upstream_name = "[OpenCode]"
                 base_url = None
             else:

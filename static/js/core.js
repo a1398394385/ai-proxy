@@ -261,7 +261,7 @@ export function buildCustomSelect(parentEl, options, onChange) {
 
   const dropdown = document.createElement('div');
   dropdown.className = 'cs-dropdown';
-  dropdown.style.cssText = 'position:fixed;display:none;z-index:300;';
+  dropdown.style.cssText = 'position:fixed;display:none;z-index:300;background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:10px;padding:4px;';
   dropdown.innerHTML = options.map(opt => {
     const cls = opt.value ? 'cs-option' : 'cs-option cs-empty';
     return `<div class="${cls}" data-value="${escHtml(opt.value)}">${escHtml(opt.label)}</div>`;
