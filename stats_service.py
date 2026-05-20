@@ -22,7 +22,7 @@
 
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from proxy.paths import DATA_DB
 from proxy.pricing_manager import PricingDB
@@ -52,12 +52,12 @@ class _TokenStatsDao:
             SQLite datetime 条件字符串
         """
         mapping = {
-            "day": "datetime('now', '-1 day')",
-            "24h": "datetime('now', '-1 day')",
-            "week": "datetime('now', '-7 days')",
-            "7d": "datetime('now', '-7 days')",
-            "month": "datetime('now', '-30 days')",
-            "30d": "datetime('now', '-30 days')",
+            "day": "datetime('now', '-1 day', 'localtime')",
+            "24h": "datetime('now', '-1 day', 'localtime')",
+            "week": "datetime('now', '-7 days', 'localtime')",
+            "7d": "datetime('now', '-7 days', 'localtime')",
+            "month": "datetime('now', '-30 days', 'localtime')",
+            "30d": "datetime('now', '-30 days', 'localtime')",
         }
         threshold = mapping.get(period, "datetime('now', '-7 days')")
         return f"request_ts >= {threshold}"
@@ -778,9 +778,23 @@ class StatsService:
         if period in ("day", "24h"):
             def bucket_key(ts):
                 return ts[:13] + ":00"
+            # 补全 24 个整点小时桶
+            now = datetime.now()
+            current_hour = now.replace(minute=0, second=0, microsecond=0)
+            all_keys = [
+                (current_hour - timedelta(hours=23 - i)).strftime("%Y-%m-%d %H:00")
+                for i in range(24)
+            ]
         else:
             def bucket_key(ts):
                 return ts[:10]
+            # 补全每日桶
+            days = 7 if period in ("week", "7d") else 30
+            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            all_keys = [
+                (today - timedelta(days=days - 1 - i)).strftime("%Y-%m-%d")
+                for i in range(days)
+            ]
 
         buckets: dict = {}
         for r in records:
@@ -798,6 +812,14 @@ class StatsService:
             b["cache_write_tokens"] += r["cache_write_tokens"]
             b["estimated_cost_cny"] += (r["input_cost_cny"] + r["output_cost_cny"]
                                         + r["cache_read_cost_cny"] + r["cache_write_cost_cny"])
+
+        # 补空桶：确保 all_keys 中每个 key 都有对应的 bucket
+        for key in all_keys:
+            if key not in buckets:
+                buckets[key] = {"date": key, "request_count": 0,
+                                "input_tokens": 0, "output_tokens": 0,
+                                "cache_read_tokens": 0, "cache_write_tokens": 0,
+                                "estimated_cost_cny": 0.0}
 
         result = []
         for b in buckets.values():

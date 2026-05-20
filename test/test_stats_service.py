@@ -22,8 +22,7 @@ class TestStatsService(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.data_db = Path(self.tmpdir) / "access_log.db"
         self.config_db = self.data_db
-        self.state_db = Path(self.tmpdir) / "state.db"
-        # 创建空 token_stats 表（复用 token_stats.py 的建表 SQL）
+        # 创建空 token_stats 表
         conn = sqlite3.connect(str(self.data_db))
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("""
@@ -47,25 +46,9 @@ class TestStatsService(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        # 创建 sessions 表
-        self.state_db = Path(self.tmpdir) / "state.db"
-        state_conn = sqlite3.connect(str(self.state_db))
-        state_conn.execute("""CREATE TABLE sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            model TEXT,
-            started_at REAL NOT NULL,
-            input_tokens INTEGER,
-            output_tokens INTEGER,
-            cache_read_tokens INTEGER DEFAULT 0,
-            cache_write_tokens INTEGER DEFAULT 0,
-            message_count INTEGER DEFAULT 0
-        )""")
-        state_conn.commit()
-        state_conn.close()
-
     def tearDown(self):
         """清理临时文件。"""
-        for db_path in [self.data_db, self.config_db, self.state_db]:
+        for db_path in [self.data_db, self.config_db]:
             if db_path.exists():
                 os.remove(str(db_path))
         # 清理可能存在的 -wal / -shm 文件
@@ -81,7 +64,6 @@ class TestStatsService(unittest.TestCase):
 
         return StatsService(
             data_db_path=str(self.data_db),
-            state_db_path=str(self.state_db),
             opencode_db_path=str(Path(self.tmpdir) / "nonexistent_opencode.db"),
         )
 
@@ -170,7 +152,6 @@ class TestStatsService(unittest.TestCase):
         self.assertIsNotNone(service)
         self.assertEqual(service.data_db_path, self.data_db)
         self.assertEqual(service.data_db_path, self.config_db)
-        self.assertEqual(service.state_db_path, self.state_db)
 
     # ─── Provider 接口签名存在测试 ───
 
@@ -230,10 +211,13 @@ class TestStatsService(unittest.TestCase):
         self.assertEqual(result["offset"], 0)
 
     def test_fetch_trend_empty_db(self):
-        """空数据库返回空趋势列表。"""
+        """空数据库返回 24 个零值桶（补空桶逻辑）。"""
         service = self._create_service()
         result = service.fetch_trend("day")
-        self.assertEqual(result, [])
+        self.assertEqual(len(result), 24)
+        for bucket in result:
+            self.assertEqual(bucket["request_count"], 0)
+            self.assertEqual(bucket["total_tokens"], 0)
 
     def test_fetch_by_upstream_empty_map(self):
         """无 upstream_map 时返回空列表。"""
@@ -511,8 +495,10 @@ class TestStatsService(unittest.TestCase):
             self.assertIn("estimated_cost_cny", point)
             self.assertIsInstance(point["estimated_cost_cny"], (int, float))
         # 有趋势数据时成本应为正值（claude-sonnet-4-6 有种子定价）
-        if result:
-            self.assertGreater(result[0]["estimated_cost_cny"], 0)
+        # 注意：补空桶后 result[0] 可能是零值桶，需要找到有数据的桶
+        costs = [p["estimated_cost_cny"] for p in result if p["request_count"] > 0]
+        if costs:
+            self.assertGreater(max(costs), 0)
 
     # ─── fetch_by_upstream 测试 ───
 
@@ -756,7 +742,6 @@ class TestStatsServiceCostCalculation(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.data_db = Path(self.tmpdir) / "access_log.db"
         self.config_db = self.data_db
-        self.state_db = Path(self.tmpdir) / "state.db"
 
         conn = sqlite3.connect(str(self.data_db))
         conn.execute("CREATE TABLE IF NOT EXISTS token_stats (id INTEGER PRIMARY KEY)")
@@ -776,7 +761,6 @@ class TestStatsServiceCostCalculation(unittest.TestCase):
 
         return StatsService(
             data_db_path=str(self.data_db),
-            state_db_path=str(self.state_db),
             opencode_db_path=str(Path(self.tmpdir) / "nonexistent_opencode.db"),
         )
 
@@ -895,7 +879,6 @@ class TestCostCalculatorCNY(unittest.TestCase):
 
         service = StatsService(
             data_db_path=str(Path(self.tmpdir.name) / "access_log.db"),
-            state_db_path=str(Path(self.tmpdir.name) / "state.db"),
             opencode_db_path=str(Path(self.tmpdir.name) / "nonexistent_opencode.db"),
         )
         # 先触发 calculator 懒加载
@@ -1104,98 +1087,6 @@ class TestTokenStatsDao(unittest.TestCase):
         conn.close()
 
 
-class TestSessionDao(unittest.TestCase):
-    """_SessionDao 测试。"""
-
-    def setUp(self):
-        """创建临时目录和 sessions 表。"""
-        self.tmpdir = tempfile.mkdtemp()
-        self.state_db = Path(self.tmpdir) / "state.db"
-        conn = sqlite3.connect(str(self.state_db))
-        conn.execute("""
-            CREATE TABLE sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                model TEXT,
-                started_at REAL NOT NULL,
-                input_tokens INTEGER,
-                output_tokens INTEGER,
-                cache_read_tokens INTEGER DEFAULT 0,
-                cache_write_tokens INTEGER DEFAULT 0,
-                message_count INTEGER DEFAULT 0
-            )
-        """)
-        conn.commit()
-        conn.close()
-
-    def tearDown(self):
-        """清理临时文件。"""
-        import shutil
-        if os.path.exists(self.tmpdir):
-            shutil.rmtree(self.tmpdir)
-
-    def _create_dao(self):
-        from stats_service import _SessionDao
-        return _SessionDao(self.state_db)
-
-    def _insert_session(self, model, started_at, input_tokens, output_tokens,
-                        cache_read_tokens=0, cache_write_tokens=0, message_count=0):
-        conn = sqlite3.connect(str(self.state_db))
-        conn.execute(
-            "INSERT INTO sessions (model, started_at, input_tokens, output_tokens, "
-            "cache_read_tokens, cache_write_tokens, message_count) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (model, started_at, input_tokens, output_tokens,
-             cache_read_tokens, cache_write_tokens, message_count),
-        )
-        conn.commit()
-        conn.close()
-
-    def test_normalize_model_name_with_bracket(self):
-        """[1m] 后缀被去掉。"""
-        from stats_service import _SessionDao
-        self.assertEqual(_SessionDao._normalize_model_name("claude-sonnet-4-6[1m]"), "claude-sonnet-4-6")
-
-    def test_normalize_model_name_no_bracket(self):
-        """无后缀的模型名不变。"""
-        from stats_service import _SessionDao
-        self.assertEqual(_SessionDao._normalize_model_name("claude-sonnet-4-6"), "claude-sonnet-4-6")
-
-    def test_normalize_model_name_none(self):
-        """None 输入返回 None。"""
-        from stats_service import _SessionDao
-        self.assertIsNone(_SessionDao._normalize_model_name(None))
-
-    def test_query_raw_returns_unified_schema(self):
-        """query_raw 返回统一格式，upstream_id 固定为 'hermes'。"""
-        import time as _time
-        from stats_service import _SessionDao
-
-        conn = sqlite3.connect(str(self.state_db))
-        now_ts = _time.time()
-        conn.execute(
-            "INSERT INTO sessions (model, started_at, input_tokens, output_tokens, "
-            "cache_read_tokens, cache_write_tokens) VALUES (?, ?, ?, ?, ?, ?)",
-            ("claude-sonnet-4-6[1m]", now_ts, 1000, 500, 100, 50),
-        )
-        conn.commit()
-        conn.close()
-
-        dao = _SessionDao(self.state_db)
-        records = dao.query_raw("week")
-
-        self.assertEqual(len(records), 1)
-        r = records[0]
-        self.assertEqual(r["upstream_id"], "hermes")
-        self.assertEqual(r["model"], "claude-sonnet-4-6")
-        self.assertEqual(r["request_type"], "session")
-        self.assertEqual(r["input_tokens"], 1000)
-        self.assertEqual(r["output_tokens"], 500)
-        self.assertEqual(r["cache_read_tokens"], 100)
-        self.assertEqual(r["cache_write_tokens"], 50)
-        self.assertEqual(r["status"], "completed")
-        self.assertNotIn("_source", r)
-        self.assertNotIn("target_model", r)
-
 
 
 class TestOpenCodeDao(unittest.TestCase):
@@ -1320,7 +1211,6 @@ class TestCrossViewConsistency(unittest.TestCase):
         import json, time
         self.tmpdir = tempfile.mkdtemp()
         self.data_db = Path(self.tmpdir) / "access_log.db"
-        self.state_db = Path(self.tmpdir) / "state.db"
         self.opencode_db = Path(self.tmpdir) / "opencode.db"
 
         conn = sqlite3.connect(str(self.data_db))
@@ -1367,18 +1257,6 @@ class TestCrossViewConsistency(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        sconn = sqlite3.connect(str(self.state_db))
-        sconn.execute("""CREATE TABLE sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT,
-            started_at REAL, input_tokens INTEGER, output_tokens INTEGER,
-            cache_read_tokens INTEGER DEFAULT 0, cache_write_tokens INTEGER DEFAULT 0,
-            message_count INTEGER DEFAULT 0)""")
-        sconn.execute("INSERT INTO sessions (model, started_at, input_tokens, output_tokens, "
-                      "cache_read_tokens, cache_write_tokens) VALUES ('model-a', ?, 300, 150, 30, 15)",
-                      (time.time(),))
-        sconn.commit()
-        sconn.close()
-
         oconn = sqlite3.connect(str(self.opencode_db))
         oconn.execute("CREATE TABLE session (id TEXT PRIMARY KEY, model TEXT, time_created INTEGER)")
         oconn.execute("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, "
@@ -1396,7 +1274,7 @@ class TestCrossViewConsistency(unittest.TestCase):
 
     def tearDown(self):
         import os
-        for p in [self.data_db, self.state_db, self.opencode_db]:
+        for p in [self.data_db, self.opencode_db]:
             if p.exists():
                 os.remove(str(p))
                 for s in ["-wal", "-shm"]:
@@ -1409,7 +1287,6 @@ class TestCrossViewConsistency(unittest.TestCase):
         from stats_service import StatsService
         return StatsService(
             data_db_path=str(self.data_db),
-            state_db_path=str(self.state_db),
             opencode_db_path=str(self.opencode_db),
         )
 
@@ -1454,12 +1331,11 @@ class TestCrossViewConsistency(unittest.TestCase):
         self.assertEqual(result["total"], len(all_records))
 
     def test_virtual_upstream_names(self):
-        """虚拟上游 [Hermes]/[OpenCode] 展示名正确。"""
+        """虚拟上游 [OpenCode] 展示名正确。"""
         svc = self._create_service()
         result = svc.fetch_by_upstream("week")
         name_map = {u["upstream_id"]: u["upstream_name"] for u in result["upstreams"]}
 
-        self.assertEqual(name_map.get("hermes"), "[Hermes]")
         self.assertEqual(name_map.get("opencode"), "[OpenCode]")
 
 
@@ -1470,7 +1346,6 @@ class TestFetchUnifiedRecords(unittest.TestCase):
         import json, time
         self.tmpdir = tempfile.mkdtemp()
         self.data_db = Path(self.tmpdir) / "access_log.db"
-        self.state_db = Path(self.tmpdir) / "state.db"
         self.opencode_db = Path(self.tmpdir) / "opencode.db"
 
         # ── data db: token_stats + upstreams + target_models + model_pricing ──
@@ -1515,19 +1390,6 @@ class TestFetchUnifiedRecords(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        # ── state db: sessions ──
-        sconn = sqlite3.connect(str(self.state_db))
-        sconn.execute("""CREATE TABLE sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT,
-            started_at REAL NOT NULL, input_tokens INTEGER, output_tokens INTEGER,
-            cache_read_tokens INTEGER DEFAULT 0, cache_write_tokens INTEGER DEFAULT 0,
-            message_count INTEGER DEFAULT 0)""")
-        sconn.execute("INSERT INTO sessions (model, started_at, input_tokens, output_tokens, "
-                      "cache_read_tokens, cache_write_tokens) VALUES (?, ?, ?, ?, ?, ?)",
-                      ("claude-sonnet-4-6[1m]", time.time(), 2000, 1000, 200, 100))
-        sconn.commit()
-        sconn.close()
-
         # ── opencode db: message ──
         oconn = sqlite3.connect(str(self.opencode_db))
         oconn.execute("""CREATE TABLE session (id TEXT PRIMARY KEY, model TEXT, time_created INTEGER)""")
@@ -1547,7 +1409,7 @@ class TestFetchUnifiedRecords(unittest.TestCase):
 
     def tearDown(self):
         import os
-        for p in [self.data_db, self.state_db, self.opencode_db]:
+        for p in [self.data_db, self.opencode_db]:
             if p.exists():
                 os.remove(str(p))
                 for s in ["-wal", "-shm"]:
@@ -1560,20 +1422,18 @@ class TestFetchUnifiedRecords(unittest.TestCase):
         from stats_service import StatsService
         return StatsService(
             data_db_path=str(self.data_db),
-            state_db_path=str(self.state_db),
             opencode_db_path=str(self.opencode_db),
         )
 
-    def test_returns_all_records_from_three_sources(self):
-        """三源数据合并后应包含全部记录。"""
+    def test_returns_all_records_from_two_sources(self):
+        """两源数据合并后应包含全部记录。"""
         svc = self._create_service()
         records = svc._fetch_unified_records("week")
 
-        # proxy: 1, session: 1, opencode: 1 → 共 3 条
-        self.assertEqual(len(records), 3)
+        # proxy: 1, opencode: 1 → 共 2 条
+        self.assertEqual(len(records), 2)
         upstream_ids = {r["upstream_id"] for r in records}
         self.assertIn("up-ds", upstream_ids)
-        self.assertIn("hermes", upstream_ids)
         self.assertIn("opencode", upstream_ids)
 
     def test_cost_breakdown_fields_present(self):
@@ -1588,15 +1448,6 @@ class TestFetchUnifiedRecords(unittest.TestCase):
             self.assertIn("cache_write_cost_cny", r)
             self.assertGreaterEqual(r["input_cost_cny"], 0)
             self.assertGreaterEqual(r["output_cost_cny"], 0)
-
-    def test_model_normalization_for_sessions(self):
-        """sessions 来源的 model 已去掉 [ctx] 后缀。"""
-        svc = self._create_service()
-        records = svc._fetch_unified_records("week")
-
-        session_recs = [r for r in records if r["upstream_id"] == "hermes"]
-        self.assertEqual(len(session_recs), 1)
-        self.assertEqual(session_recs[0]["model"], "claude-sonnet-4-6")
 
     def test_field_rename_cached_to_cache(self):
         """token_stats 来源的字段名为 cache_* 而非 cached_*。"""
@@ -1618,7 +1469,7 @@ class TestFetchUnifiedRecords(unittest.TestCase):
 
         self.assertIsInstance(result, tuple)
         records, total = result
-        self.assertEqual(total, 3)
+        self.assertEqual(total, 2)
         self.assertEqual(len(records), 2)
 
     def test_model_filter_across_sources(self):
