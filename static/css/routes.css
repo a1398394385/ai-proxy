@@ -460,6 +460,18 @@
   word-break: break-all;
 }
 
+.template-dirty {
+  font-size: 9px;
+  font-weight: 700;
+  color: hsl(35 100% 50%);
+  background: hsl(35 100% 50% / 0.15);
+  padding: 1px 5px;
+  border-radius: 4px;
+  margin-left: 4px;
+  vertical-align: middle;
+  letter-spacing: 0.3px;
+}
+
 .template-item-meta {
   font-size: 10px;
   color: hsl(var(--muted-foreground));

@@ -274,7 +274,9 @@ async function saveRoute(editId, allowFallback = false) {
   }
   closeModal();
   bus.emit('config:route-changed', {});
+  templateDirty = true;
   loadRouteTable(currentRequestType);
+  renderTemplateSidebar(currentRequestType);
 }
 
 async function confirmDeleteRoute(id, source) {
@@ -286,7 +288,7 @@ async function confirmDeleteRoute(id, source) {
   if (!confirm('确认删除路由 "' + source + '"？')) return;
   const result = await api('/api/routes/' + id, { method: 'DELETE' });
   if (result.error) { alert(result.error); }
-  else { bus.emit('config:route-changed', {}); loadRouteTable(currentRequestType); }
+  else { bus.emit('config:route-changed', {}); templateDirty = true; loadRouteTable(currentRequestType); renderTemplateSidebar(currentRequestType); }
 }
 
 async function saveAgentRoute(editId) {
@@ -305,14 +307,16 @@ async function saveAgentRoute(editId) {
   }
   closeModal();
   bus.emit('config:route-changed', {});
+  templateDirty = true;
   loadAgentRouteTable(currentRequestType);
+  renderTemplateSidebar(currentRequestType);
 }
 
 async function confirmDeleteAgentRoute(id, source) {
   if (!confirm('确认删除 Agent 路由 "' + source + '"？')) return;
   const result = await api('/api/agent-routes/' + id, { method: 'DELETE' });
   if (result.error) { alert(result.error); }
-  else { bus.emit('config:route-changed', {}); loadAgentRouteTable(currentRequestType); }
+  else { bus.emit('config:route-changed', {}); templateDirty = true; loadAgentRouteTable(currentRequestType); renderTemplateSidebar(currentRequestType); }
 }
 
 // ===== Page Loader =====
@@ -405,6 +409,7 @@ async function loadRoutePage() {
 // ─── 模板边栏 ─────────────────────────────────────────
 let cachedTemplates = {};
 let activeTemplateId = parseInt(localStorage.getItem('activeTemplateId') || '0') || null;
+let templateDirty = false;
 let previewTimer = null;
 
 async function loadTemplateSidebar(requestType) {
@@ -430,7 +435,7 @@ function renderTemplateSidebar(requestType) {
   listEl.innerHTML = templates.map(t => `
     <div class="template-item${t.id === activeTemplateId ? ' active' : ''}" data-id="${t.id}" data-name="${escHtml(t.name)}"
          data-action="templateHover" data-leave-action="templateLeave">
-      <div class="template-item-name">${escHtml(t.name)}</div>
+      <div class="template-item-name">${escHtml(t.name)}${t.id === activeTemplateId && templateDirty ? ' <span class="template-dirty">已更改</span>' : ''}</div>
       <div class="template-item-meta">
         ${t.last_applied_at ? '上次应用: ' + t.last_applied_at : '未应用'}
       </div>
@@ -527,6 +532,7 @@ async function applyTemplate(el) {
     if (result.error) { alert(result.error); return; }
     activeTemplateId = tid;
     localStorage.setItem('activeTemplateId', tid);
+    templateDirty = false;
     // 清除预览备份，避免 templateLeave 恢复旧数据覆盖新数据
     document.querySelectorAll('#route-table tbody, #agent-route-table tbody').forEach(tb => {
       delete tb.dataset.original;
@@ -584,6 +590,7 @@ async function deleteTemplate(el) {
     if (parseInt(tid) === activeTemplateId) {
       activeTemplateId = null;
       localStorage.removeItem('activeTemplateId');
+      templateDirty = false;
     }
     loadTemplateSidebar(currentRequestType);
   } catch (e) {
@@ -616,6 +623,7 @@ function initRoutePage() {
       });
       if (result.error) { alert(result.error); return; }
       closeModal();
+      templateDirty = false;
       loadTemplateSidebar(currentRequestType);
     } catch (e) {
       alert('更新失败: ' + (e.message || e));
@@ -636,6 +644,7 @@ function initRoutePage() {
       if (result.error) { alert(result.error); return; }
       activeTemplateId = result.id;
       localStorage.setItem('activeTemplateId', result.id);
+      templateDirty = false;
       closeModal();
       loadTemplateSidebar(currentRequestType);
     } catch (e) {
