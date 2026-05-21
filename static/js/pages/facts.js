@@ -1,9 +1,12 @@
-import { api, escHtml, showModal, closeModal, catLabels, catIcons, on, customSelectHtml, wireCustomSelect } from '../core.js';
+import { api, escHtml, showModal, closeModal, on, customSelectHtml, wireCustomSelect } from '../core.js';
 
 // ===== Mutable State =====
 let allFacts = [];
 let activeCategory = null;
 let editingId = null;
+
+const catLabels = { general: '通用', project: '项目', tool: '工具', user_pref: '偏好' };
+const catIcons = { general: '📝', project: '📁', tool: '🔧', user_pref: '✨' };
 
 // ===== Fact Store =====
 async function loadFacts(q) {
@@ -17,21 +20,19 @@ async function loadFacts(q) {
 
 async function loadCategories() {
   const data = await api('/api/categories');
-  const wrap = document.getElementById('cat-filters');
-  wrap.innerHTML = data.categories.map(c => {
+  document.getElementById('cat-filters').innerHTML = data.categories.map(c => {
     const label = catLabels[c.category] || c.category;
     const icon = catIcons[c.category] || '📌';
-    return `<button class="filter-pill ${activeCategory === c.category ? 'active' : ''}" data-cat="${c.category}">${icon} ${label} (${c.count})</button>`;
+    return `<button class="filter-pill ${activeCategory === c.category ? 'active' : ''}" data-action="filterCategory" data-cat="${c.category}">${icon} ${label} (${c.count})</button>`;
   }).join('');
-  wrap.querySelectorAll('.filter-pill').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const cat = btn.dataset.cat;
-      if (activeCategory === cat) { activeCategory = null; }
-      else { activeCategory = cat; }
-      loadCategories();
-      loadFacts();
-    });
-  });
+}
+
+function filterCategory(e) {
+  const cat = e.target.closest('.filter-pill')?.dataset.cat;
+  if (!cat) return;
+  activeCategory = activeCategory === cat ? null : cat;
+  loadCategories();
+  loadFacts();
 }
 
 function renderFacts(facts) {
@@ -107,6 +108,7 @@ function toggleFactExpand(btn) {
 async function editFact(id) {
   const f = allFacts.find(x => x.fact_id === id) || await api(`/api/facts/${id}`);
   editingId = id;
+  const cats = [['general','📝 通用'],['project','📁 项目'],['tool','🔧 工具'],['user_pref','✨ 偏好']].map(([v,l])=>({value:v,label:l,selected:f.category===v}));
   showModal(`编辑事实 #${id}`, `
     <div class="form-group">
       <label class="form-label">内容</label>
@@ -114,12 +116,7 @@ async function editFact(id) {
     </div>
     <div class="form-group">
       <label class="form-label">类别</label>
-      ${customSelectHtml('m-category', [
-        { value: 'general', label: '📝 通用', selected: f.category==='general' },
-        { value: 'project', label: '📁 项目', selected: f.category==='project' },
-        { value: 'tool', label: '🔧 工具', selected: f.category==='tool' },
-        { value: 'user_pref', label: '✨ 偏好', selected: f.category==='user_pref' },
-      ], '选择类别')}
+      ${customSelectHtml('m-category', cats, '选择类别')}
     </div>
     <div class="form-group">
       <label class="form-label">标签 (逗号分隔)</label>
@@ -164,8 +161,8 @@ async function deleteFact(id) {
 
 // ===== Init Fact Page Events =====
 function initFactPage() {
-  // 注册事件委托处理器
   on('toggleFactExpand', (e, el) => toggleFactExpand(el));
+  on('filterCategory', filterCategory);
   on('editFact', (e, el) => editFact(parseInt(el.dataset.id)));
   on('deleteFact', (e, el) => deleteFact(parseInt(el.dataset.id)));
   on('saveFact', saveFact);
@@ -220,4 +217,4 @@ function initFactPage() {
 }
 
 // ===== Exports =====
-export { loadFacts, loadCategories, renderFacts, toggleFactExpand, editFact, saveFact, deleteFact, initFactPage, allFacts, activeCategory, editingId };
+export { loadFacts, initFactPage };

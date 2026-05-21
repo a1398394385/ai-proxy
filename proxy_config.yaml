@@ -10,7 +10,7 @@
 proxy:
   host: "127.0.0.1"
   port: 48743
-  log_level: "INFO"  # DEBUG / INFO / WARNING
+  log_level: "WARNING" # DEBUG / INFO / WARNING / ERROR
 
 # ─── 服务端口注册 ──────────────────────────────────────────────────────
 # data_browser: Hermes Data Browser 监听地址
@@ -28,4 +28,4 @@ logging:
 # ─── Response Store（response_id 缓存，支持多轮对话）───────────────────
 response_store:
   max_entries: 3000
-  ttl_seconds: 43200    # 12 小时
+  ttl_seconds: 43200 # 12 小时

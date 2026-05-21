@@ -16,9 +16,9 @@ initTokenPage();
 initUpstreamPage(); initRoutePage();
 initPricingPage();
 
-bus.on('config:upstream-changed', () => refreshConfigStatus());
-bus.on('config:model-changed', () => refreshConfigStatus());
-bus.on('config:route-changed', () => refreshConfigStatus());
+['upstream-changed', 'model-changed', 'route-changed'].forEach(evt =>
+  bus.on('config:' + evt, () => refreshConfigStatus())
+);
 
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
@@ -28,20 +28,18 @@ document.addEventListener('DOMContentLoaded', () => {
   if (themeBtn) themeBtn.addEventListener('click', toggleTheme);
 
   const settingsBtn = document.getElementById('settings-btn');
-  if (settingsBtn) settingsBtn.addEventListener('click', showSettings);
-
-  document.querySelectorAll('.nav-tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-      const page = tab.dataset.page;
-      switchPage(page);
-      loaders[page]();
-    });
+  if (settingsBtn) settingsBtn.addEventListener('click', () => {
+    settingsBtn.classList.add('spin');
+    setTimeout(() => settingsBtn.classList.remove('spin'), 600);
+    showSettings();
   });
 
+  document.querySelectorAll('.nav-tab').forEach(tab =>
+    tab.addEventListener('click', () => { switchPage(tab.dataset.page); loaders[tab.dataset.page](); })
+  );
+
   document.getElementById('modal-overlay').addEventListener('click', e => {
-    if (e.target.id === 'modal-overlay') {
-      document.getElementById('modal-overlay').classList.remove('show');
-    }
+    if (e.target.id === 'modal-overlay') e.target.classList.remove('show');
   });
 
   initSettings();

@@ -4,12 +4,10 @@ const EXCHANGE_RATE = 7;
 
 function formatCny(value, currency) {
   const rmb = currency === 'RMB' ? Number(value) : Number(value) * EXCHANGE_RATE;
-  let s = rmb.toFixed(6);
-  const dot = s.indexOf('.');
-  let dec = s.slice(dot + 1).replace(/0+$/, '');
-  if (dec.length < 2) dec = dec.padEnd(2, '0');
-  s = s.slice(0, dot) + '.' + dec;
-  return '¥' + s;
+  const s = rmb.toFixed(6);
+  const [int, dec = ''] = s.split('.');
+  const trimmed = dec.replace(/0+$/, '').padEnd(2, '0');
+  return '¥' + int + '.' + trimmed;
 }
 
 /* ─── 统计计算 ─── */
@@ -37,35 +35,20 @@ function computeSummary(items) {
 
 /* ─── 渲染统计卡片 ─── */
 function renderSummary(summary) {
-  const container = document.getElementById('pricing-summary');
-  container.innerHTML = `
-    <div class="pricing-stat-card">
-      <div class="pricing-stat-icon">📦</div>
-      <div class="pricing-stat-label">定价模型</div>
-      <div class="pricing-stat-value">${summary.total}</div>
-      <div class="pricing-stat-split">
-        <span class="split-item"><span class="split-dot rmb"></span> RMB ${summary.rmbCount}</span>
-        <span class="split-item"><span class="split-dot usd"></span> USD ${summary.usdCount}</span>
-      </div>
-    </div>
-    <div class="pricing-stat-card">
-      <div class="pricing-stat-icon" style="background:hsla(220,80%,60%,0.12);border-color:hsla(220,80%,60%,0.18)">📈</div>
-      <div class="pricing-stat-label">平均输入（¥/1M）</div>
-      <div class="pricing-stat-value">¥${summary.avgInput.toFixed(6)}</div>
-      <div class="pricing-stat-sub">每百万 Tokens 均价</div>
-    </div>
-    <div class="pricing-stat-card">
-      <div class="pricing-stat-icon" style="background:hsla(160,60%,45%,0.12);border-color:hsla(160,60%,45%,0.18)">📊</div>
-      <div class="pricing-stat-label">平均输出（¥/1M）</div>
-      <div class="pricing-stat-value">¥${summary.avgOutput.toFixed(6)}</div>
-      <div class="pricing-stat-sub">每百万 Tokens 均价</div>
-    </div>
-    <div class="pricing-stat-card">
-      <div class="pricing-stat-icon" style="background:hsla(35,90%,55%,0.12);border-color:hsla(35,90%,55%,0.18)">🏆</div>
-      <div class="pricing-stat-label">最贵模型</div>
-      <div class="pricing-stat-value" style="font-size:18px;font-weight:500">${summary.maxModel ? escHtml(summary.maxModel) : '—'}</div>
-      <div class="pricing-stat-sub">${summary.maxTotal > 0 ? '¥' + summary.maxTotal.toFixed(6) + ' / 1M' : '每百万 Tokens 成本'}</div>
-    </div>`;
+  const cards = [
+    { icon: '📦', label: '定价模型', value: String(summary.total), sub: `<span class="split-item"><span class="split-dot rmb"></span> RMB ${summary.rmbCount}</span><span class="split-item"><span class="split-dot usd"></span> USD ${summary.usdCount}</span>` },
+    { icon: '📈', label: '平均输入（¥/1M）', value: '¥' + summary.avgInput.toFixed(6), sub: '每百万 Tokens 均价', hue: '220,80%,60%' },
+    { icon: '📊', label: '平均输出（¥/1M）', value: '¥' + summary.avgOutput.toFixed(6), sub: '每百万 Tokens 均价', hue: '160,60%,45%' },
+    { icon: '🏆', label: '最贵模型', value: summary.maxModel ? escHtml(summary.maxModel) : '—', valueStyle: 'font-size:18px;font-weight:500', sub: summary.maxTotal > 0 ? '¥' + summary.maxTotal.toFixed(6) + ' / 1M' : '每百万 Tokens 成本', hue: '35,90%,55%' },
+  ];
+  document.getElementById('pricing-summary').innerHTML = cards.map(c =>
+    `<div class="pricing-stat-card">
+      <div class="pricing-stat-icon"${c.hue ? ` style="background:hsla(${c.hue},0.12);border-color:hsla(${c.hue},0.18)"` : ''}>${c.icon}</div>
+      <div class="pricing-stat-label">${c.label}</div>
+      <div class="pricing-stat-value"${c.valueStyle ? ` style="${c.valueStyle}"` : ''}>${c.value}</div>
+      <div class="pricing-stat-sub">${c.sub}</div>
+    </div>`
+  ).join('');
 }
 
 /* ─── 渲染卡片网格 ─── */
@@ -284,10 +267,8 @@ async function savePricing(editModelId) {
     alert('模型 ID、显示名、输入/输出价格为必填');
     return;
   }
-  const url = editModelId
-    ? `/api/pricing/${encodeURIComponent(editModelId)}`
-    : '/api/pricing';
   const method = editModelId ? 'PUT' : 'POST';
+  const url = editModelId ? `/api/pricing/${encodeURIComponent(editModelId)}` : '/api/pricing';
   const result = await api(url, { method, body: JSON.stringify(payload) });
   if (result.error) { alert(result.error); return; }
   closeModal();

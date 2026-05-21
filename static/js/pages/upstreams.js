@@ -24,7 +24,7 @@ async function loadUpstreamTable() {
   document.getElementById('upstream-count').textContent = data.upstreams.length + ' 个上游';
   const tbody = document.querySelector('#upstream-table tbody');
 
-    tbody.innerHTML = data.upstreams.map(u =>
+  tbody.innerHTML = data.upstreams.map(u =>
     `<tr data-action="toggleModelDrawer" data-id="${u.id}" style="${u.is_active ? '' : 'opacity:0.5'};cursor:pointer">
       <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${u.is_active ? 'hsl(var(--green))' : 'hsl(var(--red))'};"></span> ${u.is_active ? '活跃' : '已禁用'}</td>
       <td><span class="badge badge-blue">${escHtml(u.name)}</span></td>
@@ -46,16 +46,12 @@ let openDrawerUpstreamId = null;
 let upstreamDataMap = {};
 
 function toggleModelDrawer(el, upstreamId) {
-  // If same upstream clicked again → close
   if (openDrawerUpstreamId === upstreamId) {
     closeDrawerRow();
     return;
   }
-
-  // Close existing drawer if open
   closeDrawerRow();
 
-  // Find the clicked row and insert drawer row after it
   const clickedRow = el.closest('tr');
   if (!clickedRow) return;
 
@@ -76,7 +72,6 @@ function toggleModelDrawer(el, upstreamId) {
       '</div>' +
     '</td>';
 
-  // Insert after the clicked row
   const nextRow = clickedRow.nextElementSibling;
   if (nextRow) {
     tbody.insertBefore(drawerRow, nextRow);
@@ -86,7 +81,6 @@ function toggleModelDrawer(el, upstreamId) {
 
   openDrawerUpstreamId = upstreamId;
 
-  // Trigger slide-in animation
   requestAnimationFrame(() => {
     const content = drawerRow.querySelector('.drawer-content');
     if (content) content.classList.add('slide-in');
@@ -124,12 +118,10 @@ function loadAllModelConfigTables() {
   closeDrawerRow();
   loadUpstreamTable();
   if (wasOpen) {
-    // Re-open the drawer by simulating a click on the matching row
     requestAnimationFrame(() => {
-      const row = document.querySelector(`#upstream-table tbody tr[data-upstream-id="${CSS.escape(wasOpen)}"]`);
+      const row = document.querySelector(`#upstream-table tbody tr[data-id="${CSS.escape(wasOpen)}"]`);
       if (row) {
-        const fakeEvent = { stopPropagation: () => {}, currentTarget: row };
-        toggleModelDrawer(fakeEvent, wasOpen);
+        toggleModelDrawer({ closest: () => row }, wasOpen);
       }
     });
   }
@@ -147,7 +139,7 @@ async function showUpstreamModal(editId) {
   }
   showModal(title,
     `<div class="form-group"><label class="form-label">名称</label><input type="text" class="form-input" id="up-name" value="${escHtml(data.name || data.id)}"></div>
-     <div class="form-group"><label class="form-label">Base URL</label><input type="text" class="form-input" id="up-url" value="${escHtml(data.base_url)}"><!-- hint removed: SDK driver no longer required --></div>
+     <div class="form-group"><label class="form-label">Base URL</label><input type="text" class="form-input" id="up-url" value="${escHtml(data.base_url)}"></div>
      <div class="form-group"><label class="form-label">API Key</label><input type="text" class="form-input" id="up-key" value="${escHtml(data.api_key)}"></div>
      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
        <div class="form-group"><label class="form-label">响应超时 (s)</label><input type="number" class="form-input" id="up-timeout" value="${data.timeout}" min="1"></div>
@@ -194,39 +186,47 @@ async function testUpstream(id) {
   }
 }
 
-async function showDeleteUpstreamModal(id) {
-  const data = await api('/api/upstreams');
-  const u = data.upstreams.find(x => String(x.id) === id);
-  if (!u) return;
-  const models = await api('/api/models?upstream_id=' + encodeURIComponent(id));
-  const routes = await api('/api/routes');
-  const affected = routes.routes.filter(r => String(r.upstream_id) === id);
-  const modelNames = models.models.map(m => m.name).join(', ') || '无';
-  const upstreamName = u ? (u.name || id) : id;
-
-  if (affected.length > 0) {
-    // 有引用：显示路由列表，确认按钮禁用
-    const routeList = affected.map(r => '  • ' + escHtml(r.source)).join('\n');
-    showModal('\u{1F5D1}  删除上游',
-      '<div style="font-size:14px;line-height:1.8">' +
-      '<div>上游: ' + escHtml(upstreamName) + ' (ID: ' + escHtml(id) + ')</div>' +
-      '<div>关联模型: ' + escHtml(modelNames) + '</div>' +
+function _deleteUpstreamBody(uName, uId, modelNames, hasRoutes, routeList) {
+  const body = '<div style="font-size:14px;line-height:1.8">' +
+    '<div>上游: ' + escHtml(uName) + ' (ID: ' + escHtml(uId) + ')</div>' +
+    '<div>关联模型: ' + escHtml(modelNames) + '</div>';
+  if (hasRoutes) {
+    return body +
       '<div style="color:hsl(var(--red));margin-top:12px">❌ 该上游被以下路由引用：</div>' +
       '<pre style="background:hsl(var(--muted));padding:8px;border-radius:4px;font-size:12px;margin:8px 0">' + escHtml(routeList) + '</pre>' +
       '<div style="color:hsl(var(--muted-foreground));font-size:13px">请先在路由管理中解绑这些路由。</div>' +
-      '</div>',
-      '<button class="btn btn-secondary" data-action="closeModal">关闭</button>' +
-      '<button class="btn btn-danger" disabled>确认删除</button>');
-  } else {
-    showModal('\u{1F5D1}  删除上游',
-      '<div style="font-size:14px;line-height:1.8">' +
-      '<div>上游: ' + escHtml(upstreamName) + ' (ID: ' + escHtml(id) + ')</div>' +
-      '<div>关联模型: ' + escHtml(modelNames) + '</div>' +
-      '<div style="color:hsl(var(--green));margin-top:12px">✅ 无路由引用，可以安全删除</div>' +
-      '</div>',
-      '<button class="btn btn-secondary" data-action="closeModal">取消</button>' +
-      '<button class="btn btn-danger" data-action="confirmDeleteUpstream" data-id="' + escHtml(id) + '">确认删除</button>');
+      '</div>';
   }
+  return body +
+    '<div style="color:hsl(var(--green));margin-top:12px">✅ 无路由引用，可以安全删除</div>' +
+    '</div>';
+}
+
+function _deleteUpstreamFooter(hasRoutes, id) {
+  if (hasRoutes) {
+    return '<button class="btn btn-secondary" data-action="closeModal">关闭</button>' +
+      '<button class="btn btn-danger" disabled>确认删除</button>';
+  }
+  return '<button class="btn btn-secondary" data-action="closeModal">取消</button>' +
+    '<button class="btn btn-danger" data-action="confirmDeleteUpstream" data-id="' + escHtml(id) + '">确认删除</button>';
+}
+
+async function showDeleteUpstreamModal(id) {
+  const [upData, models, routes] = await Promise.all([
+    api('/api/upstreams'),
+    api('/api/models?upstream_id=' + encodeURIComponent(id)),
+    api('/api/routes')
+  ]);
+  const u = upData.upstreams.find(x => String(x.id) === id);
+  const affected = routes.routes.filter(r => String(r.upstream_id) === id);
+  const uName = u ? (u.name || id) : id;
+  const modelNames = models.models.map(m => m.name).join(', ') || '无';
+  const hasRoutes = affected.length > 0;
+  const routeList = hasRoutes ? affected.map(r => '  • ' + escHtml(r.source)).join('\n') : '';
+
+  showModal('🗑️  删除上游',
+    _deleteUpstreamBody(uName, id, modelNames, hasRoutes, routeList),
+    _deleteUpstreamFooter(hasRoutes, id));
 }
 
 async function confirmDeleteUpstream(id) {
@@ -312,24 +312,20 @@ async function confirmDeleteModel(id, name) {
 async function detectUpstreamModels(upstreamId) {
   const btn = document.getElementById('detect-btn-' + upstreamId);
   if (!btn) return;
-  
-  // Loading state
+
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>检测中...';
-  
+
   try {
     const result = await api('/api/upstreams/' + encodeURIComponent(upstreamId) + '/detect-models', { method: 'POST' });
-    
     if (!result.reachable) {
       alert('⚠️ 上游不可达: ' + (result.error || '未知错误'));
       return;
     }
-    
     showDetectModal(upstreamId, result);
   } catch (e) {
     alert('❌ 检测失败: ' + e.message);
   } finally {
-    // Reset button
     btn.disabled = false;
     btn.innerHTML = '🔍 检测模型';
   }
@@ -349,7 +345,6 @@ function showDetectModal(upstreamId, result) {
     return;
   }
 
-  // 统计徽章
   const summaryHtml =
     '<div class="detect-modal-summary">' +
       '<div class="detect-summary-badge detect-badge-new">' +
@@ -362,7 +357,6 @@ function showDetectModal(upstreamId, result) {
       '</div>' +
     '</div>';
 
-  // 选择栏
   const selectBarHtml =
     '<div class="detect-select-bar">' +
       '<span class="detect-select-count">已选 <strong id="detect-selected-count">' + discovered.length + '</strong> / ' + discovered.length + '</span>' +
@@ -372,7 +366,6 @@ function showDetectModal(upstreamId, result) {
       '</div>' +
     '</div>';
 
-  // 表格
   const tableRows = discovered.map((name, i) =>
     '<tr class="detect-row" style="animation-delay:' + (i * 30) + 'ms">' +
       '<td class="detect-cell-check">' +
@@ -402,13 +395,10 @@ function showDetectModal(upstreamId, result) {
       '</table>' +
     '</div>';
 
-  const content = summaryHtml + selectBarHtml + tableHtml;
-
-  const footer =
+  showModal('检测模型 — ' + escHtml(upstreamId),
+    summaryHtml + selectBarHtml + tableHtml,
     '<button class="btn btn-secondary" data-action="closeModal">取消</button>' +
-    '<button class="btn btn-primary" data-action="bulkAddDetectedModels" data-id="' + escHtml(upstreamId) + '">批量添加选中模型</button>';
-
-  showModal('检测模型 — ' + escHtml(upstreamId), content, footer);
+    '<button class="btn btn-primary" data-action="bulkAddDetectedModels" data-id="' + escHtml(upstreamId) + '">批量添加选中模型</button>');
 }
 
 function updateDetectSelectedCount() {
@@ -428,28 +418,21 @@ async function bulkAddDetectedModels(upstreamId) {
     alert('请至少选择一个模型');
     return;
   }
-  
-  // Collect selected models with multimodal flag
+
   const models = Array.from(checkboxes).map(cb => {
     const item = cb.closest('.detect-row');
     const multimodalCb = item ? item.querySelector('.dm-multimodal') : null;
-    const multimodal = multimodalCb ? (multimodalCb.checked ? 1 : 0) : 1;
-    return { name: cb.value, multimodal: multimodal };
+    return { name: cb.value, multimodal: multimodalCb ? (multimodalCb.checked ? 1 : 0) : 1 };
   });
-  
+
   try {
     const result = await api('/api/upstreams/' + encodeURIComponent(upstreamId) + '/models/bulk', {
       method: 'POST',
-      body: JSON.stringify({ models: models })
+      body: JSON.stringify({ models })
     });
-    
     closeModal();
     bus.emit('config:model-changed', {});
-    
-    if (openDrawerUpstreamId) {
-      loadModelTable(openDrawerUpstreamId);
-    }
-    
+    if (openDrawerUpstreamId) loadModelTable(openDrawerUpstreamId);
     alert('✅ 添加完成: 新增 ' + result.added + ' 个，跳过 ' + result.skipped + ' 个');
   } catch (e) {
     alert('❌ 添加失败: ' + e.message);

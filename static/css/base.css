@@ -1,21 +1,21 @@
 
 :root {
-  /* 暗色模式（默认） */
-  --background: 240 5% 8%;
+  /* 暗色模式（默认）— 深灰调 */
+  --background: 240 4% 14%;
   --foreground: 0 0% 98%;
-  --card: 240 5% 12%;
+  --card: 240 4% 17%;
   --card-foreground: 0 0% 98%;
   --primary: 210 100% 54%;
   --primary-foreground: 0 0% 100%;
-  --secondary: 240 5% 16%;
+  --secondary: 240 4% 20%;
   --secondary-foreground: 0 0% 98%;
-  --muted: 240 5% 18%;
-  --muted-foreground: 240 5% 65%;
-  --border: 240 5% 20%;
-  --input: 240 5% 24%;
+  --muted: 240 4% 26%;
+  --muted-foreground: 240 4% 62%;
+  --border: 240 4% 30%;
+  --input: 240 4% 34%;
   --ring: 210 100% 54%;
   --radius: 0.75rem;
-  
+
   /* 功能色 */
   --blue: 210 100% 54%;
   --green: 160 60% 45%;
@@ -208,8 +208,9 @@ body {
   color: hsl(var(--primary-foreground));
 }
 
-/* 主题切换按钮 - 玻璃态卡片样式 */
-#theme-toggle {
+/* 导航栏操作按钮 - 玻璃态卡片样式 */
+#theme-toggle,
+#settings-btn {
   width: 36px;
   height: 36px;
   padding: 0;
@@ -224,11 +225,31 @@ body {
   transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
 }
 
-#theme-toggle:hover {
+#theme-toggle:hover,
+#settings-btn:hover {
   transform: translateY(-1px);
   box-shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.2);
   border-color: hsl(var(--primary) / 0.4);
   color: hsl(var(--foreground));
+}
+
+/* 设置按钮齿轮旋转动画 */
+@keyframes gear-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+#settings-btn:hover {
+  border-color: hsl(var(--primary) / 0.5);
+  box-shadow: 0 4px 16px -2px hsl(var(--primary) / 0.2);
+}
+
+#settings-btn:active {
+  transform: scale(0.92);
+}
+
+#settings-btn.spin {
+  animation: gear-spin 0.6s ease-in-out;
 }
 
 .search-box {
@@ -284,25 +305,6 @@ body {
 .badge-green { background: hsl(var(--green) / 0.12); color: hsl(var(--green)); border-color: hsl(var(--green) / 0.2); }
 .badge-orange { background: hsl(var(--orange) / 0.12); color: hsl(var(--orange)); border-color: hsl(var(--orange) / 0.2); }
 .badge-purple { background: hsl(var(--purple) / 0.12); color: hsl(var(--purple)); border-color: hsl(var(--purple) / 0.2); }
-
-/* 进度条 */
-.progress-bar {
-  display: flex;
-  height: 6px;
-  border-radius: 3px;
-  overflow: hidden;
-  background: hsl(var(--muted));
-  margin-top: 8px;
-}
-
-.progress-segment {
-  height: 100%;
-}
-
-.progress-segment.input { background: hsl(var(--blue)); }
-.progress-segment.output { background: hsl(var(--green)); }
-.progress-segment.cache-read { background: hsl(var(--orange)); }
-.progress-segment.cache-write { background: hsl(var(--purple)); }
 
 .btn {
   padding: 6px 14px;
@@ -381,7 +383,6 @@ body {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.7);
-  backdrop-filter: blur(4px);
   z-index: 200;
   align-items: center;
   justify-content: center;
@@ -533,130 +534,89 @@ body {
 
 .hidden { display: none !important; }
 
-/* 设置页面样式 */
-.settings-container {
-  max-width: 600px;
-  margin: 0 auto;
-}
-
-.settings-card {
-  background: linear-gradient(145deg, hsl(var(--card)) 0%, hsl(var(--secondary)) 100%);
-  border: 1px solid hsl(var(--border));
-  border-radius: var(--radius);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  box-shadow: 0 4px 20px -4px rgba(0, 0, 0, 0.15);
-}
-
-.settings-header {
-  padding: 20px 24px;
-  border-bottom: 1px solid hsl(var(--border));
-}
-
-.settings-title {
-  font-size: 18px;
-  font-weight: 600;
-  color: hsl(var(--foreground));
-}
-
+/* ─── 设置面板 ─── */
 .settings-body {
-  padding: 24px;
+  padding: 8px 4px;
+  display: flex;
+  flex-direction: column;
 }
 
 .settings-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  gap: 16px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  transition: background 0.15s ease;
+}
+
+.settings-item:hover {
+  background: hsl(var(--muted) / 0.25);
+}
+
+.settings-item + .settings-item {
+  border-top: 1px solid hsl(var(--border) / 0.4);
 }
 
 .settings-label {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
 }
 
 .settings-label-title {
   font-size: 14px;
   font-weight: 500;
   color: hsl(var(--foreground));
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .settings-label-desc {
   font-size: 12px;
   color: hsl(var(--muted-foreground));
+  line-height: 1.4;
 }
 
-.settings-select {
-  padding: 8px 12px;
-  border-radius: 8px;
-  border: 1px solid hsl(var(--border));
-  background: hsl(var(--secondary));
-  color: hsl(var(--foreground));
-  font-size: 14px;
-  cursor: pointer;
-  min-width: 150px;
-  transition: border-color 0.15s ease;
-}
-
-.settings-select:hover {
-  border-color: hsl(var(--primary) / 0.4);
-}
-
-.settings-select:focus {
-  outline: none;
-  border-color: hsl(var(--primary));
-  box-shadow: 0 0 0 2px hsl(var(--primary) / 0.2);
-}
-
-/* 设置按钮样式 */
-#settings-btn {
-  width: 36px;
-  height: 36px;
-  padding: 0;
-  display: flex;
+.settings-label-icon {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
-  background: linear-gradient(145deg, hsl(var(--card)) 0%, hsl(var(--secondary)) 100%);
-  border: 1px solid hsl(var(--border));
-  border-radius: var(--radius);
-  box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.15);
-  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  background: hsl(var(--primary) / 0.08);
+  border-radius: 6px;
+  font-size: 13px;
+  flex-shrink: 0;
 }
 
-#settings-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.2);
-  border-color: hsl(var(--primary) / 0.4);
-  color: hsl(var(--foreground));
+/* 设置面板入场动画 */
+@keyframes settings-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
+
+.settings-body > .settings-item {
+  animation: settings-fade-in 0.25s ease both;
+}
+
+.settings-body > .settings-item:nth-child(1) { animation-delay: 0ms; }
+.settings-body > .settings-item:nth-child(2) { animation-delay: 40ms; }
+.settings-body > .settings-item:nth-child(3) { animation-delay: 80ms; }
 
 /* 配置状态栏 */
 .config-status-bar {
   font-size: 12px;
-}
-
-@keyframes pulse-orange {
-  0%, 100% { box-shadow: 0 0 0 0 hsl(var(--orange) / 0.4); }
-  50% { box-shadow: 0 0 0 8px hsl(var(--orange) / 0); }
-}
-
-#apply-config-btn.pulse-orange {
-  animation: pulse-orange 1.5s infinite;
-  background: hsl(var(--orange));
-  border-color: hsl(var(--orange));
-  color: white;
-}
-
-.api-key-masked {
-  font-family: monospace;
-  color: hsl(var(--muted-foreground));
-}
-
-.format-with-tooltip {
-  cursor: help;
-  border-bottom: 1px dashed hsl(var(--muted-foreground));
 }
 
 /* ═══════════════════════════════════════════════

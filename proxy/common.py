@@ -52,19 +52,19 @@ def load_config(config_path: Path = None):
     CONFIG.update(new_config)
 
     # 设置日志：同时写 proxy.log 文件和 stdout，遵循 log_level 配置
-    if not logging.root.handlers:
-        log_level = CONFIG.get("proxy", {}).get("log_level", "INFO")
-        numeric_level = getattr(logging, log_level.upper(), logging.INFO)
+    log_level = CONFIG.get("proxy", {}).get("log_level", "INFO")
+    numeric_level = getattr(logging, log_level.upper(), logging.INFO)
 
-        log_file = Path(CONFIG_PATH).parent / "proxy.log"
-        file_handler = logging.FileHandler(log_file)
-        stream_handler = logging.StreamHandler(sys.stdout)
+    log_file = Path(CONFIG_PATH).parent / "proxy.log"
+    file_handler = logging.FileHandler(log_file)
+    stream_handler = logging.StreamHandler(sys.stdout)
 
-        logging.basicConfig(
-            level=numeric_level,
-            format="%(asctime)s [%(levelname)s] %(message)s",
-            handlers=[file_handler, stream_handler],
-        )
+    logging.basicConfig(
+        level=numeric_level,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[file_handler, stream_handler],
+        force=True,
+    )
 
 
 def resolve_model(model_name: str, request_type: str = 'responses') -> dict:

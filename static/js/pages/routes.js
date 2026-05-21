@@ -20,6 +20,58 @@ function switchRequestType(rt) {
   loadTemplateSidebar(rt);
 }
 
+// ─── 共享：表格行渲染 ───
+
+function _routeRowHtml(r, isAgent, isPreview) {
+  const isFallback = r.source === '*';
+  const valid = r.valid !== false; // for preview data
+  const isInvalid = !isAgent && r.source !== '*' && !valid;
+  const agentInvalid = isAgent && !valid;
+  const isDisabled = !r.upstream_active;
+  const hasTarget = r.target_name !== null && r.target_name !== undefined;
+
+  let rowClass = [];
+  if (isFallback) rowClass.push('route-fallback');
+  if (isInvalid || agentInvalid) rowClass.push('route-invalid');
+  else if (isDisabled) rowClass.push('route-disabled');
+  const rowCls = rowClass.filter(Boolean).join(' ');
+
+  const sourceBadge = isFallback
+    ? '<span class="badge badge-purple">★ fallback</span>'
+    : '<span class="badge ' + (isAgent ? 'badge-amber' : 'badge-purple') + '">' + escHtml(r.source) + '</span>';
+
+  const targetBadge = hasTarget && valid
+    ? '<span class="badge badge-green">' + escHtml(r.target_name) + '</span>'
+    : '<span class="badge badge-red" style="background:hsl(0 100% 50% / 0.15) !important;color:hsl(0 100% 50%) !important">失效</span>';
+
+  const overrideHint = (isAgent && hasTarget && valid) ? '<span class="route-override-hint">← 覆盖主路由</span>' : '';
+
+  const statusHtml = !hasTarget || !valid
+    ? '<span class="route-status"><span class="route-status-dot invalid"></span>失效</span>'
+    : '<span class="route-status"><span class="route-status-dot ' + (r.upstream_active ? 'active' : 'inactive') + '"></span>' + (r.upstream_active ? '活跃' : '已禁用') + '</span>';
+
+  const actionsHtml = isPreview
+    ? '<span class="preview-badge">预览</span>'
+    : `<div class="route-actions">
+        <button class="btn btn-secondary btn-sm" data-action="${isAgent ? 'showAgentRouteModal' : 'showRouteModal'}" data-id="${r.id}">编辑</button>
+        <button class="btn btn-danger btn-sm" data-action="${isAgent ? 'confirmDeleteAgentRoute' : 'confirmDeleteRoute'}" data-id="${r.id}" data-source="${escHtml(r.source)}">删除</button>
+      </div>`;
+
+  return `<tr class="${rowCls}">
+    <td>${sourceBadge}</td>
+    <td>${targetBadge}${overrideHint}</td>
+    <td><span class="badge" style="background:hsl(var(--muted) / 0.7);color:hsl(var(--muted-foreground))">${r.upstream_name || '(已删除)'}</span></td>
+    <td><span class="badge ${FORMAT_COLORS[r.upstream_format] || ''}">${FORMAT_LABELS[r.upstream_format] || r.upstream_format || '-'}</span></td>
+    <td>${statusHtml}</td>
+    <td>${actionsHtml}</td>
+  </tr>`;
+}
+
+function _routeEmptyHtml(isAgent) {
+  return '<tr><td colspan="6" class="empty-state"><div class="empty-state-icon">' + (isAgent ? '🤖' : '🔀') + '</div>' +
+    (isAgent ? '暂无 Agent 路由配置<br><span style="font-size:11px">子 agent 请求将使用主路由表</span>' : '暂无路由配置') + '</td></tr>';
+}
+
 async function loadRouteTable(requestType) {
   let url = '/api/routes';
   if (requestType) url += '?request_type=' + encodeURIComponent(requestType);
@@ -31,30 +83,7 @@ async function loadRouteTable(requestType) {
       if (b.source === '*') return 1;
       return (a.source || '').localeCompare(b.source || '');
     });
-    tbody.innerHTML = sorted.map(r => {
-    const isFallback = r.source === '*';
-    const isDisabled = !r.upstream_active;
-    const rowClass = [isFallback ? 'route-fallback' : '', isDisabled ? 'route-disabled' : ''].filter(Boolean).join(' ');
-    return `<tr class="${rowClass}">
-      <td>${isFallback
-        ? '<span class="badge badge-purple">★ fallback</span>'
-        : '<span class="badge badge-purple">' + escHtml(r.source) + '</span>'}</td>
-      <td>${r.target_name !== null && r.target_name !== undefined
-        ? '<span class="badge badge-green">' + escHtml(r.target_name) + '</span>'
-        : '<span class="badge badge-red" style="background:hsl(0 100% 50% / 0.15) !important;color:hsl(0 100% 50%) !important">失效</span>'}</td>
-      <td><span class="badge" style="background:hsl(var(--muted) / 0.7);color:hsl(var(--muted-foreground))">${r.upstream_name || '(已删除)'}</span></td>
-      <td><span class="badge ${FORMAT_COLORS[r.upstream_format] || ''}">${FORMAT_LABELS[r.upstream_format] || r.upstream_format || '-'}</span></td>
-      <td>${r.target_name === null || r.target_name === undefined
-        ? '<span class="route-status"><span class="route-status-dot invalid"></span>失效</span>'
-        : '<span class="route-status"><span class="route-status-dot ' + (r.upstream_active ? 'active' : 'inactive') + '"></span>' + (r.upstream_active ? '活跃' : '已禁用') + '</span>'}</td>
-      <td>
-        <div class="route-actions">
-          <button class="btn btn-secondary btn-sm" data-action="showRouteModal" data-id="${r.id}">编辑</button>
-          <button class="btn btn-danger btn-sm" data-action="confirmDeleteRoute" data-id="${r.id}" data-source="${escHtml(r.source)}">删除</button>
-        </div>
-      </td>
-    </tr>`;
-  }).join('') || '<tr><td colspan="6" class="empty-state"><div class="empty-state-icon">🔀</div>暂无路由配置</td></tr>';
+    tbody.innerHTML = sorted.map(r => _routeRowHtml(r, false, false)).join('') || _routeEmptyHtml(false);
   }
 }
 
@@ -68,30 +97,8 @@ async function loadAgentRouteTable(requestType) {
     if (countEl) countEl.textContent = '覆盖层 · ' + (data.routes ? data.routes.length : 0);
     if (tbody) {
       const sortedAgents = (data.routes || []).slice().sort((a, b) => (a.source || '').localeCompare(b.source || ''));
-      tbody.innerHTML = sortedAgents.map(r => {
-    const isInvalid = r.target_name === null || r.target_name === undefined;
-    const isDisabled = !r.upstream_active && !isInvalid;
-    const rowClass = isInvalid ? 'route-invalid' : (isDisabled ? 'route-disabled' : '');
-    return `<tr class="${rowClass}">
-      <td><span class="badge badge-amber">${escHtml(r.source)}</span></td>
-      <td>${isInvalid
-        ? '<span class="badge badge-red" style="background:hsl(0 100% 50% / 0.15) !important;color:hsl(0 100% 50%) !important">失效</span>'
-        : '<span class="badge badge-green">' + escHtml(r.target_name) + '</span>'}
-          ${isInvalid ? '' : '<span class="route-override-hint">← 覆盖主路由</span>'}</td>
-      <td><span class="badge" style="background:hsl(var(--muted) / 0.7);color:hsl(var(--muted-foreground))">${r.upstream_name || '(已删除)'}</span></td>
-      <td><span class="badge ${FORMAT_COLORS[r.upstream_format] || ''}">${FORMAT_LABELS[r.upstream_format] || r.upstream_format || '-'}</span></td>
-      <td>${isInvalid
-        ? '<span class="route-status"><span class="route-status-dot invalid"></span>失效</span>'
-        : '<span class="route-status"><span class="route-status-dot ' + (r.upstream_active ? 'active' : 'inactive') + '"></span>' + (r.upstream_active ? '活跃' : '已禁用') + '</span>'}</td>
-      <td>
-        <div class="route-actions">
-          <button class="btn btn-secondary btn-sm" data-action="showAgentRouteModal" data-id="${r.id}">编辑</button>
-          <button class="btn btn-danger btn-sm" data-action="confirmDeleteAgentRoute" data-id="${r.id}" data-source="${escHtml(r.source)}">删除</button>
-        </div>
-      </td>
-    </tr>`;
-  }).join('') || '<tr><td colspan="6" class="empty-state"><div class="empty-state-icon">🤖</div>暂无 Agent 路由配置<br><span style="font-size:11px">子 agent 请求将使用主路由表</span></td></tr>';
-  }
+      tbody.innerHTML = sortedAgents.map(r => _routeRowHtml(r, true, false)).join('') || _routeEmptyHtml(true);
+    }
   } catch (e) {
     if (countEl) countEl.textContent = '覆盖层 · ?';
     if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="empty-state">加载失败</td></tr>';
@@ -160,17 +167,19 @@ function bindCascadeModelSelect() {
   });
 }
 
-// ─── 路由模态框 ───
-async function showRouteModal(editId) {
+// ─── 共享：路由模态框 ───
+async function makeRouteModal(editId, isAgent) {
+  const apiPrefix = isAgent ? '/api/agent-routes' : '/api/routes';
+  const modalLabel = isAgent ? 'Agent 路由' : '路由';
   let data = { source: '', target_model_id: '', request_type: currentRequestType };
-  let title = '新增路由';
+  let title = '新增 ' + modalLabel;
   let routeUpstreamId = null;
   let routeModelId = null;
   let models, upstreams;
   try {
     if (editId) {
-      title = '编辑路由 #' + editId;
-      const routes = await api('/api/routes');
+      title = '编辑 ' + modalLabel + ' #' + editId;
+      const routes = await api(apiPrefix);
       const found = routes.routes.find(r => r.id === editId);
       if (found) data = found;
     }
@@ -185,58 +194,32 @@ async function showRouteModal(editId) {
     return;
   }
   const cascadingHtml = buildCascadingSelect(upstreams, models, routeUpstreamId, routeModelId);
-  const sourceField = data.source === '*'
-    ? `<input type="text" class="form-input" value="* (fallback)" readonly><input type="hidden" id="r-source" value="*">`
-    : `<input type="text" class="form-input" id="r-source" value="${escHtml(data.source)}" placeholder="如 gpt-4o">
-       <div class="form-hint">客户端请求的模型名称，路由会将其转发到目标模型</div>`;
+
+  const sourceField = isAgent
+    ? `<input type="text" class="form-input" id="r-source" value="${escHtml(data.source)}" placeholder="如 claude-sonnet-4-6">
+       <div class="form-hint">子 agent 请求的模型名称，匹配时覆盖主路由指向</div>`
+    : (data.source === '*'
+      ? `<input type="text" class="form-input" value="* (fallback)" readonly><input type="hidden" id="r-source" value="*">`
+      : `<input type="text" class="form-input" id="r-source" value="${escHtml(data.source)}" placeholder="如 gpt-4o">
+         <div class="form-hint">客户端请求的模型名称，路由会将其转发到目标模型</div>`);
+
+  const saveAction = isAgent ? 'saveAgentRoute' : 'saveRoute';
+  const saveLabel = isAgent ? '保存 Agent 路由' : '保存路由';
+  const allowFallbackAttr = data.source === '*' ? ' data-fallback="true"' : '';
+
   showModal(title,
     `<div class="form-group"><label class="form-label">源模型名</label>${sourceField}</div>
      <hr class="form-divider">
      ${cascadingHtml}
      <input type="hidden" id="r-proxy" value="${escHtml(data.request_type)}">`,
-    `<button class="btn btn-secondary" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="saveRoute" data-edit-id="${editId || 0}">保存路由</button>`);
+    `<button class="btn btn-secondary" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="${saveAction}" data-edit-id="${editId || 0}"${allowFallbackAttr}>${saveLabel}</button>`);
   const modal = document.querySelector('.modal');
   if (modal) modal.classList.add('route-modal');
   bindCascadeModelSelect();
 }
 
-async function showAgentRouteModal(editId) {
-  let data = { source: '', target_model_id: '', request_type: currentRequestType };
-  let title = '新增 Agent 路由';
-  let routeUpstreamId = null;
-  let routeModelId = null;
-  let models, upstreams;
-  try {
-    if (editId) {
-      title = '编辑 Agent 路由 #' + editId;
-      const routes = await api('/api/agent-routes');
-      const found = routes.routes.find(r => r.id === editId);
-      if (found) data = found;
-    }
-    [models, upstreams] = await Promise.all([api('/api/models'), api('/api/upstreams')]);
-    if (editId && data.target_model_id) {
-      routeModelId = data.target_model_id;
-      const tm = models.models.find(m => m.id === data.target_model_id);
-      if (tm) routeUpstreamId = tm.upstream_id;
-    }
-  } catch (_) {
-    alert('加载数据失败，请检查服务是否正常运行');
-    return;
-  }
-  const cascadingHtml = buildCascadingSelect(upstreams, models, routeUpstreamId, routeModelId);
-  showModal(title,
-    `<div class="form-group"><label class="form-label">源模型名</label>
-       <input type="text" class="form-input" id="r-source" value="${escHtml(data.source)}" placeholder="如 claude-sonnet-4-6">
-       <div class="form-hint">子 agent 请求的模型名称，匹配时覆盖主路由指向</div>
-     </div>
-     <hr class="form-divider">
-     ${cascadingHtml}
-     <input type="hidden" id="r-proxy" value="${escHtml(data.request_type)}">`,
-    `<button class="btn btn-secondary" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="saveAgentRoute" data-edit-id="${editId || 0}">保存 Agent 路由</button>`);
-  const modal = document.querySelector('.modal');
-  if (modal) modal.classList.add('route-modal');
-  bindCascadeModelSelect();
-}
+async function showRouteModal(editId) { makeRouteModal(editId, false); }
+async function showAgentRouteModal(editId) { makeRouteModal(editId, true); }
 
 async function showFallbackModal() {
   const data = { source: '*', target_model_id: '', request_type: currentRequestType };
@@ -382,7 +365,6 @@ async function loadRoutePage() {
   loadAgentRouteTable(currentRequestType);
   loadTemplateSidebar(currentRequestType);
 
-  // hover 预览事件（在 innerHTML 渲染后绑定，确保元素存在）
   const sidebar = document.getElementById('template-sidebar');
   if (sidebar) {
     sidebar.addEventListener('mouseover', (e) => {
@@ -446,15 +428,15 @@ function renderTemplateSidebar(requestType) {
     </div>`).join('');
 }
 
-// hover 预览：mouseenter → 获取预览 → 切换表格
+// hover 预览：使用表格自身的 dataset 持有原始数据
 async function templateHover(el) {
   const tid = el.dataset.id;
   if (!tid) return;
   try {
     const preview = await api('/api/templates/' + tid + '/preview');
-    // 备份当前路由表内容
     const routeTbody = document.querySelector('#route-table tbody');
     const agentTbody = document.querySelector('#agent-route-table tbody');
+
     if (routeTbody) {
       if (!routeTbody.dataset.original) {
         routeTbody.dataset.original = routeTbody.innerHTML;
@@ -464,45 +446,15 @@ async function templateHover(el) {
         if (b.source === '*') return 1;
         return (a.source || '').localeCompare(b.source || '');
       });
-      routeTbody.innerHTML = sortedRoutes.map(r => {
-        const isFallback = r.source === '*';
-        const valid = r.valid !== false;
-        return `<tr class="${isFallback ? 'route-fallback' : ''} ${valid ? '' : 'route-invalid'}">
-          <td>${isFallback ? '<span class="badge badge-purple">\u2605 fallback</span>' : '<span class="badge badge-purple">' + escHtml(r.source) + '</span>'}</td>
-          <td>${valid
-            ? '<span class="badge badge-green">' + escHtml(r.target_name) + '</span>'
-            : '<span class="badge badge-red" style="background:hsl(0 100% 50% / 0.15) !important;color:hsl(0 100% 50%) !important">失效</span>'}</td>
-          <td><span class="badge" style="background:hsl(var(--muted) / 0.7);color:hsl(var(--muted-foreground))">${r.upstream_name || '(已删除)'}</span></td>
-          <td><span class="badge">${r.upstream_format || '-'}</span></td>
-          <td>${!valid
-            ? '<span class="route-status"><span class="route-status-dot invalid"></span>失效</span>'
-            : '<span class="route-status"><span class="route-status-dot ' + (r.upstream_active ? 'active' : 'inactive') + '"></span>' + (r.upstream_active ? '\u6d3b\u8dc3' : '\u5df2\u7981\u7528') + '</span>'}</td>
-          <td><span class="preview-badge">预览</span></td>
-        </tr>`;
-      }).join('') || '<tr><td colspan="6" class="empty-state">预览：无路由</td></tr>';
+      routeTbody.innerHTML = sortedRoutes.map(r => _routeRowHtml(r, false, true)).join('') || '<tr><td colspan="6" class="empty-state">预览：无路由</td></tr>';
     }
     if (agentTbody) {
       if (!agentTbody.dataset.original) {
         agentTbody.dataset.original = agentTbody.innerHTML;
       }
       const sortedAgentRoutes = (preview.agent_routes || []).slice().sort((a, b) => (a.source || '').localeCompare(b.source || ''));
-      agentTbody.innerHTML = sortedAgentRoutes.map(r => {
-        const valid = r.valid !== false;
-        return `<tr class="${valid ? '' : 'route-invalid'}">
-          <td><span class="badge badge-amber">${escHtml(r.source)}</span></td>
-          <td>${valid
-            ? '<span class="badge badge-green">' + escHtml(r.target_name) + '</span>'
-            : '<span class="badge badge-red" style="background:hsl(0 100% 50% / 0.15) !important;color:hsl(0 100% 50%) !important">失效</span>'}</td>
-          <td><span class="badge" style="background:hsl(var(--muted) / 0.7);color:hsl(var(--muted-foreground))">${r.upstream_name || '(已删除)'}</span></td>
-          <td><span class="badge">${r.upstream_format || '-'}</span></td>
-          <td>${!valid
-            ? '<span class="route-status"><span class="route-status-dot invalid"></span>失效</span>'
-            : '<span class="route-status"><span class="route-status-dot ' + (r.upstream_active ? 'active' : 'inactive') + '"></span>' + (r.upstream_active ? '\u6d3b\u8dc3' : '\u5df2\u7981\u7528') + '</span>'}</td>
-          <td><span class="preview-badge">预览</span></td>
-        </tr>`;
-      }).join('') || '<tr><td colspan="6" class="empty-state">预览：无 Agent 路由</td></tr>';
+      agentTbody.innerHTML = sortedAgentRoutes.map(r => _routeRowHtml(r, true, true)).join('') || '<tr><td colspan="6" class="empty-state">预览：无 Agent 路由</td></tr>';
     }
-    // 高亮当前预览的模板
     document.querySelectorAll('.template-item').forEach(el => el.classList.remove('previewing'));
     el.classList.add('previewing');
   } catch (_) {
@@ -533,7 +485,6 @@ async function applyTemplate(el) {
     activeTemplateId = tid;
     localStorage.setItem('activeTemplateId', tid);
     templateDirty = false;
-    // 清除预览备份，避免 templateLeave 恢复旧数据覆盖新数据
     document.querySelectorAll('#route-table tbody, #agent-route-table tbody').forEach(tb => {
       delete tb.dataset.original;
     });
@@ -611,7 +562,6 @@ function initRoutePage() {
   on('saveAgentRoute', (e, el) => saveAgentRoute(parseInt(el.dataset.editId) || 0));
   on('confirmDeleteRoute', (e, el) => confirmDeleteRoute(parseInt(el.dataset.id), el.dataset.source));
   on('confirmDeleteAgentRoute', (e, el) => confirmDeleteAgentRoute(parseInt(el.dataset.id), el.dataset.source));
-  // 模板边栏交互
   on('saveTemplate', saveTemplate);
   on('applyTemplate', (e, el) => applyTemplate(el));
   on('deleteTemplate', (e, el) => deleteTemplate(el));
@@ -653,4 +603,4 @@ function initRoutePage() {
   });
 }
 
-export { loadRoutePage, initRoutePage, loadRouteTable, showRouteModal, showFallbackModal, saveRoute, confirmDeleteRoute, switchRequestType, loadAgentRouteTable, showAgentRouteModal, saveAgentRoute, confirmDeleteAgentRoute, loadTemplateSidebar, applyTemplate, saveTemplate, deleteTemplate };
+export { loadRoutePage, initRoutePage };

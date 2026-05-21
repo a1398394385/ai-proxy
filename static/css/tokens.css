@@ -568,50 +568,7 @@
   color: hsl(var(--foreground));
   background: hsl(var(--card));
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
-}
-
-/* ===== 筛选器栏 ===== */
-.filter-bar {
-  display: flex;
-  align-items: flex-end;
-  gap: 16px;
-  margin-bottom: 16px;
-  padding: 12px 16px;
-  background: hsl(var(--card));
-  border: 1px solid hsl(var(--border));
-  border-radius: var(--radius);
-}
-
-.filter-group {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.filter-group label {
-  font-size: 11px;
-  font-weight: 600;
-  color: hsl(var(--muted-foreground));
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.filter-group input[type="text"],
-.filter-group select {
-  padding: 6px 10px;
-  border: 1px solid hsl(var(--border));
-  border-radius: 6px;
-  background: hsl(var(--background));
-  color: hsl(var(--foreground));
-  font-size: 13px;
-  min-width: 150px;
-}
-
-.filter-group select {
-  cursor: pointer;
-}
-
-/* ===== 类型 Badge ===== */
+}/* ===== 类型 Badge ===== */
 .type-badge {
   display: inline-block;
   padding: 2px 8px;
@@ -744,35 +701,6 @@
 }
 
 /* ===== 分页器 ===== */
-.pagination-bar {
-  margin-top: 12px;
-}
-
-.pagination-content {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.pagination-info {
-  font-size: 12px;
-  color: hsl(var(--muted-foreground));
-}
-
-.pagination-buttons {
-  display: flex;
-  gap: 8px;
-}
-
-/* ===== 未知上游行 ===== */
-.unknown-upstream {
-  background: hsl(var(--red) / 0.03);
-}
-
-.unknown-upstream:hover {
-  background: hsl(var(--red) / 0.06) !important;
-}
-
 /* ===== 请求日志 & 上游统计 — 数据终端风格 ===== */
 
 /* ─── 紧凑筛选栏 ─── */
@@ -983,41 +911,6 @@
 }
 
 /* 上游占比条 */
-.up-bar-wrap {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  justify-content: flex-end;
-}
-.up-bar-track {
-  flex: 1;
-  height: 4px;
-  background: hsl(var(--secondary));
-  border-radius: 2px;
-  overflow: hidden;
-  min-width: 50px;
-  max-width: 110px;
-}
-.up-bar-fill {
-  height: 100%;
-  border-radius: 2px;
-  transition: width 0.4s ease;
-}
-.up-bar-fill.cyan {
-  background: linear-gradient(90deg, hsl(190 80% 50%), hsl(var(--blue)));
-}
-.up-bar-fill.amber {
-  background: linear-gradient(90deg, hsl(var(--orange)), hsl(var(--red)));
-}
-.up-bar-pct {
-  font-size: 11px;
-  font-weight: 600;
-  color: hsl(var(--muted-foreground));
-  font-variant-numeric: tabular-nums;
-  min-width: 40px;
-  text-align: right;
-}
-
 /* ─── 分页终端风格 ─── */
 .pagination-terminal {
   display: flex;
@@ -1073,8 +966,6 @@
     hsl(var(--secondary) / 0.3) 100%
   );
   border-bottom: 1px solid hsl(var(--border));
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
   overflow: visible;                 /* 下拉面板需要溢出 */
   position: relative;
   z-index: 10;

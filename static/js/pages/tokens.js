@@ -1,4 +1,92 @@
-import { api, formatNumber, formatTokens, escHtml, customSelectHtml, wireCustomSelect, updateCustomSelect } from '../core.js';
+import { api, formatNumber, escHtml, customSelectHtml, wireCustomSelect, updateCustomSelect } from '../core.js';
+
+// ===== 套用计费专用下拉框（独立实现，避免与模态框层叠冲突） =====
+function costCompareSelectHtml(id, opts, placeholder) {
+  const sel = opts.find(o => o.selected && o.value) || opts.find(o => o.value) || null;
+  const display = sel ? escHtml(sel.label) : escHtml(placeholder);
+  const allDisabled = opts.every(o => !o.value || o.disabled);
+  const optionsHtml = opts.map(o => {
+    const cls = ['cs-option'];
+    if (o.selected) cls.push('selected');
+    if (o.disabled) cls.push('disabled');
+    if (!o.value) cls.push('cs-empty');
+    return `<div class="${cls.join(' ')}" data-value="${escHtml(o.value)}" ${o.disabled ? 'data-disabled="1"' : ''}>
+      <span class="cs-option-text">${escHtml(o.label)}</span>
+    </div>`;
+  }).join('');
+  return `<input type="hidden" id="${id}" value="${sel ? escHtml(sel.value) : ''}">
+    <div class="custom-select${allDisabled ? ' disabled' : ''}" data-ccs="${id}">
+      <button type="button" class="cs-trigger"><span class="cs-text">${display}</span><svg class="cs-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>
+      <div class="cs-dropdown">${optionsHtml}</div>
+    </div>`;
+}
+
+function wireCostCompareSelect(id, onChange) {
+  const cs = document.querySelector(`[data-ccs="${id}"]`);
+  if (!cs || cs.dataset.wired) return;
+  cs.dataset.wired = '1';
+  const trigger = cs.querySelector('.cs-trigger');
+  const dropdown = cs.querySelector('.cs-dropdown');
+  const hidden = document.getElementById(id);
+
+  trigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (cs.classList.contains('disabled')) return;
+    if (cs.classList.contains('open')) {
+      cs.classList.remove('open');
+      dropdown.style.display = 'none';
+      dropdown.style.opacity = '';
+      dropdown.style.visibility = '';
+      dropdown.style.transform = '';
+    } else {
+      // 关闭其他成本对比下拉框
+      document.querySelectorAll('[data-ccs] .cs-dropdown').forEach(dd => { dd.style.display = 'none'; });
+      document.querySelectorAll('[data-ccs]').forEach(el => el.classList.remove('open'));
+      const rect = trigger.getBoundingClientRect();
+      dropdown.style.display = 'block';
+      dropdown.style.position = 'fixed';
+      dropdown.style.top = (rect.bottom + 4) + 'px';
+      dropdown.style.left = rect.left + 'px';
+      dropdown.style.width = rect.width + 'px';
+      dropdown.style.opacity = '1';
+      dropdown.style.visibility = 'visible';
+      dropdown.style.transform = 'translateY(0)';
+      cs.classList.add('open');
+    }
+  });
+
+  dropdown.addEventListener('click', (e) => {
+    const opt = e.target.closest('.cs-option');
+    if (!opt || opt.dataset.disabled || opt.classList.contains('cs-empty')) return;
+    e.stopPropagation();
+    const val = opt.dataset.value;
+    hidden.value = val;
+    trigger.querySelector('.cs-text').textContent = opt.querySelector('.cs-option-text').textContent;
+    dropdown.querySelectorAll('.cs-option').forEach(o => o.classList.toggle('selected', o === opt));
+    cs.classList.remove('open');
+    dropdown.style.display = 'none';
+    if (onChange) onChange(val);
+  });
+}
+
+function closeAllCostCompareSelects() {
+  document.querySelectorAll('[data-ccs].open').forEach(el => {
+    el.classList.remove('open');
+    const dd = el.querySelector('.cs-dropdown');
+    if (dd) {
+      dd.style.display = 'none';
+      dd.style.opacity = '';
+      dd.style.visibility = '';
+      dd.style.transform = '';
+    }
+  });
+}
+
+// 点击页面其他地方关闭成本对比下拉框（排除触发按钮，避免与 trigger click 冲突）
+document.addEventListener('click', (e) => {
+  if (e.target.closest('[data-ccs]')) return;
+  closeAllCostCompareSelects();
+});
 
 // ===== Module-local state =====
 let allModels = [];
@@ -12,6 +100,13 @@ let debounceTimer = null;
 // Upstream stats state
 let upstreamStatsData = [];
 let allPricings = [];
+function tk(n, cls) { cls = cls || 'cell-number'; return '<td class="' + cls + '">' + (n || 0).toLocaleString() + '</td>'; }
+function typeBadge(upstreamId) {
+  return upstreamId === 'opencode'
+    ? '<span class="type-badge-term opencode">[opencode]</span>'
+    : '<span class="type-badge-term proxy">>_proxy</span>';
+}
+
 
 // ===== Token 统计 =====
 async function loadTokenStats() {
@@ -120,20 +215,12 @@ function renderTrendChart(trends) {
   const chartWidth = width - margin.left - margin.right;
   const chartHeight = height - margin.top - margin.bottom;
 
-  function niceMax(max, ticks = 5) {
+  function niceMax(max) {
     if (max === 0) return 1;
     if (max < 10) return 10;
-    const exponent = Math.floor(Math.log10(max));
-    const fraction = max / Math.pow(10, exponent);
-    let niceFraction;
-    if (fraction <= 1.2) niceFraction = 1.2;
-    else if (fraction <= 1.5) niceFraction = 1.5;
-    else if (fraction <= 2) niceFraction = 2;
-    else if (fraction <= 3) niceFraction = 3;
-    else if (fraction <= 5) niceFraction = 5;
-    else if (fraction <= 7) niceFraction = 7;
-    else niceFraction = 10;
-    return niceFraction * Math.pow(10, exponent);
+    const e = Math.floor(Math.log10(max)), f = max / 10 ** e;
+    const nf = f <= 1.2 ? 1.2 : f <= 1.5 ? 1.5 : f <= 2 ? 2 : f <= 3 ? 3 : f <= 5 ? 5 : f <= 7 ? 7 : 10;
+    return nf * 10 ** e;
   }
 
   const maxIndividual = Math.max(
@@ -157,10 +244,8 @@ function renderTrendChart(trends) {
   }
   gridGroup.innerHTML = gridHtml;
 
-  function formatAxisValue(value) {
-    if (value >= 1000000) return (value / 1000000).toFixed(1) + 'M';
-    if (value >= 1000) return (value / 1000).toFixed(0) + 'k';
-    return value.toString();
+  function formatAxisValue(v) {
+    return v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(0) + 'k' : String(v);
   }
 
   for (let i = 0; i <= yTicks; i++) {
@@ -169,15 +254,11 @@ function renderTrendChart(trends) {
     axesHtml += `<text x="${margin.left - 10}" y="${y + 4}" text-anchor="end" class="area-chart-tick">${formatAxisValue(value)}</text>`;
   }
 
-  const costValues = chartData.map(d => d.estimated_cost_cny || 0);
-  const costYMax = niceMax(Math.max(...costValues, 0.0001));
+  const costYMax = niceMax(Math.max(...chartData.map(d => d.estimated_cost_cny || 0), 0.0001));
 
   function formatCostAxis(v) {
     if (v === 0) return '¥0';
-    if (v >= 10) return '¥' + v.toFixed(1);
-    if (v >= 1) return '¥' + v.toFixed(2);
-    if (v >= 0.1) return '¥' + v.toFixed(3);
-    return '¥' + v.toFixed(6);
+    return '¥' + (v >= 10 ? v.toFixed(1) : v >= 1 ? v.toFixed(2) : v >= 0.1 ? v.toFixed(3) : v.toFixed(6));
   }
 
   axesHtml += `<line x1="${width - margin.right}" y1="${margin.top}" x2="${width - margin.right}" y2="${margin.top + chartHeight}" class="area-chart-axis"/>`;
@@ -190,56 +271,20 @@ function renderTrendChart(trends) {
   const xStep = chartWidth / (chartData.length - 1 || 1);
   const dataCount = chartData.length;
 
-  let labelInterval;
-  let labelFormatter;
-
-  if (dataCount === 24) {
-    labelInterval = 1;
-    labelFormatter = (d, i) => {
-      const parts = d.date.split(' ');
-      if (parts.length === 2) {
-        return parts[1];
-      }
-      return d.date;
-    };
-  } else if (dataCount === 7) {
-    labelInterval = 1;
-    labelFormatter = (d) => d.date.slice(5);
-  } else if (dataCount === 30) {
-    labelInterval = 5;
-    labelFormatter = (d) => d.date.slice(5);
-  } else {
-    labelInterval = Math.ceil(dataCount / 7);
-    labelFormatter = (d) => d.date.slice(5);
-  }
+  const hourData = dataCount === 24;
+  const labelInterval = hourData ? 1 : (dataCount === 30 ? 5 : Math.ceil(dataCount / 7));
+  const labelFormatter = hourData
+    ? (d) => { const p = d.date.split(' '); return p.length === 2 ? p[1] : d.date; }
+    : (d) => d.date.slice(5);
 
   chartData.forEach((d, i) => {
-    if (dataCount === 24) {
-      if (i % labelInterval !== 0 && i !== dataCount - 1) {
-        return;
-      }
-    }
-
-    if (dataCount !== 24 && i % labelInterval !== 0 && i !== dataCount - 1) {
-      return;
-    }
-
+    if (i % labelInterval !== 0 && i !== dataCount - 1) return;
     const x = margin.left + i * xStep;
-
-    let textAnchor = 'middle';
-    let labelX = x;
-    if (i === dataCount - 1) {
-      labelX = Math.min(x, width - margin.right - 5);
-      textAnchor = 'end';
-    } else if (i === 0) {
-      textAnchor = 'start';
-      labelX = Math.max(x, margin.left + 5);
-    }
-
+    let anchor = 'middle', lx = x;
+    if (i === dataCount - 1) { lx = Math.min(x, width - margin.right - 5); anchor = 'end'; }
+    else if (i === 0) { anchor = 'start'; lx = Math.max(x, margin.left + 5); }
     const label = labelFormatter(d, i);
-    if (label) {
-      axesHtml += `<text x="${labelX}" y="${height - 10}" text-anchor="${textAnchor}" class="area-chart-tick">${label}</text>`;
-    }
+    if (label) axesHtml += `<text x="${lx}" y="${height - 10}" text-anchor="${anchor}" class="area-chart-tick">${label}</text>`;
   });
 
   axesGroup.innerHTML = axesHtml;
@@ -248,93 +293,55 @@ function renderTrendChart(trends) {
   areasGroup.innerHTML = '';
 
   const series = [
-    { key: 'inputTokens', label: '输入 Tokens', color: '#3b82f6', gradient: 'url(#gradientInput)', class: 'area-path-input', rawKey: 'input_tokens' },
-    { key: 'outputTokens', label: '输出 Tokens', color: '#22c55e', gradient: 'url(#gradientOutput)', class: 'area-path-output', rawKey: 'output_tokens' },
-    { key: 'cacheReadTokens', label: '缓存读取', color: '#a855f7', gradient: 'url(#gradientCacheRead)', class: 'area-path-cache-read', rawKey: 'cache_read_tokens' },
-    { key: 'cacheWriteTokens', label: '缓存写入', color: '#f97316', gradient: 'url(#gradientCacheWrite)', class: 'area-path-cache-write', rawKey: 'cache_write_tokens' }
+    { key: 'inputTokens', gradient: 'url(#gradientInput)', class: 'area-path-input', rawKey: 'input_tokens' },
+    { key: 'outputTokens', gradient: 'url(#gradientOutput)', class: 'area-path-output', rawKey: 'output_tokens' },
+    { key: 'cacheReadTokens', gradient: 'url(#gradientCacheRead)', class: 'area-path-cache-read', rawKey: 'cache_read_tokens' },
+    { key: 'cacheWriteTokens', gradient: 'url(#gradientCacheWrite)', class: 'area-path-cache-write', rawKey: 'cache_write_tokens' }
   ];
 
   const chartBottom = margin.top + chartHeight;
 
-  series.forEach((s) => {
+  series.forEach(s => {
     if (hiddenSeries.has(s.key)) return;
-
-    const points = chartData.map((d, i) => {
-      const x = margin.left + i * xStep;
-      const value = d[s.rawKey] || 0;
-      const y = margin.top + chartHeight * (1 - value / yMax);
-      return { x, y };
-    });
-
-    let pathD = '';
-    points.forEach((p, i) => {
-      if (i === 0) {
-        pathD += `M ${p.x} ${p.y}`;
-      } else {
-        const prev = points[i - 1];
-        const cpX = (prev.x + p.x) / 2;
-        pathD += ` C ${cpX} ${prev.y}, ${cpX} ${p.y}, ${p.x} ${p.y}`;
-      }
-    });
-
-    const last = points[points.length - 1];
-    pathD += ` L ${last.x} ${chartBottom} L ${points[0].x} ${chartBottom} Z`;
-
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('d', pathD);
-    path.setAttribute('class', s.class);
-    path.setAttribute('fill', s.gradient);
-    areasGroup.appendChild(path);
+    const pts = chartData.map((d, i) => ({ x: margin.left + i * xStep, y: margin.top + chartHeight * (1 - (d[s.rawKey] || 0) / yMax) }));
+    let d = 'M' + pts[0].x + ' ' + pts[0].y;
+    for (let i = 1; i < pts.length; i++) {
+      d += ' C' + ((pts[i - 1].x + pts[i].x) / 2) + ' ' + pts[i - 1].y + ',' + ((pts[i - 1].x + pts[i].x) / 2) + ' ' + pts[i].y + ',' + pts[i].x + ' ' + pts[i].y;
+    }
+    d += ' L' + pts[pts.length - 1].x + ' ' + chartBottom + ' L' + pts[0].x + ' ' + chartBottom + ' Z';
+    const el = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    el.setAttribute('d', d); el.setAttribute('class', s.class); el.setAttribute('fill', s.gradient);
+    areasGroup.appendChild(el);
   });
 
   if (!hiddenSeries.has('costLine')) {
-    const costPoints = chartData.map((d, i) => ({
-      x: margin.left + i * xStep,
-      y: margin.top + chartHeight * (1 - (d.estimated_cost_cny || 0) / costYMax)
-    }));
-    let costD = '';
-    costPoints.forEach((p, i) => {
-      if (i === 0) {
-        costD += `M ${p.x} ${p.y}`;
-      } else {
-        const prev = costPoints[i - 1];
-        const cpX = (prev.x + p.x) / 2;
-        costD += ` C ${cpX} ${prev.y}, ${cpX} ${p.y}, ${p.x} ${p.y}`;
-      }
-    });
-    const costPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    costPath.setAttribute('d', costD);
-    costPath.setAttribute('class', 'area-path-cost');
-    areasGroup.appendChild(costPath);
+    const pts = chartData.map((d, i) => ({ x: margin.left + i * xStep, y: margin.top + chartHeight * (1 - (d.estimated_cost_cny || 0) / costYMax) }));
+    let d = 'M' + pts[0].x + ' ' + pts[0].y;
+    for (let i = 1; i < pts.length; i++) {
+      d += ' C' + ((pts[i - 1].x + pts[i].x) / 2) + ' ' + pts[i - 1].y + ',' + ((pts[i - 1].x + pts[i].x) / 2) + ' ' + pts[i].y + ',' + pts[i].x + ' ' + pts[i].y;
+    }
+    const el = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    el.setAttribute('d', d); el.setAttribute('class', 'area-path-cost');
+    areasGroup.appendChild(el);
   }
 
-  document.querySelectorAll('.legend-item').forEach(item => {
-    item.classList.toggle('off', hiddenSeries.has(item.dataset.series));
-  });
+  document.querySelectorAll('.legend-item').forEach(item => item.classList.toggle('off', hiddenSeries.has(item.dataset.series)));
 
   const overlay = document.getElementById('chart-overlay');
   const tooltip = document.getElementById('chart-tooltip');
   const cursorLine = document.getElementById('chart-cursor-line');
 
-  overlay.onmousemove = (e) => {
+  overlay.onmousemove = e => {
     const rect = svg.getBoundingClientRect();
-    const x = e.clientX - rect.left - margin.left;
-    const index = Math.round(x / xStep);
-
-    if (index >= 0 && index < chartData.length) {
-      const d = chartData[index];
-      const pointX = margin.left + index * xStep;
-      cursorLine.setAttribute('x1', pointX);
-      cursorLine.setAttribute('x2', pointX);
+    const idx = Math.round((e.clientX - rect.left - margin.left) / xStep);
+    if (idx >= 0 && idx < chartData.length) {
+      const px = margin.left + idx * xStep;
+      cursorLine.setAttribute('x1', px); cursorLine.setAttribute('x2', px);
       cursorLine.style.display = 'block';
-      showTooltip(e.clientX, e.clientY, d);
+      showTooltip(e.clientX, e.clientY, chartData[idx]);
     }
   };
-
-  overlay.onmouseleave = () => {
-    tooltip.classList.remove('show');
-    cursorLine.style.display = 'none';
-  };
+  overlay.onmouseleave = () => { tooltip.classList.remove('show'); cursorLine.style.display = 'none'; };
 }
 
 function showTooltip(mouseX, mouseY, data) {
@@ -342,14 +349,7 @@ function showTooltip(mouseX, mouseY, data) {
   const title = document.getElementById('tooltip-title');
   const content = document.getElementById('tooltip-content');
 
-  const dataCount = chartData.length;
-  if (dataCount === 24) {
-    title.textContent = data.date;
-  } else if (dataCount === 7 || dataCount === 30) {
-    title.textContent = data.date;
-  } else {
-    title.textContent = data.date;
-  }
+  title.textContent = data.date;
 
   const items = [
     { label: '输入 Tokens', value: data.input_tokens, color: '#3b82f6', key: 'inputTokens' },
@@ -454,11 +454,11 @@ function renderModelTable(models) {
         </div>
       </td>
       <td class="cell-requests">${(m.request_count || 0).toLocaleString()}</td>
-      <td class="cell-number">${formatTokens(m.input_tokens)}</td>
-      <td class="cell-number">${formatTokens(m.output_tokens)}</td>
-      <td class="cell-number">${formatTokens(m.cache_read_tokens)}</td>
-      <td class="cell-number">${formatTokens(m.cache_write_tokens)}</td>
-      <td class="cell-total">${formatTokenM(m.total_tokens)}</td>
+      ${tk(m.input_tokens)}
+      ${tk(m.output_tokens)}
+      ${tk(m.cache_read_tokens)}
+      ${tk(m.cache_write_tokens)}
+      <td class="cell-total">${((m.total_tokens)/1e6).toFixed(2) + "M"}</td>
       <td>
         <div class="pct-cell">
           <div class="pct-bar-track">
@@ -553,7 +553,7 @@ function renderCostBar(modelName, detailContent) {
     </div>
     <div class="cost-compare-bar">
       <span class="cost-compare-label">套用计费</span>
-      ${customSelectHtml(csId, options, '— 不对比 —')}
+      ${costCompareSelectHtml(csId, options, '— 不对比 —')}
     </div>
     <div class="cost-compare-result"><div class="cost-compare-result-inner"></div></div>`;
 
@@ -563,15 +563,12 @@ function renderCostBar(modelName, detailContent) {
   const compareInner = wrap.querySelector('.cost-compare-result-inner');
   const hidden = document.getElementById(csId);
 
-  wireCustomSelect(csId);
-
-  hidden.addEventListener('change', () => {
-    const value = hidden.value;
-    if (!value) {
+  wireCostCompareSelect(csId, (selectedValue) => {
+    if (!selectedValue) {
       compareResult.classList.remove('show');
       return;
     }
-    const cp = allPricings.find(p => p.model_id === value);
+    const cp = allPricings.find(p => p.model_id === selectedValue);
     if (!cp) return;
 
     const cc = calcCost(modelData, cp);
@@ -614,24 +611,22 @@ function expandModelRow(model, rowElement) {
       const limit = Math.min(requests.length, 50);
 
       const rows = requests.slice(0, limit).map(r => {
-        const typeBadge = r.upstream_id === 'opencode'
-          ? '<span class="type-badge-term opencode">[opencode]</span>'
-          : '<span class="type-badge-term proxy">>_proxy</span>';
+        const badgeHtml = typeBadge(r.upstream_id);
         const timeStr = r.created_at || r.request_ts || r.timestamp || '-';
         const costStr = ((r.input_cost_cny || 0) + (r.output_cost_cny || 0) + (r.cache_read_cost_cny || 0) + (r.cache_write_cost_cny || 0)).toFixed(6);
 
-        const tokenCells = `<td class="cell-number">${formatTokens(r.input_tokens || 0)}</td>
-             <td class="cell-number">${formatTokens(r.output_tokens || 0)}</td>
-             <td class="cell-number">${formatTokens(r.cache_read_tokens || 0)}</td>
-             <td class="cell-number">${formatTokens(r.cache_write_tokens || 0)}</td>
-             <td class="cell-total">${formatTokens((r.input_tokens || 0) + (r.output_tokens || 0) + (r.cache_read_tokens || 0) + (r.cache_write_tokens || 0))}</td>
+        const tokenCells = `${tk(r.input_tokens)}
+             ${tk(r.output_tokens)}
+             ${tk(r.cache_read_tokens)}
+             ${tk(r.cache_write_tokens)}
+             ${tk((r.input_tokens||0)+(r.output_tokens||0)+(r.cache_read_tokens||0)+(r.cache_write_tokens||0), "cell-total")}
              <td class="cell-number">${r.duration_ms ? (r.duration_ms / 1000).toFixed(2) + 's' : '-'}</td>
              <td class="cell-cost"><span class="cost-badge">¥${costStr}</span></td>`;
 
         return `<tr class="detail-row">
           <td class="cell-detail-id">${escHtml(r.request_id || r.id || '-')}</td>
           <td class="cell-number">${escHtml(timeStr)}</td>
-          <td>${typeBadge}</td>
+          <td>${badgeHtml}</td>
           ${tokenCells}
         </tr>`;
       }).join('');
@@ -812,17 +807,15 @@ function renderRequestTable(requests) {
 
   tbody.innerHTML = requests.map(r => {
     const typeAttr = r.upstream_id === 'opencode' ? 'opencode' : 'proxy';
-    const typeBadge = r.upstream_id === 'opencode'
-      ? '<span class="type-badge-term opencode">[opencode]</span>'
-      : '<span class="type-badge-term proxy">>_proxy</span>';
+    const badgeHtml = typeBadge(r.upstream_id);
     const timeStr = r.created_at || r.request_ts || r.timestamp || '-';
     const costStr = ((r.input_cost_cny || 0) + (r.output_cost_cny || 0) + (r.cache_read_cost_cny || 0) + (r.cache_write_cost_cny || 0)).toFixed(6);
 
-    const tokenCells = `<td class="cell-number">${formatTokens(r.input_tokens || 0)}</td>
-         <td class="cell-number">${formatTokens(r.output_tokens || 0)}</td>
-         <td class="cell-number">${formatTokens(r.cache_read_tokens || 0)}</td>
-         <td class="cell-number">${formatTokens(r.cache_write_tokens || 0)}</td>
-         <td class="cell-total">${formatTokens((r.input_tokens || 0) + (r.output_tokens || 0) + (r.cache_read_tokens || 0) + (r.cache_write_tokens || 0))}</td>
+    const tokenCells = `${tk(r.input_tokens)}
+         ${tk(r.output_tokens)}
+         ${tk(r.cache_read_tokens)}
+         ${tk(r.cache_write_tokens)}
+         ${tk((r.input_tokens||0)+(r.output_tokens||0)+(r.cache_read_tokens||0)+(r.cache_write_tokens||0), "cell-total")}
          <td class="cell-number">${r.duration_ms ? (r.duration_ms / 1000).toFixed(2) + 's' : '-'}</td>
          <td class="cell-cost"><span class="cost-badge">¥${costStr}</span></td>`;
 
@@ -830,7 +823,7 @@ function renderRequestTable(requests) {
       <td class="model-name-text">${escHtml(r.model || '-')}</td>
       <td class="cell-detail-id">${escHtml(r.request_id || r.id || '-')}</td>
       <td class="cell-number">${escHtml(timeStr)}</td>
-      <td>${typeBadge}</td>
+      <td>${badgeHtml}</td>
       ${tokenCells}
     </tr>`;
   }).join('');
@@ -960,10 +953,6 @@ async function loadUpstreamStats() {
   }
 }
 
-function formatTokenM(n) {
-  return (n / 1_000_000).toFixed(2) + 'M';
-}
-
 function renderUpstreamTable(data) {
   const subtabEl = document.getElementById('subtab-upstream');
   if (!subtabEl) return;
@@ -1010,11 +999,11 @@ function renderUpstreamTable(data) {
     return `<tr${rowClass}>
       <td>${escHtml(displayName)}</td>
       <td class="cell-number">${(u.request_count || 0).toLocaleString()}</td>
-      <td class="cell-number">${formatTokens(u.input_tokens || 0)}</td>
-      <td class="cell-number">${formatTokens(u.output_tokens || 0)}</td>
-      <td class="cell-number">${formatTokens(u.cache_read_tokens || 0)}</td>
-      <td class="cell-number">${formatTokens(u.cache_write_tokens || 0)}</td>
-      <td class="cell-number">${formatTokenM(u.total_tokens || 0)}</td>
+      ${tk(u.input_tokens)}
+      ${tk(u.output_tokens)}
+      ${tk(u.cache_read_tokens)}
+      ${tk(u.cache_write_tokens)}
+      <td class="cell-number">${((u.total_tokens || 0)/1e6).toFixed(2) + "M"}</td>
       <td class="cell-cost">¥${costStr}</td>
     </tr>`;
   }).join('');
@@ -1083,4 +1072,4 @@ export function initTokenPage() {
 }
 
 // ===== Exports =====
-export { loadTokenStats, renderKPI, renderTrendChart, renderModelTable };
+export { loadTokenStats };

@@ -401,14 +401,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 conn.close()
                 conn = None
 
+                error_body_str = resp_body.decode("utf-8", errors="replace")
                 if resp.status >= 500 and attempt < retries - 1:
-                    logging.warning(f"透传上游 {resp.status}，重试 {attempt + 1}/{retries}")
+                    logging.warning(f"透传上游 {resp.status}，重试 {attempt + 1}/{retries}: {error_body_str[:500]}")
                     continue
+
+                # 上游返回非 200 → 打印错误到 proxy.log
+                if resp.status != 200:
+                    logging.error(f"上游返回错误: model={model_name}, status={resp.status}, body={error_body_str[:2000]}")
 
                 # 阶段 3：记录上游响应
                 logger = get_logger()
                 if logger:
-                    log_data = resp_body.decode("utf-8", errors="replace")[:5000]
+                    log_data = error_body_str[:5000]
                     logger.log_upstream_response(
                         request_id, resp.status, log_data, duration_ms,
                         model_name, target,
@@ -452,9 +457,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 return
 
             except (socket.timeout, http.client.HTTPException, OSError) as e:
-                logging.warning(f"透传上游请求失败 (attempt {attempt + 1}): {e}")
                 if attempt < retries - 1:
+                    logging.warning(f"透传上游请求失败，重试 {attempt + 1}/{retries}: {e}")
                     continue
+                logging.error(f"透传上游请求失败（重试耗尽）: model={model_name}, target={target}, err={e}")
                 self._send_json(502, {"error": {"type": "server_error", "message": str(e)}})
                 return
             finally:
@@ -510,6 +516,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 if upstream_status != 200:
                     # 上游返回错误 → 直接转发错误响应（非流式）
                     error_body = resp.read()
+                    error_body_str = error_body.decode("utf-8", errors="replace")
+                    logging.error(f"流式透传上游返回错误: model={model_name}, "
+                                  f"status={upstream_status}, body={error_body_str[:2000]}")
                     self.send_response(upstream_status)
                     self.send_header("Content-Type", resp.getheader("Content-Type", "application/json"))
                     self.send_header("Content-Length", str(len(error_body)))
@@ -519,7 +528,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     if logger:
                         logger.log_upstream_response(
                             request_id, upstream_status,
-                            error_body.decode("utf-8", errors="replace")[:5000],
+                            error_body_str[:5000],
                             0, model_name, target,
                             request_type=request_type,
                         )
@@ -623,9 +632,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 return
 
             except (socket.timeout, http.client.HTTPException, OSError) as e:
-                logging.warning(f"透传流式上游请求失败 (attempt {attempt + 1}): {e}")
                 if attempt < retries - 1:
+                    logging.warning(f"透传流式上游请求失败，重试 {attempt + 1}/{retries}: {e}")
                     continue
+                logging.error(f"透传流式上游请求失败（重试耗尽）: model={model_name}, target={target}, err={e}")
                 logger = get_logger()
                 if logger:
                     logger.log_upstream_response(
@@ -820,21 +830,25 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 conn = None
 
                 if resp.status >= 500 and attempt < retries - 1:
+                    resp_body_str = resp_body.decode("utf-8", errors="replace")
                     if logger:
                         logger.log_upstream_response(
                             request_id, resp.status,
-                            resp_body.decode("utf-8", errors="replace"),
+                            resp_body_str,
                             duration_ms, model, target,
                             request_type=client_format,
                         )
-                    logging.warning(f"上游 {resp.status}，重试 {attempt + 1}/{retries}")
+                    logging.warning(f"上游 {resp.status}，重试 {attempt + 1}/{retries}: {resp_body_str[:500]}")
                     continue
 
                 if resp.status != 200:
+                    resp_body_str = resp_body.decode("utf-8", errors="replace")
+                    logging.error(f"转换上游返回错误: model={model}, status={resp.status}, "
+                                  f"body={resp_body_str[:2000]}")
                     if logger:
                         logger.log_upstream_response(
                             request_id, resp.status,
-                            resp_body.decode("utf-8", errors="replace"),
+                            resp_body_str,
                             duration_ms, model, target,
                             request_type=client_format,
                         )
@@ -905,9 +919,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 return
 
             except (socket.timeout, http.client.HTTPException, OSError) as e:
-                logging.warning(f"上游请求失败 (attempt {attempt + 1}): {e}")
                 if attempt < retries - 1:
+                    logging.warning(f"转换上游请求失败，重试 {attempt + 1}/{retries}: {e}")
                     continue
+                logging.error(f"转换上游请求失败（重试耗尽）: model={model}, target={target}, err={e}")
                 self._send_json(502, {"error": {"type": "server_error", "message": str(e)}})
                 return
             finally:
@@ -952,12 +967,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 resp = conn.getresponse()
                 upstream_status = resp.status
             except Exception as e:
-                logging.exception(f"上游连接失败: model={model_name}, target={target}")
+                logging.error(f"上游连接失败: model={model_name}, target={target}, err={e}")
                 self._handle_upstream_error(e)
                 return
 
             if resp.status != 200:
                 error_body = resp.read().decode("utf-8", errors="replace")
+                logging.error(f"流式转换上游返回错误: model={model_name}, "
+                              f"status={resp.status}, body={error_body[:2000]}")
                 error_event = _format_sse_event("response.failed", {
                     "response": {
                         "id": generate_response_id(),
