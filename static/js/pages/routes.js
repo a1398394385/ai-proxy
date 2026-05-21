@@ -2,7 +2,7 @@ import { api, escHtml, showModal, closeModal, bus, on, FORMAT_LABELS, FORMAT_COL
 
 // ===== 路由管理 =====
 
-let currentRequestType = 'chat_completions';
+let currentRequestType = localStorage.getItem('defaultRouteType') || 'messages';
 
 const RT_CONFIG = {
   responses: { icon: '🔌', label: 'Responses' },
@@ -318,7 +318,7 @@ async function confirmDeleteAgentRoute(id, source) {
 // ===== Page Loader =====
 async function loadRoutePage() {
   const typeCards = Object.entries(RT_CONFIG).map(([key, cfg]) =>
-    `<button class="route-type-card${key === 'chat_completions' ? ' active' : ''}" data-action="switchRequestType" data-pt="${key}">
+    `<button class="route-type-card${key === currentRequestType ? ' active' : ''}" data-action="switchRequestType" data-pt="${key}">
       <span class="rtc-icon">${cfg.icon}</span>
       <span class="rtc-label">${cfg.label}</span>
     </button>`
@@ -374,9 +374,9 @@ async function loadRoutePage() {
         </div>
       </aside>
     </div>`;
-  loadRouteTable('chat_completions');
-  loadAgentRouteTable('chat_completions');
-  loadTemplateSidebar('chat_completions');
+  loadRouteTable(currentRequestType);
+  loadAgentRouteTable(currentRequestType);
+  loadTemplateSidebar(currentRequestType);
 
   // hover 预览事件（在 innerHTML 渲染后绑定，确保元素存在）
   const sidebar = document.getElementById('template-sidebar');
@@ -384,7 +384,7 @@ async function loadRoutePage() {
     sidebar.addEventListener('mouseover', (e) => {
       const item = e.target.closest('.template-item');
       const from = e.relatedTarget ? e.relatedTarget.closest('.template-item') : null;
-      if (item && from !== item && !item.classList.contains('previewing')) {
+      if (item && from !== item && !item.classList.contains('previewing') && !item.classList.contains('active')) {
         if (previewTimer) clearTimeout(previewTimer);
         previewTimer = setTimeout(() => templateHover(item), 300);
       }
@@ -404,7 +404,7 @@ async function loadRoutePage() {
 
 // ─── 模板边栏 ─────────────────────────────────────────
 let cachedTemplates = {};
-let activeTemplateId = null;  // 活动模板 ID（纯前端状态，刷新后丢失）
+let activeTemplateId = parseInt(localStorage.getItem('activeTemplateId') || '0') || null;
 let previewTimer = null;
 
 async function loadTemplateSidebar(requestType) {
@@ -453,9 +453,7 @@ async function templateHover(el) {
     if (routeTbody) {
       if (!routeTbody.dataset.original) {
         routeTbody.dataset.original = routeTbody.innerHTML;
-        routeTbody.dataset.originalHeight = routeTbody.parentElement.offsetHeight;
       }
-      routeTbody.parentElement.style.minHeight = routeTbody.dataset.originalHeight + 'px';
       const sortedRoutes = (preview.model_routes || []).slice().sort((a, b) => {
         if (a.source === '*') return -1;
         if (b.source === '*') return 1;
@@ -481,9 +479,7 @@ async function templateHover(el) {
     if (agentTbody) {
       if (!agentTbody.dataset.original) {
         agentTbody.dataset.original = agentTbody.innerHTML;
-        agentTbody.dataset.originalHeight = agentTbody.parentElement.offsetHeight;
       }
-      agentTbody.parentElement.style.minHeight = agentTbody.dataset.originalHeight + 'px';
       const sortedAgentRoutes = (preview.agent_routes || []).slice().sort((a, b) => (a.source || '').localeCompare(b.source || ''));
       agentTbody.innerHTML = sortedAgentRoutes.map(r => {
         const valid = r.valid !== false;
@@ -515,26 +511,26 @@ async function templateLeave(el) {
   const agentTbody = document.querySelector('#agent-route-table tbody');
   if (routeTbody && routeTbody.dataset.original) {
     routeTbody.innerHTML = routeTbody.dataset.original;
-    routeTbody.parentElement.style.minHeight = '';
     delete routeTbody.dataset.original;
-    delete routeTbody.dataset.originalHeight;
   }
   if (agentTbody && agentTbody.dataset.original) {
     agentTbody.innerHTML = agentTbody.dataset.original;
-    agentTbody.parentElement.style.minHeight = '';
     delete agentTbody.dataset.original;
-    delete agentTbody.dataset.originalHeight;
   }
 }
 
 async function applyTemplate(el) {
   const tid = parseInt(el.dataset.id);
   if (!tid) return;
-  if (!confirm('确认应用该模板？当前路由将被原子替换。')) return;
   try {
     const result = await api('/api/templates/' + tid + '/apply', { method: 'POST' });
     if (result.error) { alert(result.error); return; }
     activeTemplateId = tid;
+    localStorage.setItem('activeTemplateId', tid);
+    // 清除预览备份，避免 templateLeave 恢复旧数据覆盖新数据
+    document.querySelectorAll('#route-table tbody, #agent-route-table tbody').forEach(tb => {
+      delete tb.dataset.original;
+    });
     if (result.invalid_count > 0) {
       alert('应用完成。' + result.applied + ' 条路由已加载，其中 ' + result.invalid_count + ' 条路由因模型已删除，target_model_id 设为 NULL。');
     }
@@ -585,7 +581,10 @@ async function deleteTemplate(el) {
   try {
     const result = await api('/api/templates/' + tid, { method: 'DELETE' });
     if (result.error) { alert(result.error); return; }
-    if (parseInt(tid) === activeTemplateId) activeTemplateId = null;
+    if (parseInt(tid) === activeTemplateId) {
+      activeTemplateId = null;
+      localStorage.removeItem('activeTemplateId');
+    }
     loadTemplateSidebar(currentRequestType);
   } catch (e) {
     alert('删除失败: ' + (e.message || e));
@@ -613,7 +612,7 @@ function initRoutePage() {
     try {
       const result = await api('/api/templates/' + activeTemplateId, {
         method: 'PUT',
-        body: JSON.stringify({ items: {} })
+        body: JSON.stringify({ resnapshot: true, request_type: currentRequestType })
       });
       if (result.error) { alert(result.error); return; }
       closeModal();
@@ -636,6 +635,7 @@ function initRoutePage() {
       });
       if (result.error) { alert(result.error); return; }
       activeTemplateId = result.id;
+      localStorage.setItem('activeTemplateId', result.id);
       closeModal();
       loadTemplateSidebar(currentRequestType);
     } catch (e) {

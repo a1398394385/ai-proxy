@@ -442,6 +442,10 @@ body {
   gap: 12px;
 }
 
+.modal-footer:empty {
+  display: none;
+}
+
 .form-group {
   margin-bottom: 16px;
 }

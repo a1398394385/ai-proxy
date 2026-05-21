@@ -8,6 +8,7 @@ import time
 import logging
 from datetime import datetime
 from pathlib import Path
+import json
 from typing import Optional
 
 from .schema import ensure_table
@@ -36,13 +37,13 @@ class ConfigDB:
         """创建数据库和表（幂等）。"""
         conn = self._connect()
         try:
-            for t in ('schema_version', 'upstreams', 'target_models', 'model_routes', 'agent_routes'):
+            for t in ('schema_version', 'upstreams', 'target_models', 'route_templates', 'model_routes', 'agent_routes'):
                 ensure_table(conn, t)
 
             # 新数据库写入 schema_version = 5（幂等）
             row = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()
             if row[0] == 0:
-                conn.execute("INSERT INTO schema_version (version) VALUES (5)")
+                conn.execute("INSERT INTO schema_version (version) VALUES (8)")
             conn.commit()
         finally:
             conn.close()
@@ -265,21 +266,28 @@ class ConfigDB:
             conn.close()
 
     def delete_model(self, model_id: int, check_refs: bool = True):
-        """删除模型。check_refs=True 时先检查路由引用，有引用则返回引用列表（不抛异常）。"""
+        """删除模型。FK ON DELETE SET NULL 自动将关联路由的 target_model_id 设为 NULL。
+        check_refs 参数保留以兼容调用方，不再阻塞删除。"""
         conn = self._connect()
         try:
-            if check_refs:
-                refs = [r["source"] for r in conn.execute(
-                    "SELECT source FROM model_routes WHERE target_model_id = ?",
-                    (model_id,),
-                ).fetchall()]
-                if refs:
-                    return {"error": "模型被路由引用，无法删除", "referenced_routes": refs}
+            # 记录受影响的路由数（用于前端提示）
+            affected = conn.execute(
+                "SELECT COUNT(*) FROM model_routes WHERE target_model_id = ?",
+                (model_id,),
+            ).fetchone()[0] + conn.execute(
+                "SELECT COUNT(*) FROM agent_routes WHERE target_model_id = ?",
+                (model_id,),
+            ).fetchone()[0]
             conn.execute("DELETE FROM target_models WHERE id = ?", (model_id,))
             conn.commit()
-            return {"message": "Deleted"}
+            msg = "Deleted"
+            if affected > 0:
+                msg += f", {affected} 条路由已标记为失效"
+            return {"message": msg, "affected_routes": affected}
         finally:
             conn.close()
+
+
 
     def model_referenced_routes(self, model_id: int) -> list:
         conn = self._connect()
@@ -308,15 +316,24 @@ class ConfigDB:
                           u.is_active as upstream_active,
                           u.format as upstream_format
                    FROM model_routes mr
-                   JOIN target_models tm ON mr.target_model_id = tm.id
-                   JOIN upstreams u ON tm.upstream_id = u.id
+                   LEFT JOIN target_models tm ON mr.target_model_id = tm.id
+                   LEFT JOIN upstreams u ON tm.upstream_id = u.id
                    {where}
                    ORDER BY
                      CASE mr.source WHEN '*' THEN 0 ELSE 1 END,
                      mr.source""",
                 params,
             ).fetchall()
-            return [dict(r) for r in rows]
+            result = []
+            for r in rows:
+                d = dict(r)
+                if d.get("target_model_id") is None:
+                    d["target_name"] = None
+                    d["upstream_active"] = 0
+                    d["upstream_name"] = "(已删除)"
+                    d["upstream_format"] = None
+                result.append(d)
+            return result
         finally:
             conn.close()
 
@@ -326,32 +343,41 @@ class ConfigDB:
             row = conn.execute(
                 """SELECT mr.*, tm.name as target_name, tm.upstream_id
                    FROM model_routes mr
-                   JOIN target_models tm ON mr.target_model_id = tm.id
+                   LEFT JOIN target_models tm ON mr.target_model_id = tm.id
                    WHERE mr.id = ?""",
                 (route_id,),
             ).fetchone()
-            return dict(row) if row else None
+            d = dict(row) if row else None
+            if d and d.get("target_model_id") is None:
+                d["target_name"] = None
+            return d
         finally:
             conn.close()
 
-    def add_route(self, data: dict) -> int:
+    def add_route(self, data: dict, allow_null_target: bool = False) -> int:
         request_type = data.get("request_type", "responses")
         if request_type not in ("responses", "messages", "chat_completions"):
             raise ValueError("request_type must be one of: responses, messages, chat_completions")
+        target_model_id = data.get("target_model_id")
+        if target_model_id is not None:
+            target_model_id = int(target_model_id)
         conn = self._connect()
         try:
-            # 校验目标模型所属上游是否活跃
-            active = conn.execute(
-                """SELECT 1 FROM target_models tm
-                   JOIN upstreams u ON tm.upstream_id = u.id
-                   WHERE tm.id = ? AND u.is_active = 1""",
-                (data["target_model_id"],),
-            ).fetchone()
-            if not active:
-                raise ValueError("目标模型不存在或所属上游已禁用")
+            if target_model_id is not None:
+                # 校验目标模型所属上游是否活跃
+                active = conn.execute(
+                    """SELECT 1 FROM target_models tm
+                       JOIN upstreams u ON tm.upstream_id = u.id
+                       WHERE tm.id = ? AND u.is_active = 1""",
+                    (target_model_id,),
+                ).fetchone()
+                if not active:
+                    raise ValueError("目标模型不存在或所属上游已禁用")
+            elif not allow_null_target:
+                raise ValueError("target_model_id 不能为空")
             cursor = conn.execute(
                 "INSERT INTO model_routes (source, target_model_id, request_type) VALUES (?, ?, ?)",
-                (data["source"], data["target_model_id"], request_type),
+                (data["source"], target_model_id, request_type),
             )
             conn.commit()
             return cursor.lastrowid
@@ -383,30 +409,17 @@ class ConfigDB:
             # 校验目标模型是否存在且所属上游活跃
             target_model_id: Optional[int] = data.get("target_model_id")
             if target_model_id is not None:
-                # 使用新提供的 target_model_id
                 active = conn.execute(
-                    """SELECT 1 FROM target_models tm
-                       JOIN upstreams u ON tm.upstream_id = u.id
-                       WHERE tm.id = ? AND u.is_active = 1""",
+                    "SELECT 1 FROM target_models tm"
+                    " JOIN upstreams u ON tm.upstream_id = u.id"
+                    " WHERE tm.id = ? AND u.is_active = 1",
                     (target_model_id,),
                 ).fetchone()
                 if not active:
                     raise ValueError("目标模型不存在或所属上游已禁用")
-            else:
-                # 未提供 target_model_id，验证现有路由的目标模型仍然有效
-                existing = conn.execute(
-                    "SELECT target_model_id FROM model_routes WHERE id = ?",
-                    (route_id,),
-                ).fetchone()
-                if existing:
-                    active = conn.execute(
-                        """SELECT 1 FROM target_models tm
-                           JOIN upstreams u ON tm.upstream_id = u.id
-                           WHERE tm.id = ? AND u.is_active = 1""",
-                        (existing["target_model_id"],),
-                    ).fetchone()
-                    if not active:
-                        raise ValueError("当前路由的目标模型所属上游已禁用")
+            elif "target_model_id" in data:
+                # 显式设为 NULL（重关联失效路由时允许设为 NULL）
+                pass
 
             fields.append("updated_at = datetime('now')")
             values.append(route_id)
@@ -417,6 +430,8 @@ class ConfigDB:
             conn.commit()
         finally:
             conn.close()
+
+
 
     def delete_route(self, route_id: int):
         conn = self._connect()
@@ -452,12 +467,21 @@ class ConfigDB:
                 " u.is_active as upstream_active,"
                 " u.format as upstream_format"
                 " FROM agent_routes ar"
-                " JOIN target_models tm ON ar.target_model_id = tm.id"
-                " JOIN upstreams u ON tm.upstream_id = u.id"
+                " LEFT JOIN target_models tm ON ar.target_model_id = tm.id"
+                " LEFT JOIN upstreams u ON tm.upstream_id = u.id"
                 " " + where + " ORDER BY ar.source",
                 params,
             ).fetchall()
-            return [dict(r) for r in rows]
+            result = []
+            for r in rows:
+                d = dict(r)
+                if d.get("target_model_id") is None:
+                    d["target_name"] = None
+                    d["upstream_active"] = 0
+                    d["upstream_name"] = "(已删除)"
+                    d["upstream_format"] = None
+                result.append(d)
+            return result
         finally:
             conn.close()
 
@@ -467,34 +491,43 @@ class ConfigDB:
             row = conn.execute(
                 "SELECT ar.*, tm.name as target_name, tm.upstream_id"
                 " FROM agent_routes ar"
-                " JOIN target_models tm ON ar.target_model_id = tm.id"
+                " LEFT JOIN target_models tm ON ar.target_model_id = tm.id"
                 " WHERE ar.id = ?",
                 (route_id,),
             ).fetchone()
-            return dict(row) if row else None
+            d = dict(row) if row else None
+            if d and d.get("target_model_id") is None:
+                d["target_name"] = None
+            return d
         finally:
             conn.close()
 
-    def add_agent_route(self, data: dict) -> int:
+    def add_agent_route(self, data: dict, allow_null_target: bool = False) -> int:
         source = data.get("source", "")
         if source == "*":
             raise ValueError("agent_routes 不允许 source='*'")
         request_type = data.get("request_type", "chat_completions")
         if request_type not in ("responses", "messages", "chat_completions"):
             raise ValueError("request_type must be one of: responses, messages, chat_completions")
+        target_model_id = data.get("target_model_id")
+        if target_model_id is not None:
+            target_model_id = int(target_model_id)
         conn = self._connect()
         try:
-            active = conn.execute(
-                "SELECT 1 FROM target_models tm"
-                " JOIN upstreams u ON tm.upstream_id = u.id"
-                " WHERE tm.id = ? AND u.is_active = 1",
-                (data["target_model_id"],),
-            ).fetchone()
-            if not active:
-                raise ValueError("目标模型不存在或所属上游已禁用")
+            if target_model_id is not None:
+                active = conn.execute(
+                    "SELECT 1 FROM target_models tm"
+                    " JOIN upstreams u ON tm.upstream_id = u.id"
+                    " WHERE tm.id = ? AND u.is_active = 1",
+                    (target_model_id,),
+                ).fetchone()
+                if not active:
+                    raise ValueError("目标模型不存在或所属上游已禁用")
+            elif not allow_null_target:
+                raise ValueError("target_model_id 不能为空")
             cursor = conn.execute(
                 "INSERT INTO agent_routes (source, target_model_id, request_type) VALUES (?, ?, ?)",
-                (source, data["target_model_id"], request_type),
+                (source, target_model_id, request_type),
             )
             conn.commit()
             return cursor.lastrowid
@@ -526,6 +559,9 @@ class ConfigDB:
                 ).fetchone()
                 if not active:
                     raise ValueError("目标模型不存在或所属上游已禁用")
+            elif "target_model_id" in data:
+                # 显式设为 NULL
+                pass
             fields.append("updated_at = datetime('now')")
             values.append(route_id)
             conn.execute(
@@ -535,6 +571,8 @@ class ConfigDB:
             conn.commit()
         finally:
             conn.close()
+
+
 
     def delete_agent_route(self, route_id: int):
         conn = self._connect()
@@ -701,6 +739,302 @@ class ConfigDB:
             conn.close()
 
 
+
+    # ─── 路由模板 CRUD ──────────────────────────────────────────
+
+    def list_templates(self, request_type: Optional[str] = None) -> list:
+        """返回模板列表（不含 items 字段，用于边栏展示）。"""
+        conn = self._connect()
+        try:
+            if request_type is not None:
+                rows = conn.execute(
+                    "SELECT id, name, request_type, created_at, updated_at, last_applied_at"
+                    " FROM route_templates WHERE request_type = ? ORDER BY updated_at DESC",
+                    (request_type,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, name, request_type, created_at, updated_at, last_applied_at"
+                    " FROM route_templates ORDER BY request_type, updated_at DESC"
+                ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def get_template(self, template_id: int) -> Optional[dict]:
+        """获取单个模板（含 items JSON）。"""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM route_templates WHERE id = ?",
+                (template_id,),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def _resolve_template_items(self, items: dict, conn) -> tuple:
+        """辅助方法：展开模板 items 中的 model_routes 和 agent_routes，LEFT JOIN 获取状态。"""
+        model_routes = []
+        for item in items.get("model_routes", []):
+            row = conn.execute(
+                "SELECT tm.id, tm.name as target_name, u.name as upstream_name,"
+                " u.is_active as upstream_active, u.format as upstream_format"
+                " FROM target_models tm"
+                " JOIN upstreams u ON tm.upstream_id = u.id"
+                " WHERE tm.id = ?",
+                (item["target_model_id"],),
+            ).fetchone()
+            if row:
+                d = dict(row)
+                d["valid"] = True
+                d["source"] = item["source"]
+            else:
+                d = {
+                    "source": item["source"],
+                    "target_model_id": item["target_model_id"],
+                    "target_name": None,
+                    "upstream_name": "(已删除)",
+                    "upstream_active": 0,
+                    "upstream_format": None,
+                    "valid": False,
+                }
+            model_routes.append(d)
+        agent_routes = []
+        for item in items.get("agent_routes", []):
+            row = conn.execute(
+                "SELECT tm.id, tm.name as target_name, u.name as upstream_name,"
+                " u.is_active as upstream_active, u.format as upstream_format"
+                " FROM target_models tm"
+                " JOIN upstreams u ON tm.upstream_id = u.id"
+                " WHERE tm.id = ?",
+                (item["target_model_id"],),
+            ).fetchone()
+            if row:
+                d = dict(row)
+                d["valid"] = True
+                d["source"] = item["source"]
+            else:
+                d = {
+                    "source": item["source"],
+                    "target_model_id": item["target_model_id"],
+                    "target_name": None,
+                    "upstream_name": "(已删除)",
+                    "upstream_active": 0,
+                    "upstream_format": None,
+                    "valid": False,
+                }
+            agent_routes.append(d)
+        return model_routes, agent_routes
+
+    def get_template_preview(self, template_id: int) -> Optional[dict]:
+        """解析模板 items JSON，LEFT JOIN target_models/upstreams 返回展开预览。"""
+        tmpl = self.get_template(template_id)
+        if not tmpl:
+            return None
+        try:
+            items = json.loads(tmpl["items"])
+        except (json.JSONDecodeError, TypeError):
+            items = {"model_routes": [], "agent_routes": []}
+        conn = self._connect()
+        try:
+            model_routes, agent_routes = self._resolve_template_items(items, conn)
+        finally:
+            conn.close()
+        return {
+            "id": tmpl["id"],
+            "name": tmpl["name"],
+            "request_type": tmpl["request_type"],
+            "model_routes": model_routes,
+            "agent_routes": agent_routes,
+            "created_at": tmpl["created_at"],
+            "updated_at": tmpl["updated_at"],
+            "last_applied_at": tmpl["last_applied_at"],
+        }
+
+
+    def save_template(self, data: dict) -> int:
+        """从当前路由快照创建模板。"""
+        request_type = data.get("request_type", "chat_completions")
+        name = data.get("name", "").strip()
+        if not name or len(name) > 100:
+            raise ValueError("模板名称不能为空且不超过 100 字符")
+        if "/" in name:
+            raise ValueError("模板名称不能包含 /")
+
+        conn = self._connect()
+        try:
+            # 获取当前路由快照
+            model_routes = conn.execute(
+                "SELECT source, target_model_id FROM model_routes WHERE request_type = ?",
+                (request_type,),
+            ).fetchall()
+            agent_routes = conn.execute(
+                "SELECT source, target_model_id FROM agent_routes WHERE request_type = ?",
+                (request_type,),
+            ).fetchall()
+            items = json.dumps({
+                "model_routes": [{"source": r["source"], "target_model_id": r["target_model_id"]} for r in model_routes],
+                "agent_routes": [{"source": r["source"], "target_model_id": r["target_model_id"]} for r in agent_routes],
+            })
+            cursor = conn.execute(
+                "INSERT INTO route_templates (name, request_type, items) VALUES (?, ?, ?)",
+                (name, request_type, items),
+            )
+            conn.commit()
+            return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            raise ValueError(f"模板名称 '{name}' 在该请求类型下已存在")
+        finally:
+            conn.close()
+
+    def update_template(self, template_id: int, data: dict):
+        """更新模板名称或 items。支持 resnapshot=True 从当前路由快照重建 items。"""
+        fields = []
+        values = []
+        if "name" in data:
+            name = data["name"].strip()
+            if not name or len(name) > 100:
+                raise ValueError("模板名称不能为空且不超过 100 字符")
+            if "/" in name:
+                raise ValueError("模板名称不能包含 /")
+            fields.append("name = ?")
+            values.append(name)
+        if data.get("resnapshot"):
+            # 从当前路由快照重建 items
+            request_type = data.get("request_type")
+            if not request_type:
+                # 从现有模板读取 request_type
+                tmpl = self.get_template(template_id)
+                if tmpl:
+                    request_type = tmpl["request_type"]
+            conn = self._connect()
+            try:
+                mr = conn.execute(
+                    "SELECT source, target_model_id FROM model_routes WHERE request_type = ?",
+                    (request_type,),
+                ).fetchall()
+                ar = conn.execute(
+                    "SELECT source, target_model_id FROM agent_routes WHERE request_type = ?",
+                    (request_type,),
+                ).fetchall()
+                items_str = json.dumps({
+                    "model_routes": [{"source": r["source"], "target_model_id": r["target_model_id"]} for r in mr],
+                    "agent_routes": [{"source": r["source"], "target_model_id": r["target_model_id"]} for r in ar],
+                })
+                fields.append("items = ?")
+                values.append(items_str)
+            finally:
+                conn.close()
+        if "items" in data and not data.get("resnapshot"):
+            item_data = data["items"]
+            if isinstance(item_data, dict):
+                items_str = json.dumps(item_data)
+            else:
+                items_str = item_data
+            try:
+                json.loads(items_str)
+            except (json.JSONDecodeError, TypeError):
+                raise ValueError("items 必须为有效 JSON")
+            fields.append("items = ?")
+            values.append(items_str)
+        if not fields:
+            return
+        fields.append("updated_at = datetime('now')")
+        values.append(template_id)
+        conn = self._connect()
+        try:
+            try:
+                conn.execute(
+                    f"UPDATE route_templates SET {', '.join(fields)} WHERE id = ?",
+                    values,
+                )
+            except sqlite3.IntegrityError:
+                raise ValueError("模板名称已存在")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def delete_template(self, template_id: int):
+        """删除模板（不影响当前路由）。"""
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM route_templates WHERE id = ?", (template_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def apply_template(self, template_id: int) -> dict:
+        """原子替换当前该 request_type 的全部路由。返回 {applied, skipped_invalid}。"""
+        tmpl = self.get_template(template_id)
+        if not tmpl:
+            raise ValueError("模板不存在")
+        request_type = tmpl["request_type"]
+        try:
+            items = json.loads(tmpl["items"])
+        except (json.JSONDecodeError, TypeError):
+            raise ValueError("模板数据损坏，无法解析")
+        model_routes_items = items.get("model_routes", [])
+        agent_routes_items = items.get("agent_routes", [])
+
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN TRANSACTION")
+            try:
+                # 删除当前 request_type 的全部路由
+                conn.execute("DELETE FROM model_routes WHERE request_type = ?", (request_type,))
+                conn.execute("DELETE FROM agent_routes WHERE request_type = ?", (request_type,))
+
+                skipped = 0
+                # 插入主路由
+                for item in model_routes_items:
+                    target_id = item.get("target_model_id")
+                    if target_id is not None:
+                        exists = conn.execute(
+                            "SELECT 1 FROM target_models WHERE id = ?",
+                            (target_id,),
+                        ).fetchone()
+                        if not exists:
+                            target_id = None
+                            skipped += 1
+                    conn.execute(
+                        "INSERT INTO model_routes (source, target_model_id, request_type) VALUES (?, ?, ?)",
+                        (item["source"], target_id, request_type),
+                    )
+                # 插入 Agent 路由
+                for item in agent_routes_items:
+                    target_id = item.get("target_model_id")
+                    if target_id is not None:
+                        exists = conn.execute(
+                            "SELECT 1 FROM target_models WHERE id = ?",
+                            (target_id,),
+                        ).fetchone()
+                        if not exists:
+                            target_id = None
+                            skipped += 1
+                    conn.execute(
+                        "INSERT INTO agent_routes (source, target_model_id, request_type) VALUES (?, ?, ?)",
+                        (item["source"], target_id, request_type),
+                    )
+                # 更新 last_applied_at
+                conn.execute(
+                    "UPDATE route_templates SET last_applied_at = datetime('now') WHERE id = ?",
+                    (template_id,),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        finally:
+            conn.close()
+
+        return {
+            "applied": len(model_routes_items) + len(agent_routes_items),
+            "invalid_count": skipped,
+        }
+
+
+
 class Migrations:
     """数据库迁移管理 — 将 model_routes 表从 v0 升级到 v5（upstreams INTEGER PK + name）。
 
@@ -792,6 +1126,34 @@ class Migrations:
                     "version": 5,
                     "details": "已迁移到 v5: model_routes 外键正确",
                 }
+            if version == 6:
+                return {
+                    "migrated": False,
+                    "version": 6,
+                    "details": "需要执行迁移: 新增 agent_routes 表",
+                }
+            if version == 7:
+                return {
+                    "migrated": False,
+                    "version": 7,
+                    "details": "需要执行迁移: FK ON DELETE RESTRICT → SET NULL，新增 route_templates 表",
+                }
+            if version == 8:
+                # 验证 route_templates 表存在
+                has_templates = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='route_templates'"
+                ).fetchone()
+                if not has_templates:
+                    return {
+                        "migrated": False,
+                        "version": 7,
+                        "details": "需要执行迁移: 缺少 route_templates 表",
+                    }
+                return {
+                    "migrated": True,
+                    "version": 8,
+                    "details": "已迁移到 v8: FK SET NULL + route_templates 表",
+                }
             return {
                 "migrated": True,
                 "version": version,
@@ -830,10 +1192,12 @@ class Migrations:
             self._migrate_v5_to_v6(backup_path)
         if version <= 6:
             self._migrate_v6_to_v7(backup_path)
+        if version <= 7:
+            self._migrate_v7_to_v8(backup_path)
 
         return {
             "status": "ok",
-            "version": 7,
+            "version": 8,
             "backup_path": str(backup_path),
         }
 
@@ -1433,6 +1797,136 @@ class Migrations:
                 conn.execute("PRAGMA foreign_keys = ON")
         finally:
             conn.close()
+
+
+    def _migrate_v7_to_v8(self, backup_path: Path):
+        """执行 v7 -> v8 迁移。
+
+        变更：
+          - model_routes.target_model_id FK: ON DELETE RESTRICT -> ON DELETE SET NULL，列改为可空
+          - agent_routes.target_model_id FK: 同上
+          - 新增 route_templates 表
+        """
+        conn = self._connect()
+        try:
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.execute("BEGIN TRANSACTION")
+            try:
+                # ---- 重建 model_routes 表（SET NULL FK, 可空 target_model_id）---
+                old_route_count = conn.execute(
+                    "SELECT COUNT(*) FROM model_routes"
+                ).fetchone()[0]
+                logging.info(
+                    f"[Migrations] v7->v8 STEP 1: 原始 model_routes 记录数 = {old_route_count}"
+                )
+
+                conn.execute("""
+                    CREATE TABLE model_routes_new (
+                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source          TEXT NOT NULL CHECK(length(source) > 0),
+                        target_model_id INTEGER REFERENCES target_models(id) ON DELETE SET NULL,
+                        request_type    TEXT NOT NULL DEFAULT 'responses'
+                                        CHECK(request_type IN ('responses', 'messages', 'chat_completions')),
+                        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                        UNIQUE(source, request_type)
+                    );
+                """)
+                logging.info("[Migrations] v7->v8 STEP 2: model_routes_new 表创建完成")
+
+                conn.execute("""
+                    INSERT INTO model_routes_new
+                        (id, source, target_model_id, request_type, created_at, updated_at)
+                    SELECT id, source, target_model_id, request_type, created_at, updated_at
+                    FROM model_routes;
+                """)
+                logging.info("[Migrations] v7->v8 STEP 3: model_routes 数据复制完成")
+
+                conn.execute("DROP TABLE model_routes;")
+                conn.execute("ALTER TABLE model_routes_new RENAME TO model_routes;")
+                logging.info("[Migrations] v7->v8 STEP 4: model_routes 表替换完成")
+
+                new_route_count = conn.execute(
+                    "SELECT COUNT(*) FROM model_routes"
+                ).fetchone()[0]
+                if new_route_count < old_route_count:
+                    raise sqlite3.OperationalError(
+                        f"model_routes 迁移验证失败: 原有 {old_route_count} 条记录, "
+                        f"现有 {new_route_count} 条记录"
+                    )
+                logging.info(
+                    f"[Migrations] v7->v8 STEP 5: model_routes 验证通过, {new_route_count} 条记录"
+                )
+
+                # ---- 重建 agent_routes 表（SET NULL FK, 可空 target_model_id）---
+                old_agent_count = conn.execute(
+                    "SELECT COUNT(*) FROM agent_routes"
+                ).fetchone()[0]
+                logging.info(
+                    f"[Migrations] v7->v8 STEP 6: 原始 agent_routes 记录数 = {old_agent_count}"
+                )
+
+                conn.execute("""
+                    CREATE TABLE agent_routes_new (
+                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source          TEXT NOT NULL CHECK(length(source) > 0 AND source != '*'),
+                        target_model_id INTEGER REFERENCES target_models(id) ON DELETE SET NULL,
+                        request_type    TEXT NOT NULL DEFAULT 'chat_completions'
+                                        CHECK(request_type IN ('responses', 'messages', 'chat_completions')),
+                        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                        UNIQUE(source, request_type)
+                    );
+                """)
+                logging.info("[Migrations] v7->v8 STEP 7: agent_routes_new 表创建完成")
+
+                conn.execute("""
+                    INSERT INTO agent_routes_new
+                        (id, source, target_model_id, request_type, created_at, updated_at)
+                    SELECT id, source, target_model_id, request_type, created_at, updated_at
+                    FROM agent_routes;
+                """)
+                logging.info("[Migrations] v7->v8 STEP 8: agent_routes 数据复制完成")
+
+                conn.execute("DROP TABLE agent_routes;")
+                conn.execute("ALTER TABLE agent_routes_new RENAME TO agent_routes;")
+                logging.info("[Migrations] v7->v8 STEP 9: agent_routes 表替换完成")
+
+                new_agent_count = conn.execute(
+                    "SELECT COUNT(*) FROM agent_routes"
+                ).fetchone()[0]
+                if new_agent_count < old_agent_count:
+                    raise sqlite3.OperationalError(
+                        f"agent_routes 迁移验证失败: 原有 {old_agent_count} 条记录, "
+                        f"现有 {new_agent_count} 条记录"
+                    )
+                logging.info(
+                    f"[Migrations] v7->v8 STEP 10: agent_routes 验证通过, {new_agent_count} 条记录"
+                )
+
+                # ---- 创建 route_templates 表（幂等）---
+                from .schema import ensure_table
+                ensure_table(conn, 'route_templates')
+                logging.info("[Migrations] v7->v8 STEP 11: route_templates 表创建完成")
+
+                # ---- schema_version ---
+                conn.execute("DELETE FROM schema_version;")
+                conn.execute("INSERT INTO schema_version (version) VALUES (8);")
+                logging.info("[Migrations] v7->v8 STEP 12: schema_version 更新为 8")
+
+                conn.commit()
+                logging.info("[Migrations] v7->v8 迁移成功")
+            except Exception:
+                conn.rollback()
+                import shutil
+                from pathlib import Path
+                shutil.copy2(backup_path, self.db_path)
+                logging.error("[Migrations] v7->v8 迁移失败，已从备份恢复", exc_info=True)
+                raise
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.close()
+
 
 
 class ConfigCache:

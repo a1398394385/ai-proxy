@@ -176,17 +176,20 @@ class TestModelCRUD(unittest.TestCase):
         self.assertIn("message", result)
         self.assertIsNone(self.db.get_model(mid))
 
-    def test_delete_model_referenced_by_route_raises(self):
+    def test_delete_model_sets_route_null(self):
         mid = self.db.add_model({"name": "qwen", "upstream_id": self.id_a})
         self.db.add_route({"source": "gpt-4", "target_model_id": mid})
-        with self.assertRaises(sqlite3.IntegrityError):
-            self.db.delete_model(mid, check_refs=False)
-        conn = sqlite3.connect(str(self.db_path))
-        conn.execute("PRAGMA foreign_keys = ON")
-        with self.assertRaises(sqlite3.IntegrityError):
-            conn.execute("DELETE FROM target_models WHERE id = ?", (mid,))
-            conn.commit()
-        conn.close()
+        # FK SET NULL: 删除模型后路由的 target_model_id 应变为 NULL
+        result = self.db.delete_model(mid, check_refs=False)
+        self.assertIn("affected_routes", result)
+        self.assertEqual(result["affected_routes"], 1)
+        # 验证路由 target_model_id 为 NULL
+        routes = self.db.list_routes(request_type="responses")
+        route = next((r for r in routes if r["source"] == "gpt-4"), None)
+        self.assertIsNotNone(route)
+        self.assertIsNone(route["target_model_id"])
+        self.assertIsNone(route["target_name"])
+        self.assertEqual(route["upstream_name"], "(已删除)")
 
     def test_model_referenced_routes(self):
         mid = self.db.add_model({"name": "qwen", "upstream_id": self.id_a})
@@ -634,7 +637,7 @@ class TestMigrations(unittest.TestCase):
         m = Migrations(self.db_path)
         result = m.migrate()
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["version"], 7)
+        self.assertEqual(result["version"], 8)
 
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
@@ -825,3 +828,283 @@ class TestAgentRouteCRUD(unittest.TestCase):
         result = self.db.get_all_agent_routes(request_type="chat_completions")
         self.assertIn("m1", result)
         self.assertNotIn("m2", result)
+
+
+class TestMigrationV8(unittest.TestCase):
+    """v8 迁移测试：FK SET NULL + route_templates 表。"""
+
+    def _create_v7_db(self, db_path):
+        """创建模拟的 v7 数据库用于迁移测试。"""
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (7);
+            CREATE TABLE upstreams (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL,
+                base_url TEXT NOT NULL, api_key TEXT NOT NULL DEFAULT '',
+                timeout INTEGER NOT NULL DEFAULT 600, connect_timeout INTEGER NOT NULL DEFAULT 10,
+                ssl_verify INTEGER NOT NULL DEFAULT 1, retry INTEGER NOT NULL DEFAULT 1,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                format TEXT NOT NULL DEFAULT 'chat_completions',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')));
+            CREATE TABLE target_models (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+                upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE RESTRICT,
+                multimodal INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(name, upstream_id));
+            CREATE TABLE model_routes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL,
+                target_model_id INTEGER NOT NULL REFERENCES target_models(id) ON DELETE RESTRICT,
+                request_type TEXT NOT NULL DEFAULT 'responses',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')));
+            CREATE TABLE agent_routes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL,
+                target_model_id INTEGER NOT NULL REFERENCES target_models(id) ON DELETE RESTRICT,
+                request_type TEXT NOT NULL DEFAULT 'chat_completions',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')));
+            INSERT INTO upstreams (name, base_url) VALUES ('test-up', 'http://test');
+            INSERT INTO target_models (name, upstream_id) VALUES ('test-model', 1);
+            INSERT INTO model_routes (source, target_model_id) VALUES ('gpt-4', 1);
+            INSERT INTO agent_routes (source, target_model_id) VALUES ('claude', 1);
+        """)
+        conn.commit()
+        conn.close()
+
+    def _verify_v8_schema(self, db_path):
+        """验证 v8 迁移后的 schema 正确。"""
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA foreign_keys = ON")
+        cur = conn.execute("SELECT version FROM schema_version LIMIT 1")
+        self.assertEqual(cur.fetchone()[0], 8)
+        # 验证 model_routes FK 为 SET NULL
+        cur = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='model_routes'")
+        sql = cur.fetchone()[0]
+        self.assertIn("SET NULL", sql)
+        self.assertNotIn("NOT NULL", sql.split("target_model_id")[1].split(",")[0])
+        # 验证 agent_routes FK
+        cur = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_routes'")
+        sql = cur.fetchone()[0]
+        self.assertIn("SET NULL", sql)
+        # 验证 route_templates 表存在
+        cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='route_templates'")
+        self.assertIsNotNone(cur.fetchone())
+        # 验证数据完整性
+        cur = conn.execute("SELECT COUNT(*) FROM model_routes")
+        self.assertEqual(cur.fetchone()[0], 1)
+        conn.close()
+
+    def test_migration_v7_to_v8(self):
+        tmp = tempfile.TemporaryDirectory()
+        db_path = Path(tmp.name) / "access_log.db"
+        self._create_v7_db(db_path)
+        from proxy.config_manager import Migrations
+        mg = Migrations(db_path)
+        s = mg.status()
+        self.assertFalse(s["migrated"])
+        result = mg.migrate()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["version"], 8)
+        self._verify_v8_schema(db_path)
+        # 幂等
+        result2 = mg.migrate()
+        self.assertEqual(result2["status"], "already_migrated")
+        tmp.cleanup()
+
+    def test_migration_v7_to_v8_is_idempotent(self):
+        tmp = tempfile.TemporaryDirectory()
+        db_path = Path(tmp.name) / "access_log.db"
+        self._create_v7_db(db_path)
+        from proxy.config_manager import Migrations
+        mg = Migrations(db_path)
+        result = mg.migrate()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["version"], 8)
+        # 第二次调用应为幂等
+        result2 = mg.migrate()
+        self.assertEqual(result2["status"], "already_migrated")
+        tmp.cleanup()
+
+    def test_migration_v6_to_v8(self):
+        """跨版本迁移 v6→v8。"""
+        tmp = tempfile.TemporaryDirectory()
+        db_path = Path(tmp.name) / "access_log.db"
+        # 创建 v6 数据库（仅有 model_routes，无 agent_routes）
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (6);
+            CREATE TABLE upstreams (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL,
+                base_url TEXT NOT NULL, api_key TEXT NOT NULL DEFAULT '',
+                timeout INTEGER NOT NULL DEFAULT 600, connect_timeout INTEGER NOT NULL DEFAULT 10,
+                ssl_verify INTEGER NOT NULL DEFAULT 1, retry INTEGER NOT NULL DEFAULT 1,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                format TEXT NOT NULL DEFAULT 'chat_completions',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')));
+            CREATE TABLE target_models (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+                upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE RESTRICT,
+                multimodal INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(name, upstream_id));
+            CREATE TABLE model_routes (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL,
+                target_model_id INTEGER NOT NULL REFERENCES target_models(id) ON DELETE RESTRICT,
+                request_type TEXT NOT NULL DEFAULT 'responses',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')));
+            INSERT INTO upstreams (name, base_url) VALUES ('test-up', 'http://test');
+            INSERT INTO target_models (name, upstream_id) VALUES ('test-model', 1);
+            INSERT INTO model_routes (source, target_model_id) VALUES ('gpt-4', 1);
+        """)
+        conn.commit()
+        conn.close()
+        from proxy.config_manager import Migrations
+        mg = Migrations(db_path)
+        result = mg.migrate()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["version"], 8)
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.execute("SELECT version FROM schema_version LIMIT 1")
+        self.assertEqual(cur.fetchone()[0], 8)
+        cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='route_templates'")
+        self.assertIsNotNone(cur.fetchone())
+        conn.close()
+        tmp.cleanup()
+
+
+class TestTemplateCRUD(unittest.TestCase):
+    """路由模板 CRUD 测试。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "config.db"
+        from proxy.config_manager import ConfigDB
+        self.db = ConfigDB(self.db_path)
+        self.up_id = self.db.add_upstream({"name": "up-a", "base_url": "http://a"})
+        self.model_id = self.db.add_model({"name": "gpt-4", "upstream_id": self.up_id})
+        self.model_id2 = self.db.add_model({"name": "claude", "upstream_id": self.up_id})
+        self.db.add_route({"source": "gpt-4o", "target_model_id": self.model_id, "request_type": "chat_completions"})
+        self.db.add_route({"source": "claude-sonnet", "target_model_id": self.model_id2, "request_type": "chat_completions"})
+
+    def tearDown(self):
+        self.db.close()
+        self.tmp.cleanup()
+
+    def test_save_and_list_templates(self):
+        tid = self.db.save_template({"name": "default", "request_type": "chat_completions"})
+        self.assertIsInstance(tid, int)
+        templates = self.db.list_templates(request_type="chat_completions")
+        self.assertEqual(len(templates), 1)
+        self.assertEqual(templates[0]["name"], "default")
+        # 不含 items
+        self.assertNotIn("items", templates[0])
+
+    def test_list_templates_filter_by_request_type(self):
+        self.db.save_template({"name": "t1", "request_type": "chat_completions"})
+        self.db.save_template({"name": "t2", "request_type": "responses"})
+        all_t = self.db.list_templates()
+        self.assertEqual(len(all_t), 2)
+        chat_t = self.db.list_templates(request_type="chat_completions")
+        self.assertEqual(len(chat_t), 1)
+        self.assertEqual(chat_t[0]["name"], "t1")
+
+    def test_get_template_preview(self):
+        tid = self.db.save_template({"name": "preview-test", "request_type": "chat_completions"})
+        preview = self.db.get_template_preview(tid)
+        self.assertIsNotNone(preview)
+        self.assertEqual(preview["name"], "preview-test")
+        # 预览应展开 model_routes
+        self.assertEqual(len(preview["model_routes"]), 2)
+        self.assertTrue(all(r["valid"] for r in preview["model_routes"]))
+
+    def test_get_template_preview_with_deleted_model(self):
+        tid = self.db.save_template({"name": "del-test", "request_type": "chat_completions"})
+        # 删除模型后模板预览中应显示失效
+        self.db.delete_model(self.model_id)
+        preview = self.db.get_template_preview(tid)
+        self.assertIsNotNone(preview)
+        invalid = [r for r in preview["model_routes"] if not r["valid"]]
+        self.assertGreaterEqual(len(invalid), 1)
+
+    def test_apply_template(self):
+        tid = self.db.save_template({"name": "apply-test", "request_type": "chat_completions"})
+        # 应用前清空路由
+        for r in self.db.list_routes(request_type="chat_completions"):
+            self.db.delete_route(r["id"])
+        result = self.db.apply_template(tid)
+        self.assertEqual(result["applied"], 2)
+        routes = self.db.list_routes(request_type="chat_completions")
+        self.assertEqual(len(routes), 2)
+
+    def test_apply_template_atomic_replace(self):
+        tid = self.db.save_template({"name": "atomic-test", "request_type": "chat_completions"})
+        result = self.db.apply_template(tid)
+        self.assertEqual(result["applied"], 2)
+        self.assertEqual(result["invalid_count"], 0)
+        routes = self.db.list_routes(request_type="chat_completions")
+        self.assertEqual(len(routes), 2)
+
+    def test_delete_template_no_effect_on_routes(self):
+        tid = self.db.save_template({"name": "del-tmpl", "request_type": "chat_completions"})
+        route_count = len(self.db.list_routes(request_type="chat_completions"))
+        self.db.delete_template(tid)
+        # 路由不受影响
+        self.assertEqual(len(self.db.list_routes(request_type="chat_completions")), route_count)
+        # 模板已被删除
+        self.assertIsNone(self.db.get_template(tid))
+
+    def test_template_unique_name_per_request_type(self):
+        self.db.save_template({"name": "unique-test", "request_type": "chat_completions"})
+        with self.assertRaises(ValueError):
+            self.db.save_template({"name": "unique-test", "request_type": "chat_completions"})
+        # 不同 request_type 可同名
+        tid = self.db.save_template({"name": "unique-test", "request_type": "responses"})
+        self.assertIsInstance(tid, int)
+
+    def test_template_name_validation(self):
+        with self.assertRaises(ValueError):
+            self.db.save_template({"name": "", "request_type": "chat_completions"})
+        with self.assertRaises(ValueError):
+            self.db.save_template({"name": "a/b", "request_type": "chat_completions"})
+        # 超长名
+        long_name = "x" * 101
+        with self.assertRaises(ValueError):
+            self.db.save_template({"name": long_name, "request_type": "chat_completions"})
+
+    def test_apply_template_with_deleted_model(self):
+        tid = self.db.save_template({"name": "deleted-ref", "request_type": "chat_completions"})
+        # 删除模板引用的模型
+        self.db.delete_model(self.model_id)
+        # 应用模板时失效路由的 target_model_id 应设为 NULL
+        result = self.db.apply_template(tid)
+        self.assertGreaterEqual(result["invalid_count"], 1)
+        routes = self.db.list_routes(request_type="chat_completions")
+        invalid = [r for r in routes if r["target_model_id"] is None]
+        self.assertGreaterEqual(len(invalid), 1)
+
+    def test_list_routes_with_null_target(self):
+        """LEFT JOIN 应返回 target_model_id=NULL 的路由。"""
+        self.db.delete_model(self.model_id)
+        routes = self.db.list_routes(request_type="chat_completions")
+        null_target = [r for r in routes if r["target_model_id"] is None]
+        self.assertGreaterEqual(len(null_target), 1)
+
+    def test_apply_template_nonexistent(self):
+        with self.assertRaises(ValueError):
+            self.db.apply_template(9999)
+
+    def test_apply_template_invalid_json_items(self):
+        tid = self.db.save_template({"name": "bad-items", "request_type": "chat_completions"})
+        # 直接修改 items 为损坏 JSON
+        conn = self.db._connect()
+        conn.execute("UPDATE route_templates SET items = 'not-json' WHERE id = ?", (tid,))
+        conn.commit()
+        conn.close()
+        # 刷新 cached template
+        with self.assertRaises(ValueError):
+            self.db.apply_template(tid)

@@ -13,7 +13,7 @@
 _TABLE_ORDER = [
     "schema_version",
     "upstreams",
-    "target_models",
+    "target_models", "route_templates",
     "model_routes",
     "agent_routes",
     "debug_log",
@@ -63,7 +63,7 @@ TABLES = {
         CREATE TABLE IF NOT EXISTS model_routes (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             source          TEXT NOT NULL CHECK(length(source) > 0),
-            target_model_id INTEGER NOT NULL REFERENCES target_models(id) ON DELETE RESTRICT,
+            target_model_id INTEGER REFERENCES target_models(id) ON DELETE SET NULL,
             request_type    TEXT NOT NULL DEFAULT 'responses'
                             CHECK(request_type IN ('responses', 'messages', 'chat_completions')),
             created_at      TEXT NOT NULL DEFAULT (datetime('now')),
@@ -76,12 +76,27 @@ TABLES = {
         CREATE TABLE IF NOT EXISTS agent_routes (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             source          TEXT NOT NULL CHECK(length(source) > 0 AND source != '*'),
-            target_model_id INTEGER NOT NULL REFERENCES target_models(id) ON DELETE RESTRICT,
+            target_model_id INTEGER REFERENCES target_models(id) ON DELETE SET NULL,
             request_type    TEXT NOT NULL DEFAULT 'chat_completions'
                             CHECK(request_type IN ('responses', 'messages', 'chat_completions')),
             created_at      TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(source, request_type)
+        )
+    """,
+
+
+    "route_templates": """
+        CREATE TABLE IF NOT EXISTS route_templates (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            name            TEXT NOT NULL CHECK(length(name) > 0 AND length(name) <= 100),
+            request_type    TEXT NOT NULL DEFAULT 'chat_completions'
+                            CHECK(request_type IN ('responses', 'messages', 'chat_completions')),
+            items           TEXT NOT NULL DEFAULT '[]',
+            created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            last_applied_at TEXT,
+            UNIQUE(name, request_type)
         )
     """,
 

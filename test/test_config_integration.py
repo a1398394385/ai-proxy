@@ -77,10 +77,17 @@ class TestConfigIntegration(unittest.TestCase):
         self.assertIn("*", all_routes)
 
     def test_delete_model_with_check_refs(self):
-        """预检查功能：被引用的模型 delete 返回 error dict。"""
+        """FK SET NULL：被引用的模型 delete 后路由 target_model_id 设为 NULL。"""
         result = self.db.delete_model(self.m1)
-        self.assertIn("error", result)
-        self.assertIn("referenced_routes", result)
+        self.assertNotIn("error", result)
+        self.assertIn("affected_routes", result)
+        self.assertEqual(result["affected_routes"], 2)
+        # 验证路由 target_model_id 为 NULL
+        routes = self.db.list_routes(request_type=None)
+        for r in routes:
+            if r["source"] in ("gpt-4", "claude-3"):
+                self.assertIsNone(r["target_model_id"])
+                self.assertEqual(r["upstream_name"], "(已删除)")
 
     def test_migration_idempotent(self):
         """迁移幂等性：连续两次调用 migrate()，第二次返回 already_migrated。"""

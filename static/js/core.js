@@ -50,6 +50,7 @@ export function initSettings() {
 export function showSettings() {
   const defaultPage = localStorage.getItem('defaultPage') || 'facts';
   const defaultPeriod = localStorage.getItem('defaultPeriod') || 'week';
+  const defaultRouteType = localStorage.getItem('defaultRouteType') || 'messages';
 
   const body = `
     <div style="display:flex;flex-direction:column;gap:20px;">
@@ -76,6 +77,17 @@ export function showSettings() {
           { value: 'month', label: '30天', selected: defaultPeriod === 'month' },
         ], '选择周期')}</div>
       </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div>
+          <div style="font-weight:600;margin-bottom:4px;">默认路由请求类型</div>
+          <div style="font-size:13px;color:var(--muted);">进入路由映射时默认显示的请求类型</div>
+        </div>
+        <div style="min-width:150px">${customSelectHtml('modal-default-route-type-select', [
+          { value: 'responses', label: '🔌 Responses', selected: defaultRouteType === 'responses' },
+          { value: 'messages', label: '✉️ Messages', selected: defaultRouteType === 'messages' },
+          { value: 'chat_completions', label: '🔗 Chat Completions', selected: defaultRouteType === 'chat_completions' },
+        ], '选择请求类型')}</div>
+      </div>
     </div>`;
 
   showModal('⚙ 通用设置', body, '');
@@ -83,6 +95,7 @@ export function showSettings() {
   setTimeout(() => {
     wireCustomSelect('modal-default-page-select');
     wireCustomSelect('modal-default-period-select');
+    wireCustomSelect('modal-default-route-type-select');
     document.getElementById('modal-default-page-select').addEventListener('change', (e) => saveDefaultPage(e.target.value));
     document.getElementById('modal-default-period-select').addEventListener('change', (e) => {
       localStorage.setItem('defaultPeriod', e.target.value);
@@ -91,6 +104,9 @@ export function showSettings() {
       document.querySelectorAll('.period-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.period === e.target.value);
       });
+    });
+    document.getElementById('modal-default-route-type-select').addEventListener('change', (e) => {
+      localStorage.setItem('defaultRouteType', e.target.value);
     });
   }, 0);
 }
@@ -203,8 +219,24 @@ export function wireCustomSelect(id) {
   trigger.addEventListener('click', (e) => {
     e.stopPropagation();
     if (cs.classList.contains('disabled')) return;
-    closeAllCustomSelects();
-    cs.classList.toggle('open');
+    if (cs.classList.contains('open')) {
+      cs.classList.remove('open');
+      dropdown.style.position = '';
+      dropdown.style.top = '';
+      dropdown.style.left = '';
+      dropdown.style.width = '';
+    } else {
+      closeAllCustomSelects();
+      const rect = trigger.getBoundingClientRect();
+      dropdown.style.transition = 'none';
+      dropdown.style.position = 'fixed';
+      dropdown.style.top = (rect.bottom + 4) + 'px';
+      dropdown.style.left = rect.left + 'px';
+      dropdown.style.width = rect.width + 'px';
+      void dropdown.offsetHeight;
+      dropdown.style.transition = '';
+      cs.classList.add('open');
+    }
   });
 
   dropdown.addEventListener('click', (e) => {
@@ -218,6 +250,10 @@ export function wireCustomSelect(id) {
     trigger.querySelector('.cs-text').innerHTML = escHtml(optText) + (optHint ? `<span class="cs-hint-inline" style="${optHint.style.cssText}">${optHint.textContent}</span>` : '');
     dropdown.querySelectorAll('.cs-option').forEach(o => o.classList.toggle('selected', o === opt));
     cs.classList.remove('open');
+    dropdown.style.position = '';
+    dropdown.style.top = '';
+    dropdown.style.left = '';
+    dropdown.style.width = '';
     hidden.dispatchEvent(new Event('change'));
   });
 }
@@ -242,10 +278,23 @@ export function updateCustomSelect(id, opts, placeholder) {
   }).join('');
   cs.classList.toggle('disabled', opts.every(o => !o.value || o.disabled));
   cs.classList.remove('open');
+  dropdown.style.position = '';
+  dropdown.style.top = '';
+  dropdown.style.left = '';
+  dropdown.style.width = '';
 }
 
 export function closeAllCustomSelects() {
-  document.querySelectorAll('.custom-select.open').forEach(el => el.classList.remove('open'));
+  document.querySelectorAll('.custom-select.open').forEach(el => {
+    el.classList.remove('open');
+    const dd = el.querySelector('.cs-dropdown');
+    if (dd) {
+      dd.style.position = '';
+      dd.style.top = '';
+      dd.style.left = '';
+      dd.style.width = '';
+    }
+  });
 }
 
 export function buildCustomSelect(parentEl, options, onChange) {

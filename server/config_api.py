@@ -275,6 +275,33 @@ def handle_get(path, qs, handler) -> bool:
         return _get_route_detail("agent-routes", int(m.group(1)), handler)
 
 
+    m = re.match(r"/api/templates/(\d+)/preview$", path)
+    if m:
+        with config_db() as db:
+            preview = db.get_template_preview(int(m.group(1)))
+        if preview:
+            json_response(handler, preview)
+        else:
+            json_response(handler, {"error": "Not found"}, 404)
+        return True
+
+    if path == "/api/templates":
+        request_type = qs.get("request_type", [None])[0]
+        with config_db() as db:
+            templates = db.list_templates(request_type=request_type)
+        json_response(handler, {"templates": templates})
+        return True
+
+    m = re.match(r"/api/templates/(\d+)$", path)
+    if m:
+        with config_db() as db:
+            tmpl = db.get_template(int(m.group(1)))
+        if tmpl:
+            json_response(handler, tmpl)
+        else:
+            json_response(handler, {"error": "Not found"}, 404)
+        return True
+
     if path == "/api/config/status":
         with config_db() as db:
             counts = db.get_counts()
@@ -419,6 +446,32 @@ def handle_post(path, handler) -> bool:
         return _add_route("agent-routes", data, handler)
 
 
+    if path == "/api/templates":
+        data = _read_json(handler)
+        if not data:
+            return True
+        try:
+            with config_db() as db:
+                tid = db.save_template(data)
+        except (sqlite3.IntegrityError, ValueError) as e:
+            json_response(handler, {"error": str(e)}, 409)
+            return True
+        _reload_proxies()
+        json_response(handler, {"id": tid, "message": "Created"}, 201)
+        return True
+
+    m = re.match(r"/api/templates/(\d+)/apply$", path)
+    if m:
+        try:
+            with config_db() as db:
+                result = db.apply_template(int(m.group(1)))
+        except (sqlite3.IntegrityError, ValueError) as e:
+            json_response(handler, {"error": str(e)}, 409)
+            return True
+        _reload_proxies()
+        json_response(handler, result)
+        return True
+
     if path == "/api/config/reload":
         result = {}
         try:
@@ -489,6 +542,20 @@ def handle_put(path, handler) -> bool:
         if not data:
             return True
         return _update_route("routes", int(m.group(1)), data, handler)
+
+    m = re.match(r"/api/templates/(\d+)$", path)
+    if m:
+        data = _read_json(handler)
+        if not data:
+            return True
+        try:
+            with config_db() as db:
+                db.update_template(int(m.group(1)), data)
+        except (sqlite3.IntegrityError, ValueError) as e:
+            json_response(handler, {"error": str(e)}, 409)
+            return True
+        json_response(handler, {"message": "Updated"})
+        return True
     return False
 
 
@@ -539,5 +606,16 @@ def handle_delete(path, handler) -> bool:
     m = re.match(r"/api/agent-routes/(\d+)$", path)
     if m:
         return _delete_route("agent-routes", int(m.group(1)), handler)
+
+    m = re.match(r"/api/templates/(\d+)$", path)
+    if m:
+        with config_db() as db:
+            tmpl = db.get_template(int(m.group(1)))
+            if not tmpl:
+                json_response(handler, {"error": "Not found"}, 404)
+                return True
+            db.delete_template(int(m.group(1)))
+        json_response(handler, {"message": "Deleted"})
+        return True
 
     return False
