@@ -21,7 +21,7 @@ ports:
 
 # ─── 日志配置 ───────────────────────────────────────────────────────────
 logging:
-  debug_retention_days: 3
+  debug_retention_days: 2
   log_dir: "~/.ai-agent-tools/data"
   log_file: "access_log.db"
 
