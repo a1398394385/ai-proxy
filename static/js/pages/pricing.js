@@ -188,11 +188,11 @@ function showPricingModal(existing = null) {
   const content = `
     <div class="pricing-modal-grid">
       <div class="pricing-modal-section">基本信息</div>
-      <div class="form-group full">
+      <div class="form-group">
         <label class="form-label">模型 ID</label>
         <input class="form-input" id="pm-model-id" value="${escHtml(existing?.model_id || '')}" ${isEdit ? 'disabled' : ''} placeholder="例: gpt-4o">
       </div>
-      <div class="form-group full">
+      <div class="form-group">
         <label class="form-label">显示名</label>
         <input class="form-input" id="pm-display-name" value="${escHtml(existing?.display_name || '')}" placeholder="例: GPT-4o">
       </div>
@@ -217,15 +217,13 @@ function showPricingModal(existing = null) {
         <input class="form-input" id="pm-cache-write" type="number" step="0.000001" value="${existing?.cache_creation_cost_per_million || '0'}" placeholder="0">
       </div>
 
-      <div class="pricing-modal-section">倍率</div>
-      <div class="form-group full">
+      <div class="pricing-modal-section">其他</div>
+      <div class="form-group">
         <label class="form-label">计费倍率</label>
         <input class="form-input" id="pm-multiplier" type="number" step="0.01" min="0" value="${existing?.multiplier || '1.0'}" placeholder="1.0">
-        <span class="form-hint">四个价格（输入/输出/缓存读/缓存写）均乘以该倍率</span>
+        <span class="form-hint">四个价格均乘以该倍率</span>
       </div>
-
-      <div class="pricing-modal-section">币种</div>
-      <div class="form-group full">
+      <div class="form-group">
         <label class="form-label">结算币种</label>
         ${customSelectHtml('pm-currency', [
           { value: 'USD', label: 'USD（美元）', selected: existing?.currency !== 'RMB' },

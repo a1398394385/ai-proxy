@@ -436,10 +436,16 @@
 }
 
 /* ─── 模态框增强 ─── */
+/* ===== 定价弹窗 — 宽版 ===== */
+
+body:has(.pricing-modal-grid) .modal {
+  max-width: 880px;
+}
+
 .pricing-modal-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 10px;
 }
 
 .pricing-modal-grid .form-group.full {
@@ -456,8 +462,8 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: hsl(var(--muted-foreground));
-  padding: 12px 0 4px;
-  margin-top: 4px;
+  padding: 8px 0 2px;
+  margin-top: 2px;
   border-top: 1px solid hsl(var(--border));
 }
 
