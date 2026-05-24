@@ -408,7 +408,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
                 # 上游返回非 200 → 打印错误到 proxy.log
                 if resp.status != 200:
-                    logging.error(f"上游返回错误: model={model_name}, status={resp.status}, body={error_body_str[:2000]}")
+                    up_name = upstream_cfg.get("name", upstream_cfg.get("id", "?"))
+                    logging.error(f"上游返回错误: upstream={up_name}, model={model_name}, "
+                                  f"target_model={target}, status={resp.status}, body={error_body_str[:2000]}")
 
                 # 阶段 3：记录上游响应
                 logger = get_logger()
@@ -517,7 +519,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     # 上游返回错误 → 直接转发错误响应（非流式）
                     error_body = resp.read()
                     error_body_str = error_body.decode("utf-8", errors="replace")
-                    logging.error(f"流式透传上游返回错误: model={model_name}, "
+                    up_name = upstream_cfg.get("name", upstream_cfg.get("id", "?"))
+                    logging.error(f"流式透传上游返回错误: upstream={up_name}, "
+                                  f"model={model_name}, target_model={target}, "
                                   f"status={upstream_status}, body={error_body_str[:2000]}")
                     self.send_response(upstream_status)
                     self.send_header("Content-Type", resp.getheader("Content-Type", "application/json"))

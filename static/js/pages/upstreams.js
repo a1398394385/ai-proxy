@@ -66,7 +66,7 @@ function toggleModelDrawer(el, upstreamId) {
         '<div class="drawer-header">🤖 模型列表 — 上游: ' + escHtml(upstreamDataMap[upstreamId]?.name || upstreamId) +
           '<button class="btn btn-primary btn-sm" data-action="showModelModalForUpstream" data-id="' + escHtml(upstreamId) + '" style="margin-left:auto;">＋ 新增模型</button>' + detectBtn + '</div>' +
         '<table class="drawer-model-table">' +
-          '<thead><tr><th>模型名</th><th>所属上游</th><th>Multimodal</th><th>操作</th></tr></thead>' +
+          '<thead><tr><th>模型名</th><th>所属上游</th><th>Multimodal</th><th>最大上下文</th><th>最大输入</th><th>最大输出</th><th>RPM</th><th>操作</th></tr></thead>' +
           '<tbody class="drawer-model-tbody"></tbody>' +
         '</table>' +
       '</div>' +
@@ -100,17 +100,30 @@ async function loadModelTable(upstreamId) {
   const data = await api(url);
   const tbody = document.querySelector('#drawer-' + CSS.escape(upstreamId) + ' .drawer-model-tbody');
   if (!tbody) return;
+  // 格式化数字：null→'-'，大数以 K/M 显示
+  function fmtNum(v) {
+    if (v === null || v === undefined || v === '') return '-';
+    const n = Number(v);
+    if (isNaN(n)) return '-';
+    if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+    return String(n);
+  }
   tbody.innerHTML = data.models.map(m =>
     `<tr>
       <td><span class="badge badge-green">${escHtml(m.name)}</span></td>
       <td><span class="badge" style="background:hsl(var(--muted));color:hsl(var(--muted-foreground))">${escHtml(m.upstream_name)}</span></td>
       <td>${m.multimodal ? '✅' : '❌'}</td>
+      <td style="font-family:monospace;font-size:12px">${fmtNum(m.max_context)}</td>
+      <td style="font-family:monospace;font-size:12px">${fmtNum(m.max_input)}</td>
+      <td style="font-family:monospace;font-size:12px">${fmtNum(m.max_output)}</td>
+      <td style="font-family:monospace;font-size:12px">${fmtNum(m.rpm)}</td>
       <td>
         <button class="btn btn-secondary btn-sm" data-action="showModelModal" data-id="${m.id}">编辑</button>
         <button class="btn btn-danger btn-sm" data-action="confirmDeleteModel" data-id="${m.id}" data-name="${escHtml(m.name)}">删除</button>
       </td>
     </tr>`
-  ).join('') || '<tr><td colspan="4" class="empty-state">暂无模型</td></tr>';
+  ).join('') || '<tr><td colspan="8" class="empty-state">暂无模型</td></tr>';
 }
 
 function loadAllModelConfigTables() {
@@ -258,10 +271,18 @@ async function showModelModal(editId, defaultUpstreamId) {
     ? `<input type="hidden" id="m-upstream" value="${escHtml(defaultUpstreamId)}"><div class="form-group"><label class="form-label">所属上游</label><input type="text" class="form-input" value="${escHtml(upstreamDataMap[defaultUpstreamId]?.name || defaultUpstreamId)}" readonly style="background:hsl(var(--muted));color:hsl(var(--muted-foreground));cursor:not-allowed"></div>`
     : `<div class="form-group"><label class="form-label">所属上游</label>${customSelectHtml('m-upstream', upstreamOpts, '选择上游')}</div>`;
 
+  const newFieldsHtml = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div class="form-group"><label class="form-label">最大上下文</label><input type="number" class="form-input" id="m-max-context" value="${data.max_context !== null && data.max_context !== undefined ? data.max_context : ''}" min="0" placeholder="如 128000"></div>
+      <div class="form-group"><label class="form-label">最大输入 (tokens)</label><input type="number" class="form-input" id="m-max-input" value="${data.max_input !== null && data.max_input !== undefined ? data.max_input : ''}" min="0" placeholder="如 128000"></div>
+      <div class="form-group"><label class="form-label">最大输出 (tokens)</label><input type="number" class="form-input" id="m-max-output" value="${data.max_output !== null && data.max_output !== undefined ? data.max_output : ''}" min="0" placeholder="如 16384"></div>
+      <div class="form-group"><label class="form-label">RPM</label><input type="number" class="form-input" id="m-rpm" value="${data.rpm !== null && data.rpm !== undefined ? data.rpm : ''}" min="0" placeholder="如 10000"></div>
+    </div>`;
   showModal(title,
     `<div class="form-group"><label class="form-label">模型名</label><input type="text" class="form-input" id="m-name" value="${escHtml(data.name)}"></div>
      ${upstreamField}
-     <div class="form-group"><label class="form-label">Multimodal</label>${customSelectHtml('m-multimodal', [{ value: '1', label: '✅ 支持', selected: data.multimodal }, { value: '0', label: '❌ 不支持', selected: !data.multimodal }], '选择')}</div>`,
+     <div class="form-group"><label class="form-label">Multimodal</label>${customSelectHtml('m-multimodal', [{ value: '1', label: '✅ 支持', selected: data.multimodal }, { value: '0', label: '❌ 不支持', selected: !data.multimodal }], '选择')}</div>
+     ${newFieldsHtml}`,
     `<button class="btn btn-secondary" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="saveModel" data-edit-id="${editId || 0}">保存</button>`);
   setTimeout(() => { if (!defaultUpstreamId) wireCustomSelect('m-upstream'); wireCustomSelect('m-multimodal'); }, 0);
 }
@@ -271,10 +292,18 @@ function showModelModalForUpstream(upstreamId) {
 }
 
 async function saveModel(editId) {
+  function _intVal(id) {
+    const v = document.getElementById(id).value.trim();
+    return v === '' ? null : parseInt(v);
+  }
   const data = {
     name: document.getElementById('m-name').value.trim(),
     upstream_id: document.getElementById('m-upstream').value,
     multimodal: parseInt(document.getElementById('m-multimodal').value),
+    max_context: _intVal('m-max-context'),
+    max_input: _intVal('m-max-input'),
+    max_output: _intVal('m-max-output'),
+    rpm: _intVal('m-rpm'),
   };
   if (!data.name) { alert('模型名不能为空'); return; }
   if (data.name.includes('/')) { alert('模型名不能包含 /'); return; }

@@ -18,7 +18,7 @@ class TestConfigIntegration(unittest.TestCase):
         self.db.add_route({"source": "gpt-4", "target_model_id": self.m1})
         self.db.add_route({"source": "codex-mini", "target_model_id": self.m1})
         self.db.add_route({"source": "*", "target_model_id": self.m2})
-        # 注：get_route_by_source() 和 validate_star_fallback() 是 ConfigDB 内部方法，在此仅用于测试
+        # 注：get_route_by_source() 和 validate_star_default() 是 ConfigDB 内部方法，在此仅用于测试
 
     def tearDown(self):
         self.db.close()
@@ -30,7 +30,7 @@ class TestConfigIntegration(unittest.TestCase):
         self.assertEqual(cfg["target_name"], "qwen")
         self.assertEqual(cfg["upstream"]["base_url"], "http://a:4000")
 
-    def test_config_cache_fallback(self):
+    def test_config_cache_default(self):
         cache = ConfigCache(self.db_path)
         cfg = cache.resolve("unknown-model")
         self.assertEqual(cfg["target_name"], "claude")
@@ -41,9 +41,9 @@ class TestConfigIntegration(unittest.TestCase):
         cfg = cache.resolve("gpt-4")
         self.assertEqual(cfg["target_name"], "claude")
 
-    def test_star_fallback_validation(self):
+    def test_star_default_validation(self):
         self.db.disable_upstream(self.id_b)
-        self.assertFalse(self.db.validate_star_fallback())
+        self.assertFalse(self.db.validate_star_default())
 
     def test_model_referenced_routes_precheck(self):
         refs = self.db.model_referenced_routes(self.m1)

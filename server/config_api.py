@@ -208,7 +208,7 @@ def _delete_route(kind, route_id, handler):
             star_count = sum(1 for r in routes if r["source"] == "*")
             if star_count <= 1:
                 json_response(
-                    handler, {"error": "不能删除最后一条 * fallback 路由"}, 409
+                    handler, {"error": "不能删除最后一条默认路由"}, 409
                 )
                 return True
         try:

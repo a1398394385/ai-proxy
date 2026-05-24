@@ -67,6 +67,44 @@ class TestConfigDBInit(unittest.TestCase):
         db2.close()
         self.assertTrue(self.db_path.exists())
 
+    def test_upstream_has_key_cooldown_secs_column(self):
+        from proxy.config_manager import ConfigDB
+        db = ConfigDB(self.db_path)
+        conn = db._connect()
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(upstreams)").fetchall()}
+        conn.close()
+        db.close()
+        self.assertIn("key_cooldown_secs", cols)
+
+    def test_upstream_api_keys_table_exists(self):
+        from proxy.config_manager import ConfigDB
+        db = ConfigDB(self.db_path)
+        conn = db._connect()
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(upstream_api_keys)").fetchall()}
+        conn.close()
+        db.close()
+        self.assertIn("upstream_api_keys", tables)
+        for col in ("id", "upstream_id", "api_key", "label", "is_active", "created_at"):
+            self.assertIn(col, cols)
+
+    def test_upstream_api_keys_foreign_key(self):
+        from proxy.config_manager import ConfigDB
+        db = ConfigDB(self.db_path)
+        conn = db._connect()
+        fks = conn.execute(
+            "PRAGMA foreign_key_list('upstream_api_keys')"
+        ).fetchall()
+        conn.close()
+        db.close()
+        self.assertEqual(len(fks), 1)
+        # pragma columns: id, seq, table, from, to, on_update, on_delete, match
+        self.assertEqual(fks[0][2], "upstreams")    # table name
+        self.assertEqual(fks[0][3], "upstream_id")   # local column
+        self.assertEqual(fks[0][6], "CASCADE")       # on_delete
+
 
 class TestUpstreamCRUD(unittest.TestCase):
     def setUp(self):
@@ -316,8 +354,8 @@ class TestRouteCRUD(unittest.TestCase):
         self.assertEqual(r["source"], "gpt-4o")
         self.assertEqual(r["target_name"], "claude")
 
-    def test_update_route_rejects_fallback_source_change(self):
-        """更新回退路由 (source=*) 时不允许修改 source。"""
+    def test_update_route_rejects_default_source_change(self):
+        """更新默认路由 (source=*) 时不允许修改 source。"""
         rid = self.db.add_route({"source": "*", "target_model_id": self.mid})
         with self.assertRaises(ValueError):
             self.db.update_route(rid, {"source": "gpt-4o"})
@@ -325,8 +363,8 @@ class TestRouteCRUD(unittest.TestCase):
         r = self.db.get_route(rid)
         self.assertEqual(r["source"], "*")
 
-    def test_update_route_allows_fallback_update_without_source(self):
-        """编辑回退路由时不传 source 字段 → 正常更新（如只改目标模型）。"""
+    def test_update_route_allows_default_update_without_source(self):
+        """编辑默认路由时不传 source 字段 → 正常更新（如只改目标模型）。"""
         rid = self.db.add_route({"source": "*", "target_model_id": self.mid})
         mid2 = self.db.add_model({"name": "claude", "upstream_id": self.id_a})
         # 不传 source，只改 target_model_id
@@ -367,7 +405,7 @@ class TestResolveModel(unittest.TestCase):
         self.assertEqual(cfg["target_name"], "qwen")
         self.assertEqual(cfg["upstream"]["base_url"], "http://a")
 
-    def test_resolve_fallback_to_star(self):
+    def test_resolve_default_to_star(self):
         self.db.add_route({"source": "*", "target_model_id": self.m2})
         cfg = self.db.resolve_model("unknown-model")
         self.assertEqual(cfg["target_name"], "claude")
@@ -405,9 +443,9 @@ class TestResolveModel(unittest.TestCase):
         self.assertNotIn("gpt-4", all_routes)
         self.assertIn("*", all_routes)
 
-    def test_validate_star_fallback(self):
+    def test_validate_star_default(self):
         self.db.add_route({"source": "*", "target_model_id": self.m1})
-        self.assertTrue(self.db.validate_star_fallback())
+        self.assertTrue(self.db.validate_star_default())
 
     def test_matched_source_field(self):
         self.db.add_route({"source": "gpt-4", "target_model_id": self.m1})
@@ -637,7 +675,7 @@ class TestMigrations(unittest.TestCase):
         m = Migrations(self.db_path)
         result = m.migrate()
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["version"], 8)
+        self.assertEqual(result["version"], 9)
 
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
@@ -875,12 +913,12 @@ class TestMigrationV8(unittest.TestCase):
         conn.commit()
         conn.close()
 
-    def _verify_v8_schema(self, db_path):
-        """验证 v8 迁移后的 schema 正确。"""
+    def _verify_v9_schema(self, db_path):
+        """验证 v9 迁移后的 schema 正确。"""
         conn = sqlite3.connect(str(db_path))
         conn.execute("PRAGMA foreign_keys = ON")
         cur = conn.execute("SELECT version FROM schema_version LIMIT 1")
-        self.assertEqual(cur.fetchone()[0], 8)
+        self.assertEqual(cur.fetchone()[0], 9)
         # 验证 model_routes FK 为 SET NULL
         cur = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='model_routes'")
         sql = cur.fetchone()[0]
@@ -893,6 +931,11 @@ class TestMigrationV8(unittest.TestCase):
         # 验证 route_templates 表存在
         cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='route_templates'")
         self.assertIsNotNone(cur.fetchone())
+        # 验证 v9 新字段
+        cur = conn.execute("PRAGMA table_info(target_models)")
+        cols = {row[1] for row in cur.fetchall()}
+        for col in ('max_context', 'max_input', 'max_output', 'rpm'):
+            self.assertIn(col, cols, f'{col} 列应存在于 target_models')
         # 验证数据完整性
         cur = conn.execute("SELECT COUNT(*) FROM model_routes")
         self.assertEqual(cur.fetchone()[0], 1)
@@ -908,8 +951,8 @@ class TestMigrationV8(unittest.TestCase):
         self.assertFalse(s["migrated"])
         result = mg.migrate()
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["version"], 8)
-        self._verify_v8_schema(db_path)
+        self.assertEqual(result["version"], 9)
+        self._verify_v9_schema(db_path)
         # 幂等
         result2 = mg.migrate()
         self.assertEqual(result2["status"], "already_migrated")
@@ -923,7 +966,7 @@ class TestMigrationV8(unittest.TestCase):
         mg = Migrations(db_path)
         result = mg.migrate()
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["version"], 8)
+        self.assertEqual(result["version"], 9)
         # 第二次调用应为幂等
         result2 = mg.migrate()
         self.assertEqual(result2["status"], "already_migrated")
@@ -967,10 +1010,10 @@ class TestMigrationV8(unittest.TestCase):
         mg = Migrations(db_path)
         result = mg.migrate()
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["version"], 8)
+        self.assertEqual(result["version"], 9)
         conn = sqlite3.connect(str(db_path))
         cur = conn.execute("SELECT version FROM schema_version LIMIT 1")
-        self.assertEqual(cur.fetchone()[0], 8)
+        self.assertEqual(cur.fetchone()[0], 9)
         cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='route_templates'")
         self.assertIsNotNone(cur.fetchone())
         conn.close()

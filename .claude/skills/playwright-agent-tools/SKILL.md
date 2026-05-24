@@ -152,7 +152,7 @@ browser_evaluate({ function: '() => document.querySelector(\'[data-page="tokens"
 
 - **切换请求类型**: click "Responses"/"Messages"/"Chat Completions" Tab
 - **新增路由**: click "+ 新增路由" → 填写源模型名 → 选择目标模型 → 保存
-- **新增回退路由**: click "+ 新增回退路由"（源模型自动为 `*`，只读）
+- **新增默认路由**: click "+ 默认路由"（源模型自动为 `*`，只读）
 
 ### 数据库查询
 

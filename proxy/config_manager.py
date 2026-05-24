@@ -34,32 +34,33 @@ class ConfigDB:
         return conn
 
     def _ensure_db(self):
-        """创建数据库和表（幂等）。"""
+        """创建数据库和表（幂等）。自动执行未完成的迁移。"""
         conn = self._connect()
         try:
-            for t in ('schema_version', 'upstreams', 'target_models', 'route_templates', 'model_routes', 'agent_routes'):
+            for t in ('schema_version', 'upstreams', 'upstream_api_keys', 'target_models', 'route_templates', 'model_routes', 'agent_routes'):
                 ensure_table(conn, t)
 
-            # 新数据库写入 schema_version = 5（幂等）
+            # 新数据库写入 schema_version = 9（幂等）
             row = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()
             if row[0] == 0:
-                conn.execute("INSERT INTO schema_version (version) VALUES (8)")
+                conn.execute("INSERT INTO schema_version (version) VALUES (9)")
             conn.commit()
         finally:
             conn.close()
 
-        # 检查迁移状态（不阻塞启动）
+        # 自动执行未完成的迁移
         try:
             mg = Migrations(self.db_path)
             s = mg.status()
             if not s["migrated"]:
-                logging.warning(
-                    f"[ConfigDB] 数据库需要迁移，"
-                    f"请调用 Migrations.migrate() 或 POST /api/migrate. "
-                    f"当前状态: {s['details']}"
-                )
-        except Exception:
-            pass  # 静默 — 不阻塞启动
+                logging.info(f"[ConfigDB] 自动执行数据库迁移: {s['details']}")
+                result = mg.migrate()
+                if result["status"] == "ok":
+                    logging.info(f"[ConfigDB] 迁移成功 → v{result['version']}")
+                else:
+                    logging.error(f"[ConfigDB] 迁移失败: {result}")
+        except Exception as e:
+            logging.error(f"[ConfigDB] 迁移检查异常: {e}")
 
     def close(self):
         """No-op placeholder for API compatibility."""
@@ -175,8 +176,9 @@ class ConfigDB:
     def list_models(self, upstream_id: Optional[int] = None):
         conn = self._connect()
         try:
-            sql = """SELECT tm.id, tm.name, tm.upstream_id, tm.multimodal, tm.created_at,
-                            u.format, u.name as upstream_name, u.is_active as upstream_active
+            sql = """SELECT tm.id, tm.name, tm.upstream_id, tm.multimodal,
+                            tm.max_context, tm.max_input, tm.max_output, tm.rpm, tm.created_at,
+                            u.name AS upstream_name
                      FROM target_models tm
                      JOIN upstreams u ON tm.upstream_id = u.id"""
             params = []
@@ -192,8 +194,9 @@ class ConfigDB:
         conn = self._connect()
         try:
             row = conn.execute(
-                """SELECT tm.id, tm.name, tm.upstream_id, tm.multimodal, tm.created_at,
-                            u.format, u.name as upstream_name, u.is_active as upstream_active
+                """SELECT tm.id, tm.name, tm.upstream_id, tm.multimodal,
+                            tm.max_context, tm.max_input, tm.max_output, tm.rpm, tm.created_at,
+                            u.name AS upstream_name
                    FROM target_models tm
                    JOIN upstreams u ON tm.upstream_id = u.id
                    WHERE tm.id = ?""",
@@ -207,12 +210,17 @@ class ConfigDB:
         conn = self._connect()
         try:
             cursor = conn.execute(
-                """INSERT INTO target_models (name, upstream_id, multimodal)
-                   VALUES (?, ?, ?)""",
+                """INSERT INTO target_models (name, upstream_id, multimodal,
+                           max_context, max_input, max_output, rpm)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     data["name"],
                     data["upstream_id"],
                     data.get("multimodal", 1),
+                    data.get("max_context"),
+                    data.get("max_input"),
+                    data.get("max_output"),
+                    data.get("rpm"),
                 ),
             )
             conn.commit()
@@ -250,7 +258,7 @@ class ConfigDB:
         try:
             fields = []
             values = []
-            for key in ("name", "upstream_id", "multimodal"):
+            for key in ("name", "upstream_id", "multimodal", "max_context", "max_input", "max_output", "rpm"):
                 if key in data:
                     fields.append(f"{key} = ?")
                     values.append(data[key])
@@ -387,14 +395,14 @@ class ConfigDB:
     def update_route(self, route_id: int, data: dict):
         conn = self._connect()
         try:
-            # 保护回退路由：不允许修改 source
+            # 保护默认路由：不允许修改 source
             if data.get("source") and data["source"] != "*":
                 existing_source = conn.execute(
                     "SELECT source FROM model_routes WHERE id = ?",
                     (route_id,),
                 ).fetchone()
                 if existing_source and existing_source["source"] == "*":
-                    raise ValueError("不能修改回退路由的源模型名")
+                    raise ValueError("不能修改默认路由的源模型名")
             fields = []
             values = []
             for key in ("source", "target_model_id", "request_type"):
@@ -583,12 +591,12 @@ class ConfigDB:
             conn.close()
 
     def resolve_agent(self, source_name: str, request_type: str) -> Optional[dict]:
-        """精确匹配一条 agent 路由，无 fallback。上游禁用返回 None。"""
+        """精确匹配一条 agent 路由，无默认路由回退。上游禁用返回 None。"""
         conn = self._connect()
         try:
             row = conn.execute(
                 "SELECT tm.name as target_name, tm.multimodal, u.format,"
-                " u.id as upstream_id, u.base_url, u.api_key,"
+                " u.id as upstream_id, u.name as upstream_name, u.base_url, u.api_key,"
                 " u.timeout, u.connect_timeout, u.ssl_verify, u.retry"
                 " FROM agent_routes ar"
                 " JOIN target_models tm ON ar.target_model_id = tm.id"
@@ -606,6 +614,7 @@ class ConfigDB:
                 "matched_source": source_name,
                 "upstream": {
                     "id": d["upstream_id"],
+                    "name": d["upstream_name"],
                     "base_url": d["base_url"],
                     "api_key": d["api_key"],
                     "timeout": d["timeout"],
@@ -647,7 +656,7 @@ class ConfigDB:
     def resolve_model(self, source_name: str, request_type: str = "responses") -> Optional[dict]:
         """返回值约定：
         - 找到可用匹配（路由存在 + 上游 is_active=1）→ 返回完整配置 dict
-        - 匹配到但上游禁用 → 跳过，继续尝试 "*" fallback
+        - 匹配到但上游禁用 → 跳过，继续尝试 "*" 默认路由
         - "*" 也找不到或也禁用 → 返回 None
         """
         for name in (source_name, "*"):
@@ -657,12 +666,12 @@ class ConfigDB:
         return None
 
     def resolve_one(self, source_name: str, request_type: str = "responses") -> Optional[dict]:
-        """精确匹配单个 source 的路由配置，无 fallback（供 ConfigCache 内部使用）。"""
+        """精确匹配单个 source 的路由配置，无默认路由回退（供 ConfigCache 内部使用）。"""
         conn = self._connect()
         try:
             row = conn.execute(
                 """SELECT tm.name as target_name, tm.multimodal, u.format,
-                          u.id as upstream_id, u.base_url, u.api_key,
+                          u.id as upstream_id, u.name as upstream_name, u.base_url, u.api_key,
                           u.timeout, u.connect_timeout, u.ssl_verify, u.retry
                    FROM model_routes mr
                    JOIN target_models tm ON mr.target_model_id = tm.id
@@ -680,6 +689,7 @@ class ConfigDB:
                 "matched_source": source_name,
                 "upstream": {
                     "id": d["upstream_id"],
+                    "name": d["upstream_name"],
                     "base_url": d["base_url"],
                     "api_key": d["api_key"],
                     "timeout": d["timeout"],
@@ -722,7 +732,7 @@ class ConfigDB:
         finally:
             conn.close()
 
-    def validate_star_fallback(self, request_type: str = "responses") -> bool:
+    def validate_star_default(self, request_type: str = "responses") -> bool:
         return self.resolve_model("*", request_type) is not None
 
     def get_counts(self) -> dict:
@@ -1149,10 +1159,26 @@ class Migrations:
                         "version": 7,
                         "details": "需要执行迁移: 缺少 route_templates 表",
                     }
+                # 验证 target_models 是否有新字段（max_context）
+                has_max_context = conn.execute(
+                    "SELECT 1 FROM pragma_table_info('target_models') WHERE name = 'max_context'"
+                ).fetchone()
+                if not has_max_context:
+                    return {
+                        "migrated": False,
+                        "version": 8,
+                        "details": "需要执行迁移: target_models 表缺少 max_context/max_input/max_output/rpm 列",
+                    }
                 return {
                     "migrated": True,
-                    "version": 8,
-                    "details": "已迁移到 v8: FK SET NULL + route_templates 表",
+                    "version": 9,
+                    "details": "已迁移到 v9: target_models 新增 max_context/max_input/max_output/rpm 列",
+                }
+            if version == 9:
+                return {
+                    "migrated": True,
+                    "version": 9,
+                    "details": "已迁移到 v9: target_models 新增 max_context/max_input/max_output/rpm 列",
                 }
             return {
                 "migrated": True,
@@ -1194,10 +1220,12 @@ class Migrations:
             self._migrate_v6_to_v7(backup_path)
         if version <= 7:
             self._migrate_v7_to_v8(backup_path)
+        if version <= 8:
+            self._migrate_v8_to_v9(backup_path)
 
         return {
             "status": "ok",
-            "version": 8,
+            "version": 9,
             "backup_path": str(backup_path),
         }
 
@@ -1928,6 +1956,65 @@ class Migrations:
             conn.close()
 
 
+    # ─── v8→v9: target_models 新增字段 ───
+
+    def _migrate_v8_to_v9(self, backup_path: Path):
+        """执行 v8 → v9 迁移。
+
+        变更：
+          - target_models 新增 max_context / max_input / max_output / rpm 列
+        """
+        conn = self._connect()
+        try:
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.execute("BEGIN TRANSACTION")
+            try:
+                # 检查各列是否已存在（幂等）
+                existing_cols = {
+                    r[0] for r in conn.execute(
+                        "SELECT name FROM pragma_table_info('target_models')"
+                    ).fetchall()
+                }
+
+                if "max_context" not in existing_cols:
+                    conn.execute(
+                        "ALTER TABLE target_models ADD COLUMN max_context INTEGER DEFAULT NULL"
+                    )
+                    logging.info("[Migrations] v8→v9 STEP 1: target_models.max_context 列添加完成")
+
+                if "max_input" not in existing_cols:
+                    conn.execute(
+                        "ALTER TABLE target_models ADD COLUMN max_input INTEGER DEFAULT NULL"
+                    )
+                    logging.info("[Migrations] v8→v9 STEP 2: target_models.max_input 列添加完成")
+
+                if "max_output" not in existing_cols:
+                    conn.execute(
+                        "ALTER TABLE target_models ADD COLUMN max_output INTEGER DEFAULT NULL"
+                    )
+                    logging.info("[Migrations] v8→v9 STEP 3: target_models.max_output 列添加完成")
+
+                if "rpm" not in existing_cols:
+                    conn.execute(
+                        "ALTER TABLE target_models ADD COLUMN rpm INTEGER DEFAULT NULL"
+                    )
+                    logging.info("[Migrations] v8→v9 STEP 4: target_models.rpm 列添加完成")
+
+                conn.execute("DELETE FROM schema_version")
+                conn.execute("INSERT INTO schema_version (version) VALUES (9)")
+                logging.info("[Migrations] v8→v9 STEP 5: schema_version 更新为 9")
+
+                conn.commit()
+                logging.info("[Migrations] v8→v9 迁移成功")
+            except Exception:
+                conn.rollback()
+                logging.error("[Migrations] v8→v9 迁移失败，已回滚", exc_info=True)
+                raise
+            finally:
+                conn.execute("PRAGMA foreign_keys = ON")
+        finally:
+            conn.close()
+
 
 class ConfigCache:
     """内存缓存，供 proxy.py 使用。
@@ -2041,6 +2128,7 @@ class ConfigCache:
                         new_name_to_id[u["name"]] = uid
                         new_config_map[uid] = {
                             "id": uid,
+                            "name": u["name"],
                             "base_url": u["base_url"],
                             "api_key": u["api_key"],
                             "timeout": u["timeout"],

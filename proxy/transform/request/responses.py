@@ -221,8 +221,10 @@ def _map_tools(tools: list) -> list:
             tool_name = tool["function"].get("name", "")
 
         if not tool_name:
-            logger.warning(f"[transform] 跳过 name 为空的 tool: {tool}")
-            continue
+            tool_name = tool_type
+            if not tool_name:
+                logger.warning(f"[transform] 跳过 name 和 type 均为空的 tool: {tool}")
+                continue
 
         if tool_type == "function":
             if "function" in tool:

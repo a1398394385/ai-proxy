@@ -13,6 +13,7 @@
 _TABLE_ORDER = [
     "schema_version",
     "upstreams",
+    "upstream_api_keys",
     "target_models", "route_templates",
     "model_routes",
     "agent_routes",
@@ -43,10 +44,24 @@ TABLES = {
             is_active       INTEGER NOT NULL DEFAULT 1    CHECK(is_active IN (0, 1)),
             format          TEXT NOT NULL DEFAULT 'chat_completions'
                             CHECK(format IN ('responses', 'messages', 'chat_completions')),
+            key_cooldown_secs INTEGER NOT NULL DEFAULT 60,
             created_at      TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
         )
     """,
+
+    "upstream_api_keys": """
+        CREATE TABLE IF NOT EXISTS upstream_api_keys (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE CASCADE,
+            api_key     TEXT NOT NULL,
+            label       TEXT NOT NULL DEFAULT '',
+            is_active   INTEGER NOT NULL DEFAULT 1    CHECK(is_active IN (0, 1)),
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(upstream_id, api_key)
+        )
+    """,
+
 
     "target_models": """
         CREATE TABLE IF NOT EXISTS target_models (
@@ -54,6 +69,10 @@ TABLES = {
             name        TEXT NOT NULL CHECK(length(name) > 0),
             upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE RESTRICT,
             multimodal  INTEGER NOT NULL DEFAULT 1    CHECK(multimodal IN (0, 1)),
+            max_context INTEGER DEFAULT NULL,
+            max_input   INTEGER DEFAULT NULL,
+            max_output  INTEGER DEFAULT NULL,
+            rpm         INTEGER DEFAULT NULL,
             created_at  TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(name, upstream_id)
         )

@@ -198,12 +198,12 @@
   border-bottom: none;
 }
 
-/* fallback 行 */
-#page-routes tr.route-fallback td {
+/* 默认路由行 */
+#page-routes tr.route-default td {
   background: hsl(var(--purple) / 0.04);
 }
 
-#page-routes tr.route-fallback:hover td {
+#page-routes tr.route-default:hover td {
   background: hsl(var(--purple) / 0.07);
 }
 

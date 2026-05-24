@@ -23,7 +23,7 @@ function switchRequestType(rt) {
 // ─── 共享：表格行渲染 ───
 
 function _routeRowHtml(r, isAgent, isPreview) {
-  const isFallback = r.source === '*';
+  const isDefault = r.source === '*';
   const valid = r.valid !== false; // for preview data
   const isInvalid = !isAgent && r.source !== '*' && !valid;
   const agentInvalid = isAgent && !valid;
@@ -31,13 +31,13 @@ function _routeRowHtml(r, isAgent, isPreview) {
   const hasTarget = r.target_name !== null && r.target_name !== undefined;
 
   let rowClass = [];
-  if (isFallback) rowClass.push('route-fallback');
+  if (isDefault) rowClass.push('route-default');
   if (isInvalid || agentInvalid) rowClass.push('route-invalid');
   else if (isDisabled) rowClass.push('route-disabled');
   const rowCls = rowClass.filter(Boolean).join(' ');
 
-  const sourceBadge = isFallback
-    ? '<span class="badge badge-purple">★ fallback</span>'
+  const sourceBadge = isDefault
+    ? '<span class="badge badge-purple">默认路由</span>'
     : '<span class="badge ' + (isAgent ? 'badge-amber' : 'badge-purple') + '">' + escHtml(r.source) + '</span>';
 
   const targetBadge = hasTarget && valid
@@ -199,20 +199,20 @@ async function makeRouteModal(editId, isAgent) {
     ? `<input type="text" class="form-input" id="r-source" value="${escHtml(data.source)}" placeholder="如 claude-sonnet-4-6">
        <div class="form-hint">子 agent 请求的模型名称，匹配时覆盖主路由指向</div>`
     : (data.source === '*'
-      ? `<input type="text" class="form-input" value="* (fallback)" readonly><input type="hidden" id="r-source" value="*">`
+      ? `<input type="text" class="form-input" value="* (默认路由)" readonly><input type="hidden" id="r-source" value="*">`
       : `<input type="text" class="form-input" id="r-source" value="${escHtml(data.source)}" placeholder="如 gpt-4o">
          <div class="form-hint">客户端请求的模型名称，路由会将其转发到目标模型</div>`);
 
   const saveAction = isAgent ? 'saveAgentRoute' : 'saveRoute';
   const saveLabel = isAgent ? '保存 Agent 路由' : '保存路由';
-  const allowFallbackAttr = data.source === '*' ? ' data-fallback="true"' : '';
+  const allowDefaultAttr = data.source === '*' ? ' data-default="true"' : '';
 
   showModal(title,
     `<div class="form-group"><label class="form-label">源模型名</label>${sourceField}</div>
      <hr class="form-divider">
      ${cascadingHtml}
      <input type="hidden" id="r-proxy" value="${escHtml(data.request_type)}">`,
-    `<button class="btn btn-secondary" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="${saveAction}" data-edit-id="${editId || 0}"${allowFallbackAttr}>${saveLabel}</button>`);
+    `<button class="btn btn-secondary" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="${saveAction}" data-edit-id="${editId || 0}"${allowDefaultAttr}>${saveLabel}</button>`);
   const modal = document.querySelector('.modal');
   if (modal) modal.classList.add('route-modal');
   bindCascadeModelSelect();
@@ -221,7 +221,7 @@ async function makeRouteModal(editId, isAgent) {
 async function showRouteModal(editId) { makeRouteModal(editId, false); }
 async function showAgentRouteModal(editId) { makeRouteModal(editId, true); }
 
-async function showFallbackModal() {
+async function showDefaultRouteModal() {
   const data = { source: '*', target_model_id: '', request_type: currentRequestType };
   let models, upstreams;
   try {
@@ -231,25 +231,25 @@ async function showFallbackModal() {
     return;
   }
   const cascadingHtml = buildCascadingSelect(upstreams, models, null, null);
-  showModal('新增回退路由',
-    `<div class="form-group"><label class="form-label">源模型名</label><input type="text" class="form-input" value="* (fallback)" readonly><input type="hidden" id="r-source" value="*"></div>
+  showModal('新增默认路由',
+    `<div class="form-group"><label class="form-label">源模型名</label><input type="text" class="form-input" value="* (默认路由)" readonly><input type="hidden" id="r-source" value="*"></div>
      <hr class="form-divider">
      ${cascadingHtml}
      <input type="hidden" id="r-proxy" value="${escHtml(data.request_type)}">`,
-    `<button class="btn btn-secondary" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="saveRoute" data-edit-id="0" data-fallback="true">保存路由</button>`);
+    `<button class="btn btn-secondary" data-action="closeModal">取消</button><button class="btn btn-primary" data-action="saveRoute" data-edit-id="0" data-default="true">保存路由</button>`);
   const modal = document.querySelector('.modal');
   if (modal) modal.classList.add('route-modal');
   bindCascadeModelSelect();
 }
 
-async function saveRoute(editId, allowFallback = false) {
+async function saveRoute(editId, allowDefault = false) {
   const data = {
     source: document.getElementById('r-source').value.trim(),
     target_model_id: parseInt(document.getElementById('r-target').value),
     request_type: document.getElementById('r-proxy').value,
   };
   if (!data.source) { alert('源模型名不能为空'); return; }
-  if (!editId && data.source === '*' && !allowFallback) { alert('不能通过此按钮添加回退路由，请使用「新增回退路由」按钮'); return; }
+  if (!editId && data.source === '*' && !allowDefault) { alert('不能通过此按钮添加默认路由，请使用「新增默认路由」按钮'); return; }
   if (editId) {
     await api('/api/routes/' + editId, { method: 'PUT', body: JSON.stringify(data) });
   } else {
@@ -266,7 +266,7 @@ async function confirmDeleteRoute(id, source) {
   if (source === '*') {
     const routes = await api('/api/routes');
     const starCount = routes.routes.filter(r => r.source === '*').length;
-    if (starCount <= 1) { alert('不能删除最后一条 * fallback 路由'); return; }
+    if (starCount <= 1) { alert('不能删除最后一条默认路由'); return; }
   }
   if (!confirm('确认删除路由 "' + source + '"？')) return;
   const result = await api('/api/routes/' + id, { method: 'DELETE' });
@@ -281,7 +281,7 @@ async function saveAgentRoute(editId) {
     request_type: document.getElementById('r-proxy').value,
   };
   if (!data.source) { alert('源模型名不能为空'); return; }
-  if (data.source === '*') { alert('Agent 路由不支持 * fallback'); return; }
+  if (data.source === '*') { alert('Agent 路由不支持默认路由'); return; }
   if (!data.target_model_id) { alert('请选择目标模型'); return; }
   if (editId) {
     await api('/api/agent-routes/' + editId, { method: 'PUT', body: JSON.stringify(data) });
@@ -320,7 +320,7 @@ async function loadRoutePage() {
             路由映射
           </div>
           <div class="page-actions">
-            <button class="btn btn-secondary btn-sm" data-action="showFallbackModal">+ 回退路由</button>
+            <button class="btn btn-secondary btn-sm" data-action="showDefaultRouteModal">+ 默认路由</button>
             <button class="btn btn-primary btn-sm" data-action="showRouteModal">+ 新增路由</button>
           </div>
         </div>
@@ -553,11 +553,11 @@ function initRoutePage() {
   on('switchRequestType', (e, el) => switchRequestType(el.dataset.pt));
   on('showRouteModal', (e, el) => el.dataset.id ? showRouteModal(parseInt(el.dataset.id)) : showRouteModal());
   on('showAgentRouteModal', (e, el) => el.dataset.id ? showAgentRouteModal(parseInt(el.dataset.id)) : showAgentRouteModal());
-  on('showFallbackModal', showFallbackModal);
+  on('showDefaultRouteModal', showDefaultRouteModal);
   on('saveRoute', (e, el) => {
     const editId = parseInt(el.dataset.editId) || 0;
-    const allowFallback = el.dataset.fallback === 'true';
-    saveRoute(editId || 0, allowFallback);
+    const allowDefault = el.dataset.default === 'true';
+    saveRoute(editId || 0, allowDefault);
   });
   on('saveAgentRoute', (e, el) => saveAgentRoute(parseInt(el.dataset.editId) || 0));
   on('confirmDeleteRoute', (e, el) => confirmDeleteRoute(parseInt(el.dataset.id), el.dataset.source));
