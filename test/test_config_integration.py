@@ -104,3 +104,45 @@ class TestConfigIntegration(unittest.TestCase):
         self.assertEqual(len(routes), 3)
         for route in routes:
             self.assertEqual(route["request_type"], "responses")
+
+
+
+class TestConfigCacheKeyIntegration(unittest.TestCase):
+    """ConfigCache reload 后 upstream_api_keys 变更验证。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "config.db"
+        self.db = ConfigDB(self.db_path)
+        self.up_id = self.db.add_upstream({
+            "name": "test-up", "base_url": "http://test:4000", "api_key": "sk-test"
+        })
+        self.cache = ConfigCache(self.db_path)
+
+    def tearDown(self):
+        self.db.close()
+        self.tmp.cleanup()
+
+    def test_add_key_then_reload_makes_it_available(self):
+        """添加 key → reload → pick_key 返回该 key"""
+        kid = self.db.add_upstream_key(self.up_id, "sk-key1")
+        self.cache.reload()
+        key = self.cache.pick_key(self.up_id)
+        self.assertEqual(key, "sk-key1")
+
+    def test_disable_key_then_reload_removes_from_rotation(self):
+        """禁用 key → reload → pick_key 只返回剩余的活跃 key"""
+        k1 = self.db.add_upstream_key(self.up_id, "sk-key1")
+        k2 = self.db.add_upstream_key(self.up_id, "sk-key2")
+        self.db.update_upstream_key(k1, {"is_active": 0})
+        self.cache.reload()
+        key = self.cache.pick_key(self.up_id)
+        self.assertEqual(key, "sk-key2")
+
+    def test_delete_key_then_reload(self):
+        """删除 key → reload → pick_key 返回空字符串"""
+        kid = self.db.add_upstream_key(self.up_id, "sk-key1")
+        self.db.delete_upstream_key(kid)
+        self.cache.reload()
+        key = self.cache.pick_key(self.up_id)
+        self.assertEqual(key, "")

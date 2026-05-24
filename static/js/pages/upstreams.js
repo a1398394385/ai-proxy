@@ -31,11 +31,12 @@ async function loadUpstreamTable() {
       <td style="font-family:monospace;font-size:12px">${escHtml(u.base_url)}</td>
       <td><span class="badge ${FORMAT_COLORS[u.format] || ''}">${FORMAT_LABELS[u.format] || u.format || '-'}</span></td>
       <td>${u.timeout}s</td>
-      <td>
+<td>
         <button class="btn btn-secondary btn-sm" data-action="showUpstreamModal" data-id="${u.id}">编辑</button>
-        <button class="btn btn-secondary btn-sm" data-action="testUpstream" data-id="${u.id}">测试</button>
-        <button class="btn btn-danger btn-sm" data-action="showDeleteUpstreamModal" data-id="${u.id}">删除</button>
-      </td>
+        <button class="btn btn-secondary btn-sm" data-action="openKeysModal" data-id="${u.id}" data-name="${escHtml(u.name)}">🔑 Keys (<span i-id="key-count-${u.id}">0</span>)</button>
+<button class="btn btn-secondary btn-sm" data-action="testUpstream" data-id="${u.id}">测试</button>
+<button class="btn btn-danger btn-sm" data-action="showDeleteUpstreamModal" data-id="${u.id}">删除</button>
+</td>
     </tr>`
   ).join('');
 }
@@ -198,6 +199,186 @@ async function testUpstream(id) {
     alert('❌ 不可达: ' + (result.error || '未知错误'));
   }
 }
+
+// ===== Keys 管理 =====
+
+let _keyStatusInterval = null;
+let _currentKeysUpstreamId = null;
+let _currentKeysUpstreamName = null;
+
+async function loadKeyCounts() {
+  const spans = document.querySelectorAll('[i-id^="key-count-"]');
+  for (const span of spans) {
+    const upstreamId = span.id.replace('key-count-', '');
+    try {
+      const data = await api('/api/upstreams/' + upstreamId + '/keys');
+      const activeCount = (data.keys || []).filter(k => k.is_active).length;
+      span.textContent = activeCount;
+    } catch (e) { /* silent */ }
+  }
+}
+
+async function openKeysModal(upstreamId, upstreamName) {
+  if (_keyStatusInterval) clearInterval(_keyStatusInterval);
+  _currentKeysUpstreamId = upstreamId;
+  _currentKeysUpstreamName = upstreamName;
+
+  const [upstream, keysData] = await Promise.all([
+    api('/api/upstreams/' + upstreamId),
+    api('/api/upstreams/' + upstreamId + '/keys')
+  ]);
+
+  const cooldownSecs = upstream.key_cooldown_secs || 60;
+  const keys = keysData.keys || [];
+
+  const cooldownHtml = `
+    <div class="keys-cooldown-row">
+      <label>429 冷却时长:</label>
+      <input type="number" id="key-cooldown-secs" value="${cooldownSecs}" min="1" max="3600">
+      <span class="keys-unit">秒</span>
+      <button class="btn btn-primary btn-sm" data-action="saveCooldown" data-id="${upstreamId}">保存</button>
+    </div>`;
+
+  const keysTableHtml = renderKeysRows(keys);
+
+  const addFormHtml = `
+    <div class="keys-add-form">
+      <h4>+ 新增 Key</h4>
+      <div class="keys-add-fields">
+        <div class="keys-field">
+          <label>API Key *</label>
+          <input type="text" id="new-key-value" placeholder="sk-...">
+        </div>
+        <div class="keys-field">
+          <label>Label</label>
+          <input type="text" id="new-key-label" placeholder="账号A">
+        </div>
+        <button class="btn btn-primary btn-sm" data-action="submitAddKey" data-id="${upstreamId}">添加</button>
+      </div>
+    </div>`;
+
+  const modalBody = cooldownHtml + keysTableHtml + addFormHtml;
+
+  showModal('上游 "' + escHtml(upstreamName) + '" 的 API Keys', modalBody,
+    '<button class="btn btn-secondary" data-action="closeKeysModal">关闭</button>');
+
+  _keyStatusInterval = setInterval(() => refreshKeyStatus(upstreamId), 5000);
+  refreshKeyStatus(upstreamId);
+}
+
+function closeKeysModal() {
+  if (_keyStatusInterval) {
+    clearInterval(_keyStatusInterval);
+    _keyStatusInterval = null;
+  }
+  closeModal();
+}
+
+function renderKeysRows(keys) {
+  if (!keys || keys.length === 0) {
+    return '<p class="keys-empty">暂无 Key</p>';
+  }
+  return `
+    <table class="keys-table">
+      <thead><tr>
+        <th class="keys-col-idx">#</th>
+        <th class="keys-col-label">Label</th>
+        <th class="keys-col-key">Key</th>
+        <th class="keys-col-status">状态</th>
+        <th class="keys-col-actions">操作</th>
+      </tr></thead>
+      <tbody>
+        ${keys.map((k, i) => `
+          <tr>
+            <td class="keys-col-idx">${i + 1}</td>
+            <td class="keys-col-label">${escHtml(k.label || '-')}</td>
+            <td class="keys-col-key" title="${escHtml(k.masked_key)}">${escHtml(k.masked_key)}</td>
+            <td class="keys-col-status" data-key-idx="${i}">
+              ${k.is_active ? '<span class="keys-status-active">✅ 正常</span>' : '<span class="keys-status-inactive">⛔ 已禁用</span>'}
+            </td>
+            <td class="keys-col-actions">
+              ${k.is_active
+                ? '<button class="btn btn-secondary btn-sm" data-action="toggleKeyActive" data-id="' + k.id + '" data-active="0">禁用</button>'
+                : '<button class="btn btn-secondary btn-sm" data-action="toggleKeyActive" data-id="' + k.id + '" data-active="1">启用</button>'}
+              <button class="btn btn-danger btn-sm" data-action="deleteKey" data-id="' + k.id + '">删除</button>
+            </td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+async function saveCooldown(upstreamId) {
+  const secs = parseInt(document.getElementById('key-cooldown-secs').value);
+  if (isNaN(secs) || secs < 1) { alert('冷却时长必须 ≥ 1 秒'); return; }
+  await api('/api/upstreams/' + upstreamId, {
+    method: 'PUT',
+    body: JSON.stringify({ key_cooldown_secs: secs })
+  });
+  showToast('冷却时长已保存');
+}
+
+async function toggleKeyActive(keyId, isActive) {
+  await api('/api/upstreams/0/keys/' + keyId, {
+    method: 'PUT',
+    body: JSON.stringify({ is_active: parseInt(isActive) })
+  });
+  showToast(isActive == 1 ? 'Key 已启用' : 'Key 已禁用');
+  if (_currentKeysUpstreamId) {
+    openKeysModal(_currentKeysUpstreamId, _currentKeysUpstreamName);
+  }
+}
+
+async function deleteKey(keyId) {
+  if (!confirm('确定删除此 Key？此操作不可撤销。')) return;
+  await api('/api/upstreams/0/keys/' + keyId, { method: 'DELETE' });
+  showToast('Key 已删除');
+  if (_currentKeysUpstreamId) {
+    openKeysModal(_currentKeysUpstreamId, _currentKeysUpstreamName);
+  }
+}
+
+async function submitAddKey(upstreamId) {
+  const apiKey = document.getElementById('new-key-value').value.trim();
+  if (!apiKey) { alert('API Key 不能为空'); return; }
+  const label = document.getElementById('new-key-label').value.trim();
+  try {
+    await api('/api/upstreams/' + upstreamId + '/keys', {
+      method: 'POST',
+      body: JSON.stringify({ api_key: apiKey, label: label })
+    });
+    showToast('Key 已添加');
+    openKeysModal(upstreamId, _currentKeysUpstreamName || '');
+  } catch (e) {
+    alert('添加失败: ' + e.message);
+  }
+}
+
+async function refreshKeyStatus(upstreamId) {
+  try {
+    const data = await api('/api/upstreams/' + upstreamId + '/key-status');
+    if (!Array.isArray(data)) return;
+    for (const s of data) {
+      const cell = document.querySelector('[data-key-idx="' + s.idx + '"]');
+      if (!cell) continue;
+      if (s.cooling_down) {
+        cell.innerHTML = '<span class="keys-status-cooling">⏳ 冷却中 (' + s.cooldown_remaining_secs + 's)</span>';
+      } else {
+        cell.innerHTML = '<span class="keys-status-active">✅ 正常</span>';
+      }
+    }
+  } catch (e) { /* silent */ }
+}
+
+function showToast(msg) {
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = msg;
+  toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:hsl(var(--card));color:hsl(var(--foreground));padding:12px 20px;border-radius:8px;border:1px solid hsl(var(--border));font-size:13px;z-index:10000;box-shadow:0 4px 12px rgba(0,0,0,0.15);';
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 2500);
+}
+
+
 
 function _deleteUpstreamBody(uName, uId, modelNames, hasRoutes, routeList) {
   const body = '<div style="font-size:14px;line-height:1.8">' +
@@ -474,11 +655,13 @@ async function bulkAddDetectedModels(upstreamId) {
 async function loadUpstreamPage() {
   await refreshConfigStatus();
   loadUpstreamTable();
+  loadKeyCounts();
 }
 
 function initUpstreamPage() {
   on('toggleModelDrawer', (e, el) => toggleModelDrawer(el, el.dataset.id));
   on('showUpstreamModal', (e, el) => showUpstreamModal(el.dataset.id));
+  on('openKeysModal', (e, el) => openKeysModal(parseInt(el.dataset.id), el.dataset.name));
   on('testUpstream', (e, el) => testUpstream(el.dataset.id));
   on('showDeleteUpstreamModal', (e, el) => showDeleteUpstreamModal(el.dataset.id));
   on('saveUpstream', (e, el) => saveUpstream(el.dataset.editId));
@@ -491,6 +674,12 @@ function initUpstreamPage() {
   on('bulkAddDetectedModels', (e, el) => bulkAddDetectedModels(el.dataset.id));
   on('toggleSelectAllModels', (e, el) => toggleSelectAllModels(el.dataset.checked === 'true'));
   on('updateDetectSelectedCount', updateDetectSelectedCount);
+  // Keys 操作
+  on('closeKeysModal', closeKeysModal);
+  on('saveCooldown', (e, el) => saveCooldown(parseInt(el.dataset.id)));
+  on('toggleKeyActive', (e, el) => toggleKeyActive(parseInt(el.dataset.id), parseInt(el.dataset.active)));
+  on('deleteKey', (e, el) => deleteKey(parseInt(el.dataset.id)));
+  on('submitAddKey', (e, el) => submitAddKey(parseInt(el.dataset.id)));
 }
 
 export { loadUpstreamPage, initUpstreamPage, refreshConfigStatus };
