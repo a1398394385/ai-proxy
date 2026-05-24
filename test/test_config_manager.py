@@ -1151,3 +1151,85 @@ class TestTemplateCRUD(unittest.TestCase):
         # 刷新 cached template
         with self.assertRaises(ValueError):
             self.db.apply_template(tid)
+
+
+class TestUpstreamApiKeysCRUD(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / 'config.db'
+        from proxy.config_manager import ConfigDB
+        self.db = ConfigDB(self.db_path)
+        self.up_id = self.db.add_upstream({'name': 'test-upstream', 'base_url': 'http://test'})
+
+    def tearDown(self):
+        self.db.close()
+        self.tmp.cleanup()
+
+    def test_add_and_list_keys(self):
+        kid = self.db.add_upstream_key(self.up_id, 'sk-test-key-1234abc', 'primary')
+        self.assertIsInstance(kid, int)
+        keys = self.db.list_upstream_keys(self.up_id)
+        self.assertEqual(len(keys), 1)
+        self.assertEqual(keys[0]['id'], kid)
+        self.assertEqual(keys[0]['upstream_id'], self.up_id)
+        self.assertEqual(keys[0]['label'], 'primary')
+        self.assertEqual(keys[0]['is_active'], 1)
+        self.assertEqual(keys[0]['masked_key'], '****4abc')
+        self.assertNotIn('api_key', keys[0])
+
+    def test_masked_key_short(self):
+        self.db.add_upstream_key(self.up_id, 'abc', 'short')
+        keys = self.db.list_upstream_keys(self.up_id)
+        self.assertEqual(keys[0]['masked_key'], 'abc')
+
+    def test_duplicate_key_raises(self):
+        self.db.add_upstream_key(self.up_id, 'sk-dup', 'first')
+        with self.assertRaises(ValueError) as ctx:
+            self.db.add_upstream_key(self.up_id, 'sk-dup', 'second')
+        self.assertIn('已存在', str(ctx.exception))
+
+    def test_limit_20_keys(self):
+        for i in range(20):
+            self.db.add_upstream_key(self.up_id, f'sk-key-{i:02d}')
+        keys = self.db.list_upstream_keys(self.up_id)
+        self.assertEqual(len(keys), 20)
+        with self.assertRaises(ValueError) as ctx:
+            self.db.add_upstream_key(self.up_id, 'sk-key-overflow')
+        self.assertIn('最多配置 20 个', str(ctx.exception))
+
+    def test_update_key_label_and_active(self):
+        kid = self.db.add_upstream_key(self.up_id, 'sk-update', 'old-label')
+        self.db.update_upstream_key(kid, {'label': 'new-label', 'is_active': 0})
+        keys = self.db.list_upstream_keys(self.up_id)
+        self.assertEqual(keys[0]['label'], 'new-label')
+        self.assertEqual(keys[0]['is_active'], 0)
+
+    def test_delete_key(self):
+        kid = self.db.add_upstream_key(self.up_id, 'sk-delete')
+        self.db.delete_upstream_key(kid)
+        keys = self.db.list_upstream_keys(self.up_id)
+        self.assertEqual(len(keys), 0)
+
+    def test_get_first_active_key(self):
+        self.db.add_upstream_key(self.up_id, 'sk-active-first')
+        self.db.add_upstream_key(self.up_id, 'sk-active-second')
+        first = self.db.get_first_active_key(self.up_id)
+        self.assertEqual(first, 'sk-active-first')
+
+    def test_get_first_active_key_skips_disabled(self):
+        kid1 = self.db.add_upstream_key(self.up_id, 'sk-disabled')
+        self.db.update_upstream_key(kid1, {'is_active': 0})
+        self.db.add_upstream_key(self.up_id, 'sk-active-next')
+        first = self.db.get_first_active_key(self.up_id)
+        self.assertEqual(first, 'sk-active-next')
+
+    def test_get_first_active_key_no_keys(self):
+        first = self.db.get_first_active_key(self.up_id)
+        self.assertEqual(first, '')
+
+    def test_cascade_delete_on_upstream_removal(self):
+        self.db.add_upstream_key(self.up_id, 'sk-cascade')
+        self.assertEqual(len(self.db.list_upstream_keys(self.up_id)), 1)
+        self.db.delete_upstream_with_models(self.up_id)
+        keys = self.db.list_upstream_keys(self.up_id)
+        self.assertEqual(len(keys), 0)

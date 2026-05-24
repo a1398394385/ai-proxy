@@ -171,7 +171,90 @@ class ConfigDB:
         finally:
             conn.close()
 
-    # ─── 目标模型 CRUD ────────────────────────────────────────────
+    # ─── 上游 API Key CRUD ─────────────────────────────────────────
+
+    @staticmethod
+    def _mask_key(api_key: str) -> str:
+        if len(api_key) <= 4:
+            return api_key
+        return "****" + api_key[-4:]
+
+    def list_upstream_keys(self, upstream_id: int) -> list:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT id, upstream_id, api_key, label, is_active, created_at"
+                " FROM upstream_api_keys WHERE upstream_id = ? ORDER BY id",
+                (upstream_id,),
+            ).fetchall()
+            result = []
+            for r in rows:
+                d = dict(r)
+                d["masked_key"] = self._mask_key(d.pop("api_key"))
+                result.append(d)
+            return result
+        finally:
+            conn.close()
+
+    def add_upstream_key(self, upstream_id: int, api_key: str, label: str = "") -> int:
+        conn = self._connect()
+        try:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM upstream_api_keys WHERE upstream_id = ?",
+                (upstream_id,),
+            ).fetchone()[0]
+            if count >= 20:
+                raise ValueError("每个上游最多配置 20 个 key")
+            cursor = conn.execute(
+                "INSERT INTO upstream_api_keys (upstream_id, api_key, label) VALUES (?, ?, ?)",
+                (upstream_id, api_key, label),
+            )
+            conn.commit()
+            return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            raise ValueError("该 key 已存在于此上游")
+        finally:
+            conn.close()
+
+    def update_upstream_key(self, key_id: int, data: dict):
+        conn = self._connect()
+        try:
+            fields = []
+            values = []
+            for key in ("label", "is_active"):
+                if key in data:
+                    fields.append(f"{key} = ?")
+                    values.append(data[key])
+            if not fields:
+                return
+            values.append(key_id)
+            conn.execute(
+                f"UPDATE upstream_api_keys SET {', '.join(fields)} WHERE id = ?",
+                values,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def delete_upstream_key(self, key_id: int):
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM upstream_api_keys WHERE id = ?", (key_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_first_active_key(self, upstream_id: int) -> str:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT api_key FROM upstream_api_keys"
+                " WHERE upstream_id = ? AND is_active = 1 ORDER BY id LIMIT 1",
+                (upstream_id,),
+            ).fetchone()
+            return row["api_key"] if row else ""
+        finally:
+            conn.close()
 
     def list_models(self, upstream_id: Optional[int] = None):
         conn = self._connect()
