@@ -2210,6 +2210,10 @@ class ConfigCache:
         self._upstream_name_to_id: dict[str, int] = {}
         self._upstream_model_map: dict[int, dict[str, bool]] = {}
         self._upstream_config_map: dict[int, dict] = {}
+        self._upstream_keys: dict[int, list[str]] = {}
+        self._upstream_has_any_key: set[int] = set()
+        self._key_counters: dict[int, int] = {}
+        self._key_cooldowns: dict[tuple, float] = {}  # (upstream_id, api_key) → cooldown_until
         self._loaded_at: float = 0
 
     def reload(self):
@@ -2329,11 +2333,100 @@ class ConfigCache:
                 except Exception:
                     logging.warning("[ConfigCache] 上游缓存加载失败，保留旧缓存", exc_info=True)
 
+                # 加载 upstream_api_keys
+                try:
+                    new_upstream_keys: dict[int, list[str]] = {}
+                    new_has_any_key: set[int] = set()
+                    conn = db._connect()
+                    try:
+                        all_keys_rows = conn.execute(
+                            "SELECT upstream_id, api_key, is_active"
+                            " FROM upstream_api_keys"
+                            " ORDER BY upstream_id, id"
+                        ).fetchall()
+                    finally:
+                        conn.close()
+                    for row in all_keys_rows:
+                        uid = row["upstream_id"]
+                        if uid not in self._upstream_config_map:
+                            continue
+                        if row["is_active"]:
+                            if uid not in new_upstream_keys:
+                                new_upstream_keys[uid] = []
+                            new_upstream_keys[uid].append(row["api_key"])
+                        new_has_any_key.add(uid)
+                    self._upstream_keys = new_upstream_keys
+                    self._upstream_has_any_key = new_has_any_key
+                    self._key_counters = {}
+                except Exception:
+                    logging.warning(
+                        "[ConfigCache] upstream_api_keys 加载失败，保留旧缓存",
+                        exc_info=True,
+                    )
+
                 self._loaded_at = time.time()
+
             finally:
                 db.close()
         except Exception:
             logging.warning("[ConfigCache] 配置缓存加载失败，保留旧缓存", exc_info=True)
+
+
+    def pick_key(self, upstream_id: int) -> str:
+        """Round-Robin 轮询选择 API key。
+
+        跳过冷却中的 key。全部冷却时降级返回当前轮询位置的 key。
+        无 key 时返回空字符串。
+        """
+        with self._lock:
+            self._refresh_if_stale()
+            keys = self._upstream_keys.get(upstream_id, [])
+            if not keys:
+                return ""
+            now = time.time()
+            counter = self._key_counters.get(upstream_id, 0) % len(keys)
+            n = len(keys)
+            # 尝试在冷却外的 key 中轮询
+            for offset in range(n):
+                idx = (counter + offset) % n
+                candidate = keys[idx]
+                cooldown_key = (upstream_id, candidate)
+                if self._key_cooldowns.get(cooldown_key, 0) < now:
+                    self._key_counters[upstream_id] = (idx + 1) % n
+                    return candidate
+            # 全部冷却 → 降级返回当前 key
+            return keys[counter]
+
+    def mark_cooldown(self, upstream_id: int, api_key: str, seconds: int):
+        """标记 key 进入冷却。
+
+        冷却键使用 (upstream_id, api_key) 而非 index，
+        确保冷却状态跨 reload 保持不变。
+        """
+        with self._lock:
+            key_tuple = (upstream_id, api_key)
+            self._key_cooldowns[key_tuple] = time.time() + seconds
+
+    def get_key_status(self, upstream_id: int) -> list:
+        """查询上游所有 key 的冷却状态。"""
+        with self._lock:
+            self._refresh_if_stale()
+            keys = self._upstream_keys.get(upstream_id, [])
+            if not keys:
+                return []
+            now = time.time()
+            result = []
+            for idx, key in enumerate(keys):
+                masked = key if len(key) <= 4 else "****" + key[-4:]
+                cooldown_until = self._key_cooldowns.get((upstream_id, key), 0)
+                remaining = max(0.0, cooldown_until - now)
+                result.append({
+                    "idx": idx,
+                    "masked_key": masked,
+                    "cooling_down": remaining > 0,
+                    "cooldown_remaining_secs": round(remaining, 1),
+                })
+            return result
 
 
 # ─── YAML 解析（内联，避免依赖 proxy.py）───────────────────────────

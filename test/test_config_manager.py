@@ -1545,3 +1545,127 @@ class TestMigrationV9ToV10(unittest.TestCase):
         ).fetchone()[0]
         self.assertEqual(count, 1, "重试不应产生重复记录")
         conn.close()
+
+
+class TestConfigCachePickKey(unittest.TestCase):
+    """ConfigCache key 轮询 / 冷却 / 状态查询 测试"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "config.db"
+        from proxy.config_manager import ConfigDB, ConfigCache
+        self.db = ConfigDB(self.db_path)
+        self.up_id = self.db.add_upstream({
+            "name": "test-up", "base_url": "http://test"
+        })
+        self.cache = ConfigCache(self.db_path)
+
+    def tearDown(self):
+        self.db.close()
+        self.tmp.cleanup()
+
+    # ─── pick_key ───
+
+    def test_pick_key_no_keys(self):
+        """无 key 时返回空字符串。"""
+        self.cache.reload()
+        key = self.cache.pick_key(self.up_id)
+        self.assertEqual(key, "")
+
+    def test_pick_key_single_key(self):
+        """单个 key 时始终返回该 key。"""
+        self.db.add_upstream_key(self.up_id, "sk-key1")
+        self.cache.reload()
+        self.assertEqual(self.cache.pick_key(self.up_id), "sk-key1")
+        self.assertEqual(self.cache.pick_key(self.up_id), "sk-key1")
+
+    def test_pick_key_round_robin(self):
+        """多 key 时轮询返回。"""
+        self.db.add_upstream_key(self.up_id, "sk-key1")
+        self.db.add_upstream_key(self.up_id, "sk-key2")
+        self.db.add_upstream_key(self.up_id, "sk-key3")
+        self.cache.reload()
+        keys = [self.cache.pick_key(self.up_id) for _ in range(6)]
+        self.assertEqual(keys[0], "sk-key1")
+        self.assertEqual(keys[1], "sk-key2")
+        self.assertEqual(keys[2], "sk-key3")
+        self.assertEqual(keys[3], "sk-key1")
+        self.assertEqual(keys[4], "sk-key2")
+        self.assertEqual(keys[5], "sk-key3")
+
+    def test_pick_key_skips_inactive(self):
+        """跳过 is_active=0 的 key。"""
+        kid = self.db.add_upstream_key(self.up_id, "sk-inactive")
+        self.db.update_upstream_key(kid, {"is_active": 0})
+        self.db.add_upstream_key(self.up_id, "sk-active")
+        self.cache.reload()
+        self.assertEqual(self.cache.pick_key(self.up_id), "sk-active")
+
+    def test_pick_key_skip_cooling_key(self):
+        """冷却中的 key 被跳过，选中下一个。"""
+        self.db.add_upstream_key(self.up_id, "sk-key1")
+        self.db.add_upstream_key(self.up_id, "sk-key2")
+        self.cache.reload()
+        self.cache.mark_cooldown(self.up_id, "sk-key1", 60)
+        key = self.cache.pick_key(self.up_id)
+        self.assertEqual(key, "sk-key2")
+
+    def test_pick_key_all_cooling_fallback(self):
+        """全部冷却时降级返回某个 key（不返回空）。"""
+        self.db.add_upstream_key(self.up_id, "sk-key1")
+        self.db.add_upstream_key(self.up_id, "sk-key2")
+        self.cache.reload()
+        self.cache.mark_cooldown(self.up_id, "sk-key1", 60)
+        self.cache.mark_cooldown(self.up_id, "sk-key2", 60)
+        key = self.cache.pick_key(self.up_id)
+        self.assertIn(key, ["sk-key1", "sk-key2"])
+
+    # ─── mark_cooldown ───
+
+    def test_mark_cooldown(self):
+        """mark_cooldown 设置冷却。"""
+        self.db.add_upstream_key(self.up_id, "sk-key1")
+        self.cache.reload()
+        self.cache.mark_cooldown(self.up_id, "sk-key1", 30)
+        status = self.cache.get_key_status(self.up_id)
+        self.assertTrue(status[0]["cooling_down"])
+        self.assertGreater(status[0]["cooldown_remaining_secs"], 0)
+
+    def test_mark_cooldown_by_api_key(self):
+        """冷却键使用 api_key 定位，非 index。"""
+        self.db.add_upstream_key(self.up_id, "sk-key1")
+        self.db.add_upstream_key(self.up_id, "sk-key2")
+        self.cache.reload()
+        self.cache.mark_cooldown(self.up_id, "sk-key2", 60)
+        key = self.cache.pick_key(self.up_id)
+        self.assertEqual(key, "sk-key1")
+
+    # ─── get_key_status ───
+
+    def test_get_key_status_all_active(self):
+        """无冷却时所有 key 状态为未冷却。"""
+        self.db.add_upstream_key(self.up_id, "sk-key1")
+        self.db.add_upstream_key(self.up_id, "sk-key2")
+        self.cache.reload()
+        status = self.cache.get_key_status(self.up_id)
+        self.assertEqual(len(status), 2)
+        for s in status:
+            self.assertFalse(s["cooling_down"])
+            self.assertEqual(s["cooldown_remaining_secs"], 0.0)
+
+    def test_get_key_status_with_cooldown(self):
+        """冷却 key 的 status 正确反映。"""
+        self.db.add_upstream_key(self.up_id, "sk-key1")
+        self.db.add_upstream_key(self.up_id, "sk-key2-longer")
+        self.cache.reload()
+        self.cache.mark_cooldown(self.up_id, "sk-key1", 30)
+        status = self.cache.get_key_status(self.up_id)
+        self.assertEqual(len(status), 2)
+        s0 = status[0]
+        self.assertEqual(s0["idx"], 0)
+        self.assertEqual(s0["masked_key"], "****key1")
+        self.assertTrue(s0["cooling_down"])
+        s1 = status[1]
+        self.assertEqual(s1["idx"], 1)
+        self.assertEqual(s1["masked_key"], "****nger")
+        self.assertFalse(s1["cooling_down"])
