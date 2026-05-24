@@ -40,14 +40,13 @@ class ConfigDB:
             for t in ('schema_version', 'upstreams', 'upstream_api_keys', 'target_models', 'route_templates', 'model_routes', 'agent_routes'):
                 ensure_table(conn, t)
 
-            # 新数据库写入 schema_version = 9（幂等）
+            # 新数据库写入 schema_version = 10（幂等）
             row = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()
             if row[0] == 0:
-                conn.execute("INSERT INTO schema_version (version) VALUES (9)")
+                conn.execute("INSERT INTO schema_version (version) VALUES (10)")
             conn.commit()
         finally:
             conn.close()
-
         # 自动执行未完成的迁移
         try:
             mg = Migrations(self.db_path)
@@ -1258,10 +1257,25 @@ class Migrations:
                     "details": "已迁移到 v9: target_models 新增 max_context/max_input/max_output/rpm 列",
                 }
             if version == 9:
+                has_keys_table = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='upstream_api_keys'"
+                ).fetchone()
+                if has_keys_table:
+                    return {
+                        "migrated": True,
+                        "version": 9,
+                        "details": "已迁移到 v9: upstream_api_keys 表已存在",
+                    }
+                return {
+                    "migrated": False,
+                    "version": 9,
+                    "details": "需要执行迁移: 新增 upstream_api_keys 表 + key_cooldown_secs 列",
+                }
+            if version == 10:
                 return {
                     "migrated": True,
-                    "version": 9,
-                    "details": "已迁移到 v9: target_models 新增 max_context/max_input/max_output/rpm 列",
+                    "version": 10,
+                    "details": "已迁移到 v10: upstream_api_keys 表 + key_cooldown_secs 列",
                 }
             return {
                 "migrated": True,
@@ -1305,10 +1319,12 @@ class Migrations:
             self._migrate_v7_to_v8(backup_path)
         if version <= 8:
             self._migrate_v8_to_v9(backup_path)
+        if version <= 9:
+            self._migrate_v9_to_v10(backup_path)
 
         return {
             "status": "ok",
-            "version": 9,
+            "version": 10,
             "backup_path": str(backup_path),
         }
 
@@ -2098,6 +2114,85 @@ class Migrations:
         finally:
             conn.close()
 
+
+    def _migrate_v9_to_v10(self, backup_path: Path):
+        """执行 v9 → v10 迁移。
+
+        变更：
+          - 新增 upstream_api_keys 表
+          - upstreams 新增 key_cooldown_secs 列（默认 60）
+          - 迁移 upstreams.api_key → upstream_api_keys
+        """
+        conn = self._connect()
+        try:
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.execute("BEGIN TRANSACTION")
+            try:
+                # Step 1: 创建 upstream_api_keys 表（幂等）
+                from .schema import ensure_table
+                ensure_table(conn, 'upstream_api_keys')
+                logging.info("[Migrations] v9→v10 STEP 1: upstream_api_keys 表创建完成")
+
+                # Step 2: 添加 key_cooldown_secs 列（幂等，检查是否已存在）
+                existing_cols = {
+                    r[0] for r in conn.execute(
+                        "SELECT name FROM pragma_table_info('upstreams')"
+                    ).fetchall()
+                }
+                if "key_cooldown_secs" not in existing_cols:
+                    conn.execute(
+                        "ALTER TABLE upstreams ADD COLUMN key_cooldown_secs INTEGER NOT NULL DEFAULT 60"
+                    )
+                    logging.info("[Migrations] v9→v10 STEP 2: upstreams.key_cooldown_secs 列添加完成")
+                else:
+                    logging.info("[Migrations] v9→v10 STEP 2: key_cooldown_secs 列已存在，跳过")
+
+                # Step 3: 统计需要迁移的 api_key
+                expected_count = conn.execute(
+                    "SELECT COUNT(*) FROM upstreams WHERE api_key != ''"
+                ).fetchone()[0]
+                logging.info(
+                    f"[Migrations] v9→v10 STEP 3: 待迁移 api_key 数量 = {expected_count}"
+                )
+
+                # Step 4: 迁移 api_key 到 upstream_api_keys（INSERT OR IGNORE，幂等）
+                conn.execute("""
+                    INSERT OR IGNORE INTO upstream_api_keys (upstream_id, api_key, label)
+                    SELECT id, api_key, '迁移自旧字段' FROM upstreams WHERE api_key != ''
+                """)
+                logging.info("[Migrations] v9→v10 STEP 4: api_key 迁移插入完成")
+
+                # Step 5: 验证迁移结果
+                actual_count = conn.execute(
+                    "SELECT COUNT(*) FROM upstream_api_keys WHERE label = '迁移自旧字段'"
+                ).fetchone()[0]
+                if actual_count < expected_count:
+                    raise sqlite3.OperationalError(
+                        f"迁移验证失败: 预期 {expected_count} 条, 实际插入 {actual_count} 条"
+                    )
+                logging.info(
+                    f"[Migrations] v9→v10 STEP 5: 验证通过, {actual_count} 条记录"
+                )
+
+                # Step 6: 清空 upstreams.api_key（仅验证通过后执行）
+                conn.execute("UPDATE upstreams SET api_key = ''")
+                logging.info("[Migrations] v9→v10 STEP 6: upstreams.api_key 已清空")
+
+                # Step 7: 更新 schema_version
+                conn.execute("DELETE FROM schema_version")
+                conn.execute("INSERT INTO schema_version (version) VALUES (10)")
+                logging.info("[Migrations] v9→v10 STEP 7: schema_version 更新为 10")
+
+                conn.commit()
+                logging.info("[Migrations] v9→v10 迁移成功")
+            except Exception:
+                conn.rollback()
+                logging.error("[Migrations] v9→v10 迁移失败，已回滚", exc_info=True)
+                raise
+            finally:
+                conn.execute("PRAGMA foreign_keys = ON")
+        finally:
+            conn.close()
 
 class ConfigCache:
     """内存缓存，供 proxy.py 使用。

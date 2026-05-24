@@ -675,7 +675,7 @@ class TestMigrations(unittest.TestCase):
         m = Migrations(self.db_path)
         result = m.migrate()
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["version"], 9)
+        self.assertEqual(result["version"], 10)
 
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
@@ -918,7 +918,7 @@ class TestMigrationV8(unittest.TestCase):
         conn = sqlite3.connect(str(db_path))
         conn.execute("PRAGMA foreign_keys = ON")
         cur = conn.execute("SELECT version FROM schema_version LIMIT 1")
-        self.assertEqual(cur.fetchone()[0], 9)
+        self.assertEqual(cur.fetchone()[0], 10)
         # 验证 model_routes FK 为 SET NULL
         cur = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='model_routes'")
         sql = cur.fetchone()[0]
@@ -951,7 +951,7 @@ class TestMigrationV8(unittest.TestCase):
         self.assertFalse(s["migrated"])
         result = mg.migrate()
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["version"], 9)
+        self.assertEqual(result["version"], 10)
         self._verify_v9_schema(db_path)
         # 幂等
         result2 = mg.migrate()
@@ -966,7 +966,7 @@ class TestMigrationV8(unittest.TestCase):
         mg = Migrations(db_path)
         result = mg.migrate()
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["version"], 9)
+        self.assertEqual(result["version"], 10)
         # 第二次调用应为幂等
         result2 = mg.migrate()
         self.assertEqual(result2["status"], "already_migrated")
@@ -1010,10 +1010,10 @@ class TestMigrationV8(unittest.TestCase):
         mg = Migrations(db_path)
         result = mg.migrate()
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["version"], 9)
+        self.assertEqual(result["version"], 10)
         conn = sqlite3.connect(str(db_path))
         cur = conn.execute("SELECT version FROM schema_version LIMIT 1")
-        self.assertEqual(cur.fetchone()[0], 9)
+        self.assertEqual(cur.fetchone()[0], 10)
         cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='route_templates'")
         self.assertIsNotNone(cur.fetchone())
         conn.close()
@@ -1233,3 +1233,315 @@ class TestUpstreamApiKeysCRUD(unittest.TestCase):
         self.db.delete_upstream_with_models(self.up_id)
         keys = self.db.list_upstream_keys(self.up_id)
         self.assertEqual(len(keys), 0)
+
+class TestMigrationV9ToV10(unittest.TestCase):
+    """v9 → v10 迁移测试：upstream_api_keys 表 + key_cooldown_secs 列 + api_key 迁移。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "config.db"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _make_v9_db(self, api_keys=None):
+        """创建模拟的 v9 数据库。
+
+        api_keys: [(upstream_name, api_key), ...]
+        """
+        if api_keys is None:
+            api_keys = []
+
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (9);
+            CREATE TABLE upstreams (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                base_url TEXT NOT NULL,
+                api_key TEXT NOT NULL DEFAULT '',
+                timeout INTEGER NOT NULL DEFAULT 600,
+                connect_timeout INTEGER NOT NULL DEFAULT 10,
+                ssl_verify INTEGER NOT NULL DEFAULT 1,
+                retry INTEGER NOT NULL DEFAULT 1,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                format TEXT NOT NULL DEFAULT 'chat_completions',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE target_models (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE SET NULL,
+                multimodal INTEGER NOT NULL DEFAULT 1,
+                max_context INTEGER DEFAULT NULL,
+                max_input INTEGER DEFAULT NULL,
+                max_output INTEGER DEFAULT NULL,
+                rpm INTEGER DEFAULT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(name, upstream_id)
+            );
+            CREATE TABLE model_routes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                target_model_id INTEGER REFERENCES target_models(id) ON DELETE SET NULL,
+                request_type TEXT NOT NULL DEFAULT 'responses',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')));
+            CREATE TABLE agent_routes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                target_model_id INTEGER REFERENCES target_models(id) ON DELETE SET NULL,
+                request_type TEXT NOT NULL DEFAULT 'chat_completions',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')));
+            CREATE TABLE route_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                request_type TEXT NOT NULL DEFAULT 'chat_completions',
+                items TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                last_applied_at TEXT);
+        """)
+
+        for i, (up_name, api_key) in enumerate(api_keys, 1):
+            conn.execute(
+                "INSERT INTO upstreams (name, base_url, api_key) VALUES (?, ?, ?)",
+                (up_name, f'http://{up_name}', api_key),
+            )
+            conn.execute(
+                "INSERT INTO target_models (name, upstream_id) VALUES (?, ?)",
+                (f'model-{i}', i),
+            )
+
+        if not api_keys:
+            conn.execute(
+                "INSERT INTO upstreams (name, base_url) VALUES (?, ?)",
+                ('no-key-upstream', 'http://no-key'),
+            )
+            conn.execute(
+                "INSERT INTO target_models (name, upstream_id) VALUES (?, ?)",
+                ('no-key-model', 1),
+            )
+
+        conn.commit()
+        conn.close()
+
+    def _verify_v10_schema(self):
+        """验证 v10 迁移后的 schema 正确。"""
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute("PRAGMA foreign_keys = ON")
+        cur = conn.execute("SELECT version FROM schema_version LIMIT 1")
+        self.assertEqual(cur.fetchone()[0], 10)
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='upstream_api_keys'"
+        )
+        self.assertIsNotNone(cur.fetchone())
+        cur = conn.execute("PRAGMA table_info(upstreams)")
+        cols = {row[1] for row in cur.fetchall()}
+        self.assertIn('key_cooldown_secs', cols)
+        cur = conn.execute("SELECT name, api_key FROM upstreams")
+        for name, api_key in cur.fetchall():
+            self.assertEqual(api_key, '', f'upstream "{name}" api_key 应为空')
+        conn.close()
+
+    def _verify_api_keys_migrated(self, expected_count):
+        """验证 api_key 迁移结果。"""
+        conn = sqlite3.connect(str(self.db_path))
+        cur = conn.execute(
+            "SELECT COUNT(*) FROM upstream_api_keys WHERE label = '迁移自旧字段'"
+        )
+        self.assertEqual(cur.fetchone()[0], expected_count)
+        conn.close()
+
+    def test_migration_v9_to_v10_basic(self):
+        """基本迁移：有 api_key 的 v9 数据库 → v10。"""
+        self._make_v9_db(api_keys=[
+            ('up-a', 'sk-key-aaaa'),
+            ('up-b', 'sk-key-bbbb'),
+        ])
+        from proxy.config_manager import Migrations
+        mg = Migrations(self.db_path)
+        s = mg.status()
+        self.assertFalse(s["migrated"])
+        self.assertEqual(s["version"], 9)
+        result = mg.migrate()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["version"], 10)
+        self._verify_v10_schema()
+        self._verify_api_keys_migrated(expected_count=2)
+
+    def test_migration_v9_to_v10_idempotent(self):
+        """二次迁移应为幂等（already_migrated）。"""
+        self._make_v9_db(api_keys=[('up-a', 'sk-key-aaaa')])
+        from proxy.config_manager import Migrations
+        mg = Migrations(self.db_path)
+        result = mg.migrate()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["version"], 10)
+        result2 = mg.migrate()
+        self.assertEqual(result2["status"], "already_migrated")
+
+    def test_migration_v9_to_v10_no_api_keys(self):
+        """无 api_key 的 v9 数据库迁移。"""
+        self._make_v9_db(api_keys=[])
+        from proxy.config_manager import Migrations
+        mg = Migrations(self.db_path)
+        result = mg.migrate()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["version"], 10)
+        conn = sqlite3.connect(str(self.db_path))
+        count = conn.execute("SELECT COUNT(*) FROM upstream_api_keys").fetchone()[0]
+        self.assertEqual(count, 0)
+        conn.close()
+
+    def test_migration_v9_to_v10_preserves_api_keys(self):
+        """api_key 值正确迁移到 upstream_api_keys。"""
+        self._make_v9_db(api_keys=[
+            ('up1', 'sk-key-one'),
+            ('up2', 'sk-key-two'),
+            ('up3', 'sk-key-three'),
+        ])
+        from proxy.config_manager import Migrations
+        mg = Migrations(self.db_path)
+        mg.migrate()
+
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT uk.api_key, u.name
+                   FROM upstream_api_keys uk
+                   JOIN upstreams u ON uk.upstream_id = u.id
+                  ORDER BY u.name"""
+        ).fetchall()
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[0]["api_key"], "sk-key-one")
+        self.assertEqual(rows[0]["name"], "up1")
+        self.assertEqual(rows[1]["api_key"], "sk-key-two")
+        self.assertEqual(rows[1]["name"], "up2")
+        self.assertEqual(rows[2]["api_key"], "sk-key-three")
+        self.assertEqual(rows[2]["name"], "up3")
+        conn.close()
+
+    def test_migration_v9_to_v10_clears_upstreams_api_key(self):
+        """迁移后 upstreams.api_key 应为空。"""
+        self._make_v9_db(api_keys=[('up-a', 'sk-key-aaaa')])
+        from proxy.config_manager import Migrations
+        mg = Migrations(self.db_path)
+        mg.migrate()
+
+        conn = sqlite3.connect(str(self.db_path))
+        rows = conn.execute("SELECT name, api_key FROM upstreams").fetchall()
+        for name, api_key in rows:
+            self.assertEqual(api_key, '', f'upstream "{name}" api_key 应为空')
+        conn.close()
+
+    def test_migration_v9_to_v10_key_cooldown_default(self):
+        """key_cooldown_secs 默认值为 60。"""
+        self._make_v9_db(api_keys=[('up-a', 'sk-key-aaaa')])
+        from proxy.config_manager import Migrations
+        mg = Migrations(self.db_path)
+        mg.migrate()
+
+        conn = sqlite3.connect(str(self.db_path))
+        rows = conn.execute(
+            "SELECT name, key_cooldown_secs FROM upstreams"
+        ).fetchall()
+        for name, cooldown in rows:
+            self.assertEqual(cooldown, 60, f'upstream "{name}" key_cooldown_secs 应为 60')
+        conn.close()
+
+    def test_migration_v8_to_v10(self):
+        """跨版本迁移 v8 → v10。"""
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (8);
+            CREATE TABLE upstreams (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                base_url TEXT NOT NULL,
+                api_key TEXT NOT NULL DEFAULT '',
+                timeout INTEGER NOT NULL DEFAULT 600,
+                connect_timeout INTEGER NOT NULL DEFAULT 10,
+                ssl_verify INTEGER NOT NULL DEFAULT 1,
+                retry INTEGER NOT NULL DEFAULT 1,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                format TEXT NOT NULL DEFAULT 'chat_completions',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE target_models (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                upstream_id INTEGER NOT NULL REFERENCES upstreams(id) ON DELETE RESTRICT,
+                multimodal INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(name, upstream_id)
+            );
+            CREATE TABLE model_routes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                target_model_id INTEGER NOT NULL REFERENCES target_models(id) ON DELETE RESTRICT,
+                request_type TEXT NOT NULL DEFAULT 'responses',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')));
+            CREATE TABLE agent_routes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                target_model_id INTEGER NOT NULL REFERENCES target_models(id) ON DELETE RESTRICT,
+                request_type TEXT NOT NULL DEFAULT 'chat_completions',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')));
+            INSERT INTO upstreams (name, base_url, api_key) VALUES ('old-up', 'http://old', 'sk-old-key');
+            INSERT INTO target_models (name, upstream_id) VALUES ('old-model', 1);
+            INSERT INTO model_routes (source, target_model_id) VALUES ('gpt-4', 1);
+            INSERT INTO agent_routes (source, target_model_id) VALUES ('claude', 1);
+        """)
+        conn.commit()
+        conn.close()
+
+        from proxy.config_manager import Migrations
+        mg = Migrations(self.db_path)
+        result = mg.migrate()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["version"], 10)
+
+        conn = sqlite3.connect(str(self.db_path))
+        cur = conn.execute("SELECT version FROM schema_version LIMIT 1")
+        self.assertEqual(cur.fetchone()[0], 10)
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='upstream_api_keys'"
+        )
+        self.assertIsNotNone(cur.fetchone())
+        cur = conn.execute("SELECT key_cooldown_secs FROM upstreams WHERE name='old-up'")
+        self.assertEqual(cur.fetchone()[0], 60)
+        cur = conn.execute("SELECT api_key FROM upstream_api_keys WHERE upstream_id=1")
+        self.assertEqual(cur.fetchone()[0], 'sk-old-key')
+        cur = conn.execute("SELECT api_key FROM upstreams WHERE id=1")
+        self.assertEqual(cur.fetchone()[0], '')
+        conn.close()
+
+    def test_migration_v9_to_v10_duplicate_keys_ignored(self):
+        """INSERT OR IGNORE 防止重复插入。"""
+        self._make_v9_db(api_keys=[('up-a', 'sk-key-aaaa')])
+        from proxy.config_manager import Migrations
+        mg = Migrations(self.db_path)
+        mg.migrate()
+
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute(
+            """INSERT OR IGNORE INTO upstream_api_keys
+                    (upstream_id, api_key, label)
+                    SELECT id, api_key, '迁移自旧字段' FROM upstreams WHERE api_key != ''"""
+        )
+        conn.commit()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM upstream_api_keys WHERE label = '迁移自旧字段'"
+        ).fetchone()[0]
+        self.assertEqual(count, 1, "重试不应产生重复记录")
+        conn.close()
