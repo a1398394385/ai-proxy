@@ -1260,18 +1260,32 @@ class Migrations:
                 has_keys_table = conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='upstream_api_keys'"
                 ).fetchone()
-                if has_keys_table:
+                if not has_keys_table:
                     return {
-                        "migrated": True,
+                        "migrated": False,
                         "version": 9,
-                        "details": "已迁移到 v9: upstream_api_keys 表已存在",
+                        "details": "需要执行迁移: 新增 upstream_api_keys 表 + key_cooldown_secs 列",
                     }
-                return {
-                    "migrated": False,
-                    "version": 9,
-                    "details": "需要执行迁移: 新增 upstream_api_keys 表 + key_cooldown_secs 列",
-                }
-            if version == 10:
+                # 表已存在，但检查数据是否已迁移（upstreams.api_key 是否已清空）
+                remaining = conn.execute(
+                    "SELECT COUNT(*) FROM upstreams WHERE api_key != ''"
+                ).fetchone()[0]
+                if remaining > 0:
+                    return {
+                        "migrated": False,
+                        "version": 9,
+                        "details": f"需要执行迁移: {remaining} 个上游仍有 api_key 待迁移到 upstream_api_keys",
+                    }
+                # 数据已迁移，确认 key_cooldown_secs 列
+                has_cooldown = conn.execute(
+                    "SELECT 1 FROM pragma_table_info('upstreams') WHERE name = 'key_cooldown_secs'"
+                ).fetchone()
+                if not has_cooldown:
+                    return {
+                        "migrated": False,
+                        "version": 9,
+                        "details": "需要执行迁移: upstreams 缺少 key_cooldown_secs 列",
+                    }
                 return {
                     "migrated": True,
                     "version": 10,
