@@ -118,7 +118,7 @@ class ConfigDB:
             values = []
             for key in ("name", "base_url", "api_key", "timeout",
                         "connect_timeout", "ssl_verify", "retry", "format",
-                        "is_active"):
+                        "is_active", "key_cooldown_secs"):
                 if key in data:
                     fields.append(f"{key} = ?")
                     values.append(data[key])

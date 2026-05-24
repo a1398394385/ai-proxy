@@ -50,6 +50,8 @@ _FAKE_ROUTE = {
     "upstream": {
         "base_url": "http://127.0.0.1:4000/",
         "api_key": "test-key",
+        "id": 1,
+        "name": "test-upstream",
         "timeout": 120,
         "connect_timeout": 10,
         "ssl_verify": True,

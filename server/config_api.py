@@ -69,7 +69,8 @@ def _call_upstream_models(upstream: dict) -> dict:
     candidate_paths = [base_path + "/v1/models", base_path + "/models"]
 
     headers = {"Accept": "application/json"}
-    api_key = upstream.get("api_key", "")
+    with config_db() as db:
+        api_key = db.get_first_active_key(upstream["id"]) or upstream.get("api_key", "")
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
@@ -126,6 +127,20 @@ def _call_upstream_models(upstream: dict) -> dict:
     result["error"] = "所有候选路径均返回 404/405"
 
     return result
+
+
+def _fetch_proxy_key_status(upstream_id: int):
+    """通过 proxy /admin/key-status 获取内存中的 key 冷却状态。"""
+    try:
+        proxy_port = get_port("codex_proxy", 48743)
+        conn = http.client.HTTPConnection("127.0.0.1", proxy_port, timeout=5)
+        conn.request("GET", f"/admin/key-status?upstream_id={upstream_id}")
+        resp = conn.getresponse()
+        if resp.status == 200:
+            return json.loads(resp.read().decode())
+        return None
+    except Exception:
+        return None
 
 
 # ─── routes/agent-routes 共享逻辑 ───
@@ -240,6 +255,26 @@ def handle_get(path, qs, handler) -> bool:
             json_response(handler, u)
         else:
             json_response(handler, {"error": "Not found"}, 404)
+        return True
+
+    # GET /api/upstreams/{id}/keys
+    m = re.match(r"^/api/upstreams/(\d+)/keys$", path)
+    if m:
+        upstream_id = int(m.group(1))
+        with config_db() as db:
+            keys = db.list_upstream_keys(upstream_id)
+        json_response(handler, {"keys": keys})
+        return True
+
+    # GET /api/upstreams/{id}/key-status
+    m = re.match(r"^/api/upstreams/(\d+)/key-status$", path)
+    if m:
+        upstream_id = int(m.group(1))
+        result = _fetch_proxy_key_status(upstream_id)
+        if result is None:
+            json_response(handler, {"error": "无法获取 key 状态"}, 502)
+        else:
+            json_response(handler, result)
         return True
 
     if path == "/api/models":
@@ -415,6 +450,27 @@ def handle_post(path, handler) -> bool:
         json_response(handler, result, status)
         return True
 
+    # POST /api/upstreams/{id}/keys
+    m = re.match(r"^/api/upstreams/(\d+)/keys$", path)
+    if m:
+        upstream_id = int(m.group(1))
+        data = _read_json(handler)
+        if not data:
+            return True
+        api_key = (data.get("api_key") or "").strip()
+        if not api_key:
+            json_response(handler, {"error": "api_key 不能为空"}, 400)
+            return True
+        label = (data.get("label") or "").strip()
+        with config_db() as db:
+            try:
+                kid = db.add_upstream_key(upstream_id, api_key, label)
+                _reload_proxies()
+                json_response(handler, {"id": kid, "message": "Key 已添加"}, 201)
+            except ValueError as e:
+                json_response(handler, {"error": str(e)}, 400)
+        return True
+
     if path == "/api/models":
         data = _read_json(handler)
         if not data:
@@ -512,6 +568,19 @@ def handle_put(path, handler) -> bool:
         json_response(handler, {"message": "Updated"})
         return True
 
+    # PUT /api/upstreams/{id}/keys/{kid}
+    m = re.match(r"^/api/upstreams/(\d+)/keys/(\d+)$", path)
+    if m:
+        kid = int(m.group(2))
+        data = _read_json(handler)
+        if not data:
+            return True
+        with config_db() as db:
+            db.update_upstream_key(kid, data)
+        _reload_proxies()
+        json_response(handler, {"message": "Key 已更新"})
+        return True
+
     m = re.match(r"/api/models/(\d+)$", path)
     if m:
         data = _read_json(handler)
@@ -585,6 +654,16 @@ def handle_delete(path, handler) -> bool:
             db.delete_upstream_with_models(uid)
         _reload_proxies()
         json_response(handler, {"message": "Deleted"})
+        return True
+
+    # DELETE /api/upstreams/{id}/keys/{kid}
+    m = re.match(r"^/api/upstreams/(\d+)/keys/(\d+)$", path)
+    if m:
+        kid = int(m.group(2))
+        with config_db() as db:
+            db.delete_upstream_key(kid)
+        _reload_proxies()
+        json_response(handler, {"message": "Key 已删除"})
         return True
 
     m = re.match(r"/api/models/(\d+)$", path)

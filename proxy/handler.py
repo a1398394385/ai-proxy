@@ -147,6 +147,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
             self.wfile.write(b"Upgrade Required: Use HTTP POST with SSE")
+        elif self.path.startswith("/admin/key-status"):
+            parsed = urllib.parse.urlparse(self.path)
+            qs = urllib.parse.parse_qs(parsed.query)
+            upstream_id = qs.get("upstream_id", [None])[0]
+            if not upstream_id:
+                self._send_json(400, {"error": "缺少 upstream_id 参数"})
+                return
+            try:
+                upstream_id = int(upstream_id)
+            except (ValueError, TypeError):
+                self._send_json(400, {"error": "upstream_id 必须为整数"})
+                return
+            status_data = config_cache.get_key_status(upstream_id)
+            self._send_json(200, status_data)
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -371,7 +385,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                              forward_path, request_type, session_id=None):
         """非流式透传：原样转发请求到上游，原样返回响应。"""
         base_url = upstream_cfg["base_url"]
-        api_key = upstream_cfg["api_key"]
+        api_key = config_cache.pick_key(upstream_cfg["id"])
+        if not api_key and upstream_cfg.get("id") in config_cache._upstream_has_any_key:
+            logging.warning(f"[proxy] 上游 {upstream_cfg.get('name', upstream_cfg['id'])} 有 key 记录但全部被禁用")
         timeout = upstream_cfg.get("timeout", 120)
         connect_timeout = upstream_cfg.get("connect_timeout", 10)
         retries = upstream_cfg.get("retry", 0) + 1
@@ -411,6 +427,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     up_name = upstream_cfg.get("name", upstream_cfg.get("id", "?"))
                     logging.error(f"上游返回错误: upstream={up_name}, model={model_name}, "
                                   f"target_model={target}, status={resp.status}, body={error_body_str[:2000]}")
+                if resp.status == 429:
+                    config_cache.mark_cooldown(
+                        upstream_cfg["id"],
+                        api_key,
+                        upstream_cfg.get("key_cooldown_secs", 60)
+                    )
+                    logging.warning(f"[proxy] 上游 {upstream_cfg.get('name', upstream_cfg['id'])} key ****{api_key[-4:] if len(api_key)>4 else api_key} 触发 429，冷却 {upstream_cfg.get('key_cooldown_secs', 60)}s")
 
                 # 阶段 3：记录上游响应
                 logger = get_logger()
@@ -477,7 +500,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                          forward_path, request_type, session_id=None):
         """流式 SSE 透传：逐 chunk 原样中继，不注入代理事件。"""
         base_url = upstream_cfg["base_url"]
-        api_key = upstream_cfg["api_key"]
+        api_key = config_cache.pick_key(upstream_cfg["id"])
+        if not api_key and upstream_cfg.get("id") in config_cache._upstream_has_any_key:
+            logging.warning(f"[proxy] 上游 {upstream_cfg.get('name', upstream_cfg['id'])} 有 key 记录但全部被禁用")
         timeout = upstream_cfg.get("timeout", 120)
         connect_timeout = upstream_cfg.get("connect_timeout", 10)
         retries = upstream_cfg.get("retry", 0) + 1
@@ -523,6 +548,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     logging.error(f"流式透传上游返回错误: upstream={up_name}, "
                                   f"model={model_name}, target_model={target}, "
                                   f"status={upstream_status}, body={error_body_str[:2000]}")
+                    if upstream_status == 429:
+                        config_cache.mark_cooldown(
+                            upstream_cfg["id"],
+                            api_key,
+                            upstream_cfg.get("key_cooldown_secs", 60)
+                        )
+                        logging.warning(f"[proxy] 上游 {upstream_cfg.get('name', upstream_cfg['id'])} key ****{api_key[-4:] if len(api_key)>4 else api_key} 触发 429，冷却 {upstream_cfg.get('key_cooldown_secs', 60)}s")
                     self.send_response(upstream_status)
                     self.send_header("Content-Type", resp.getheader("Content-Type", "application/json"))
                     self.send_header("Content-Length", str(len(error_body)))
@@ -805,7 +837,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                  is_responses_api=False, session_id=None):
         """非流式：http.client 连上游 → 响应转换。"""
         base_url = upstream_cfg["base_url"]
-        api_key = upstream_cfg["api_key"]
+        api_key = config_cache.pick_key(upstream_cfg["id"])
+        if not api_key and upstream_cfg.get("id") in config_cache._upstream_has_any_key:
+            logging.warning(f"[proxy] 上游 {upstream_cfg.get('name', upstream_cfg['id'])} 有 key 记录但全部被禁用")
         timeout = upstream_cfg.get("timeout", 120)
         retries = upstream_cfg.get("retry", 0) + 1
         logger = get_logger()
@@ -849,6 +883,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     resp_body_str = resp_body.decode("utf-8", errors="replace")
                     logging.error(f"转换上游返回错误: model={model}, status={resp.status}, "
                                   f"body={resp_body_str[:2000]}")
+                    if resp.status == 429:
+                        config_cache.mark_cooldown(
+                            upstream_cfg["id"],
+                            api_key,
+                            upstream_cfg.get("key_cooldown_secs", 60)
+                        )
+                        logging.warning(f"[proxy] 上游 {upstream_cfg.get('name', upstream_cfg['id'])} key ****{api_key[-4:] if len(api_key)>4 else api_key} 触发 429，冷却 {upstream_cfg.get('key_cooldown_secs', 60)}s")
                     if logger:
                         logger.log_upstream_response(
                             request_id, resp.status,
@@ -941,7 +982,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                              upstream_format, store_enabled=True, session_id=None):
         """流式：http.client 连上游 SSE → TransformRouter 逐事件转换。"""
         base_url = upstream_cfg["base_url"]
-        api_key = upstream_cfg["api_key"]
+        api_key = config_cache.pick_key(upstream_cfg["id"])
+        if not api_key and upstream_cfg.get("id") in config_cache._upstream_has_any_key:
+            logging.warning(f"[proxy] 上游 {upstream_cfg.get('name', upstream_cfg['id'])} 有 key 记录但全部被禁用")
         timeout = upstream_cfg.get("timeout", 120)
         logger = get_logger()
 
@@ -979,6 +1022,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 error_body = resp.read().decode("utf-8", errors="replace")
                 logging.error(f"流式转换上游返回错误: model={model_name}, "
                               f"status={resp.status}, body={error_body[:2000]}")
+                if resp.status == 429:
+                    config_cache.mark_cooldown(
+                        upstream_cfg["id"],
+                        api_key,
+                        upstream_cfg.get("key_cooldown_secs", 60)
+                    )
+                    logging.warning(f"[proxy] 上游 {upstream_cfg.get('name', upstream_cfg['id'])} key ****{api_key[-4:] if len(api_key)>4 else api_key} 触发 429，冷却 {upstream_cfg.get('key_cooldown_secs', 60)}s")
                 error_event = _format_sse_event("response.failed", {
                     "response": {
                         "id": generate_response_id(),

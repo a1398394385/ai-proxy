@@ -36,6 +36,8 @@ def _default_upstream_cfg():
     return {
         "base_url": "http://127.0.0.1:4000/",
         "api_key": "test-key",
+        "id": 1,
+        "name": "test-upstream",
         "timeout": 120,
         "connect_timeout": 10,
         "ssl_verify": True,
@@ -646,6 +648,8 @@ class TestConvertOutputConsistency(unittest.TestCase):
         upstream_cfg = {
             "base_url": f"http://127.0.0.1:{self.mock_port}/v1",
             "api_key": "mock-key",
+            "id": 1,
+            "name": "mock-upstream",
             "timeout": 30,
             "connect_timeout": 5,
             "ssl_verify": False,
@@ -685,6 +689,8 @@ class TestConvertOutputConsistency(unittest.TestCase):
         upstream_cfg = {
             "base_url": f"http://127.0.0.1:{self.mock_port}/v1",
             "api_key": "mock-key",
+            "id": 1,
+            "name": "mock-upstream",
             "timeout": 30,
             "connect_timeout": 5,
             "ssl_verify": False,
@@ -730,6 +736,260 @@ class TestConvertOutputConsistency(unittest.TestCase):
         self.assertIn("content_block_start", raw)
         self.assertIn("content_block_delta", raw)
         self.assertIn("message_stop", raw)
+
+
+class TestHandlerPickKey(unittest.TestCase):
+    """测试 pick_key 轮询 + 429 冷却 + /admin/key-status 端点。"""
+
+    def setUp(self):
+        self.logger = _mock_logger()
+
+    # ── pick_key 集成测试 ──
+
+    def test_pick_key_called_for_auth_header(self):
+        """验证 pick_key 返回的 key 用于 Authorization header。"""
+        mock_conn = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.getheader.return_value = "application/json"
+        mock_resp.read.return_value = b'{"id":"ok","choices":[]}'
+        mock_conn.getresponse.return_value = mock_resp
+
+        handler = _make_real_handler(b'{"model":"gpt-4o"}')
+
+        with patch("proxy.handler.get_logger", return_value=self.logger), \
+             patch("proxy.handler.record_token_stats"), \
+             patch("proxy.handler.urllib.parse.urlparse") as mock_parse, \
+             patch("proxy.handler._create_upstream_conn") as mock_cconn, \
+             patch("proxy.handler.config_cache") as mock_cache:
+            mock_parse.return_value = MagicMock(path="/", port=4000, scheme="http")
+            mock_cconn.return_value = mock_conn
+            mock_cache.pick_key.return_value = "picked-key-from-cache"
+            mock_cache._upstream_has_any_key = set()
+
+            handler._forward_pass_through_non_streaming(
+                b'{"model":"gpt-4o"}',
+                "rid-001", "gpt-4o", "gpt-4o",
+                "ts", _default_upstream_cfg(),
+                "/v1/chat/completions", "chat_completions",
+            )
+
+        # 验证 pick_key 被调用，传入 upstream_id=1
+        mock_cache.pick_key.assert_called_once_with(1)
+        # 验证 Authorization header 使用了 pick_key 返回值
+        captured_headers = mock_conn.request.call_args[1]["headers"]
+        self.assertEqual(captured_headers["Authorization"], "Bearer picked-key-from-cache")
+
+    def test_all_keys_disabled_produces_warning(self):
+        """全部 key 禁用时 pick_key 返回 '' 且产生 WARNING 日志。"""
+        mock_conn = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.getheader.return_value = "application/json"
+        mock_resp.read.return_value = b'{"id":"ok","choices":[]}'
+        mock_conn.getresponse.return_value = mock_resp
+
+        handler = _make_real_handler(b'{"model":"gpt-4o"}')
+
+        with patch("proxy.handler.get_logger", return_value=self.logger), \
+             patch("proxy.handler.record_token_stats"), \
+             patch("proxy.handler.urllib.parse.urlparse") as mock_parse, \
+             patch("proxy.handler._create_upstream_conn") as mock_cconn, \
+             patch("proxy.handler.config_cache") as mock_cache, \
+             patch("proxy.handler.logging") as mock_logging:
+            mock_parse.return_value = MagicMock(path="/", port=4000, scheme="http")
+            mock_cconn.return_value = mock_conn
+            mock_cache.pick_key.return_value = ""
+            mock_cache._upstream_has_any_key = {1}
+
+            handler._forward_pass_through_non_streaming(
+                b'{"model":"gpt-4o"}',
+                "rid-001", "gpt-4o", "gpt-4o",
+                "ts", _default_upstream_cfg(),
+                "/v1/chat/completions", "chat_completions",
+            )
+
+        # 验证有 WARNING 日志
+        warning_calls = [c for c in mock_logging.warning.call_args_list
+                         if "有 key 记录但全部被禁用" in str(c)]
+        self.assertGreater(len(warning_calls), 0, "应输出全部 key 禁用的 WARNING")
+
+    # ── 429 冷却测试 ──
+
+    def test_429_triggers_mark_cooldown_passthrough(self):
+        """透传非流式 429 响应触发 mark_cooldown。"""
+        mock_conn = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status = 429
+        mock_resp.getheader.return_value = "application/json"
+        mock_resp.read.return_value = b'{"error":"rate limited"}'
+        mock_conn.getresponse.return_value = mock_resp
+
+        handler = _make_real_handler(b'{"model":"gpt-4o"}')
+
+        with patch("proxy.handler.get_logger", return_value=self.logger), \
+             patch("proxy.handler.urllib.parse.urlparse") as mock_parse, \
+             patch("proxy.handler._create_upstream_conn") as mock_cconn, \
+             patch("proxy.handler.config_cache") as mock_cache, \
+             patch("proxy.handler.logging") as mock_logging:
+            mock_parse.return_value = MagicMock(path="/", port=4000, scheme="http")
+            mock_cconn.return_value = mock_conn
+            mock_cache.pick_key.return_value = "test-key-429"
+            mock_cache._upstream_has_any_key = set()
+
+            handler._forward_pass_through_non_streaming(
+                b'{"model":"gpt-4o"}',
+                "rid-001", "gpt-4o", "gpt-4o",
+                "ts", _default_upstream_cfg(),
+                "/v1/chat/completions", "chat_completions",
+            )
+
+        # 验证 mark_cooldown 被调用
+        mock_cache.mark_cooldown.assert_called_once_with(
+            1, "test-key-429", 60
+        )
+        # 验证 WARNING 日志
+        warning_calls = [c for c in mock_logging.warning.call_args_list
+                         if "触发 429" in str(c)]
+        self.assertGreater(len(warning_calls), 0, "应输出 429 冷却 WARNING")
+
+    def test_429_triggers_mark_cooldown_convert(self):
+        """转换非流式 429 响应触发 mark_cooldown。"""
+        mock_conn = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status = 429
+        mock_resp.read.return_value = b'{"error":"rate limited"}'
+        mock_conn.getresponse.return_value = mock_resp
+
+        handler = _make_real_handler(b'{"model":"gpt-4o"}')
+
+        with patch("proxy.handler.get_logger", return_value=self.logger), \
+             patch("proxy.handler.urllib.parse.urlparse") as mock_parse, \
+             patch("proxy.handler._create_upstream_conn") as mock_cconn, \
+             patch("proxy.handler.config_cache") as mock_cache, \
+             patch("proxy.handler.logging") as mock_logging:
+            mock_parse.return_value = MagicMock(path="/", port=4000, scheme="http")
+            mock_cconn.return_value = mock_conn
+            mock_cache.pick_key.return_value = "convert-key-429"
+            mock_cache._upstream_has_any_key = set()
+
+            handler._forward_non_streaming(
+                {"messages": [{"role": "user", "content": "hi"}]},
+                "rid-001", "gpt-4o", "gpt-4o",
+                "ts", _default_upstream_cfg(), "responses", "chat_completions",
+            )
+
+        # 验证 mark_cooldown 被调用
+        mock_cache.mark_cooldown.assert_called_once_with(
+            1, "convert-key-429", 60
+        )
+        # 验证 WARNING 日志
+        warning_calls = [c for c in mock_logging.warning.call_args_list
+                         if "触发 429" in str(c)]
+        self.assertGreater(len(warning_calls), 0)
+
+    def test_429_triggers_mark_cooldown_streaming_passthrough(self):
+        """透传流式 429 响应触发 mark_cooldown。"""
+        mock_conn = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status = 429
+        mock_resp.getheader.return_value = "application/json"
+        mock_resp.read.return_value = b'{"error":"rate limited"}'
+        mock_conn.getresponse.return_value = mock_resp
+
+        handler = _make_real_handler(b'{"model":"gpt-4o","stream":true}')
+
+        with patch("proxy.handler.get_logger", return_value=self.logger), \
+             patch("proxy.handler.urllib.parse.urlparse") as mock_parse, \
+             patch("proxy.handler._create_upstream_conn") as mock_cconn, \
+             patch("proxy.handler.config_cache") as mock_cache, \
+             patch("proxy.handler.logging") as mock_logging:
+            mock_parse.return_value = MagicMock(path="/", port=4000, scheme="http")
+            mock_cconn.return_value = mock_conn
+            mock_cache.pick_key.return_value = "stream-key-429"
+            mock_cache._upstream_has_any_key = set()
+
+            handler._forward_pass_through_streaming(
+                b'{"model":"gpt-4o","stream":true}',
+                "rid-001", "gpt-4o", "gpt-4o",
+                "ts", _default_upstream_cfg(),
+                "/v1/chat/completions", "chat_completions",
+            )
+
+        mock_cache.mark_cooldown.assert_called_once_with(
+            1, "stream-key-429", 60
+        )
+
+    def test_non_429_no_cooldown(self):
+        """非 429 错误不触发 mark_cooldown。"""
+        mock_conn = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status = 500
+        mock_resp.getheader.return_value = "application/json"
+        mock_resp.read.return_value = b'{"error":"server error"}'
+        mock_conn.getresponse.return_value = mock_resp
+
+        handler = _make_real_handler(b'{"model":"gpt-4o"}')
+
+        with patch("proxy.handler.get_logger", return_value=self.logger), \
+             patch("proxy.handler.urllib.parse.urlparse") as mock_parse, \
+             patch("proxy.handler._create_upstream_conn") as mock_cconn, \
+             patch("proxy.handler.config_cache") as mock_cache:
+            mock_parse.return_value = MagicMock(path="/", port=4000, scheme="http")
+            mock_cconn.return_value = mock_conn
+            mock_cache.pick_key.return_value = "test-key"
+            mock_cache._upstream_has_any_key = set()
+
+            handler._forward_pass_through_non_streaming(
+                b'{"model":"gpt-4o"}',
+                "rid-001", "gpt-4o", "gpt-4o",
+                "ts", _default_upstream_cfg(),
+                "/v1/chat/completions", "chat_completions",
+            )
+
+        mock_cache.mark_cooldown.assert_not_called()
+
+    # ── /admin/key-status 端点测试 ──
+
+    def test_key_status_endpoint_returns_json(self):
+        """GET /admin/key-status 返回正确 JSON。"""
+        handler = _make_real_handler(b'', path="/admin/key-status?upstream_id=1", method="GET")
+
+        with patch("proxy.handler.config_cache") as mock_cache:
+            mock_cache.get_key_status.return_value = [
+                {"api_key": "sk-xxx", "is_active": True, "is_cooling": False},
+                {"api_key": "sk-yyy", "is_active": False, "is_cooling": True},
+            ]
+
+            handler.do_GET()
+
+        mock_cache.get_key_status.assert_called_once_with(1)
+        handler.send_response.assert_called_with(200)
+        # 验证 wfile 包含 JSON 响应
+        handler.wfile.seek(0)
+        body = json.loads(handler.wfile.read())
+        self.assertEqual(len(body), 2)
+        self.assertEqual(body[0]["api_key"], "sk-xxx")
+        self.assertTrue(body[0]["is_active"])
+        self.assertFalse(body[1]["is_active"])
+
+    def test_key_status_missing_upstream_id(self):
+        """缺少 upstream_id 返回 400。"""
+        handler = _make_real_handler(b'', path="/admin/key-status", method="GET")
+
+        with patch("proxy.handler.config_cache"):
+            handler.do_GET()
+
+        handler.send_response.assert_called_with(400)
+
+    def test_key_status_invalid_upstream_id(self):
+        """非整型 upstream_id 返回 400。"""
+        handler = _make_real_handler(b'', path="/admin/key-status?upstream_id=abc", method="GET")
+
+        with patch("proxy.handler.config_cache"):
+            handler.do_GET()
+
+        handler.send_response.assert_called_with(400)
 
 
 if __name__ == "__main__":
