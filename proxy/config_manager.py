@@ -189,7 +189,6 @@ class ConfigDB:
             result = []
             for r in rows:
                 d = dict(r)
-                d["masked_key"] = self._mask_key(d.pop("api_key"))
                 result.append(d)
             return result
         finally:

@@ -209,7 +209,7 @@ let _currentKeysUpstreamName = null;
 async function loadKeyCounts() {
   const spans = document.querySelectorAll('[i-id^="key-count-"]');
   for (const span of spans) {
-    const upstreamId = span.id.replace('key-count-', '');
+    const upstreamId = span.getAttribute('i-id').replace('key-count-', '');
     try {
       const data = await api('/api/upstreams/' + upstreamId + '/keys');
       const activeCount = (data.keys || []).filter(k => k.is_active).length;
@@ -292,11 +292,12 @@ function renderKeysRows(keys) {
           <tr>
             <td class="keys-col-idx">${i + 1}</td>
             <td class="keys-col-label">${escHtml(k.label || '-')}</td>
-            <td class="keys-col-key" title="${escHtml(k.masked_key)}">${escHtml(k.masked_key)}</td>
+            <td class="keys-col-key" title="${escHtml(k.api_key)}">${escHtml(k.api_key)}</td>
             <td class="keys-col-status" data-key-idx="${i}">
               ${k.is_active ? '<span class="keys-status-active">✅ 正常</span>' : '<span class="keys-status-inactive">⛔ 已禁用</span>'}
             </td>
             <td class="keys-col-actions">
+              <button class="btn btn-secondary btn-sm" data-action="editKeyLabel" data-id="' + k.id + '" data-label="' + escHtml(k.label || '') + '">编辑</button>
               ${k.is_active
                 ? '<button class="btn btn-secondary btn-sm" data-action="toggleKeyActive" data-id="' + k.id + '" data-active="0">禁用</button>'
                 : '<button class="btn btn-secondary btn-sm" data-action="toggleKeyActive" data-id="' + k.id + '" data-active="1">启用</button>'}
@@ -323,6 +324,7 @@ async function toggleKeyActive(keyId, isActive) {
     body: JSON.stringify({ is_active: parseInt(isActive) })
   });
   showToast(isActive == 1 ? 'Key 已启用' : 'Key 已禁用');
+  loadKeyCounts();
   if (_currentKeysUpstreamId) {
     openKeysModal(_currentKeysUpstreamId, _currentKeysUpstreamName);
   }
@@ -332,6 +334,7 @@ async function deleteKey(keyId) {
   if (!confirm('确定删除此 Key？此操作不可撤销。')) return;
   await api('/api/upstreams/0/keys/' + keyId, { method: 'DELETE' });
   showToast('Key 已删除');
+  loadKeyCounts();
   if (_currentKeysUpstreamId) {
     openKeysModal(_currentKeysUpstreamId, _currentKeysUpstreamName);
   }
@@ -347,9 +350,24 @@ async function submitAddKey(upstreamId) {
       body: JSON.stringify({ api_key: apiKey, label: label })
     });
     showToast('Key 已添加');
+    loadKeyCounts();
     openKeysModal(upstreamId, _currentKeysUpstreamName || '');
   } catch (e) {
     alert('添加失败: ' + e.message);
+  }
+}
+
+
+async function editKeyLabel(keyId, currentLabel) {
+  const newLabel = prompt('编辑 Label:', currentLabel || '');
+  if (newLabel === null) return;
+  await api('/api/upstreams/0/keys/' + keyId, {
+    method: 'PUT',
+    body: JSON.stringify({ label: newLabel.trim() })
+  });
+  showToast('Label 已更新');
+  if (_currentKeysUpstreamId) {
+    openKeysModal(_currentKeysUpstreamId, _currentKeysUpstreamName);
   }
 }
 
@@ -680,6 +698,7 @@ function initUpstreamPage() {
   on('toggleKeyActive', (e, el) => toggleKeyActive(parseInt(el.dataset.id), parseInt(el.dataset.active)));
   on('deleteKey', (e, el) => deleteKey(parseInt(el.dataset.id)));
   on('submitAddKey', (e, el) => submitAddKey(parseInt(el.dataset.id)));
+  on('editKeyLabel', (e, el) => editKeyLabel(parseInt(el.dataset.id), el.dataset.label));
 }
 
 export { loadUpstreamPage, initUpstreamPage, refreshConfigStatus };

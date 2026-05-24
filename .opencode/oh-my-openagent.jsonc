@@ -1,0 +1,341 @@
+{
+    "agents": {
+        // Atlas - 会话上下文管理代理
+        "atlas": {
+            "model": "opencode-go/deepseek-v4-pro",
+            "fallback_models": [
+                {
+                    "model": "WallTech-anthropic/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "deepseek/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "WallTech-backup/kimi-k2.5",
+                    "reasoningEffort": "xhigh"
+                }
+            ]
+        },
+        // Explore - 代码库搜索代理（FREE，快速）
+        "explore": {
+            "model": "opencode/deepseek-v4-flash-free",
+            "fallback_models": [
+                {
+                    "model": "WallTech-anthropic/deepseek-v4-flash",
+                    "reasoningEffort": "low"
+                },
+                {
+                    "model": "deepseek/deepseek-v4-flash",
+                    "reasoningEffort": "low"
+                },
+                {
+                    "model": "WallTech-backup/kimi-k2.5",
+                    "reasoningEffort": "low"
+                }
+            ]
+        },
+        // Hephaestus - 深度工作代理（"The Legitimate Craftsman"）
+        // 专注于端到端的自主执行，给定目标而非具体步骤
+        "hephaestus": {
+            "model": "opencode-go/deepseek-v4-pro",
+            "fallback_models": [
+                {
+                    "model": "WallTech-anthropic/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "deepseek/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "WallTech-backup/kimi-k2.5",
+                    "reasoningEffort": "xhigh"
+                }
+            ]
+        },
+        // Librarian - 参考资源搜索代理（CHEAP）
+        // 搜索外部文档、OSS 实现、官方 API 文档
+        "librarian": {
+            "model": "opencode/deepseek-v4-flash-free",
+            "fallback_models": [
+                {
+                    "model": "WallTech-anthropic/deepseek-v4-flash",
+                    "reasoningEffort": "low"
+                },
+                {
+                    "model": "deepseek/deepseek-v4-flash",
+                    "reasoningEffort": "low"
+                },
+                {
+                    "model": "WallTech-backup/kimi-k2.5",
+                    "reasoningEffort": "low"
+                }
+            ]
+        },
+        // Metis - 前期规划顾问（EXPENSIVE）
+        // 分析请求，识别隐藏意图和歧义，在复杂任务启动前使用
+        "metis": {
+            "model": "WallTech-backup/glm-5",
+            "fallback_models": [
+                {
+                    "model": "WallTech-anthropic/claude-sonnet-4-6",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "WallTech-anthropic/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "deepseek/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                }
+            ]
+        },
+        // Momus - 计划和工作审查代理（EXPENSIVE）
+        // 评估工作计划的清晰度、可验证性和完整性
+        "momus": {
+            "model": "WallTech-backup/glm-5",
+            "fallback_models": [
+                {
+                    "model": "WallTech-anthropic/claude-sonnet-4-6",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "WallTech-anthropic/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "deepseek/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                }
+            ]
+        },
+        // Multimodal-Looker - 多媒体文件分析代理
+        // 分析 PDF、图片、图表等，提取解释性数据
+        "multimodal-looker": {
+            "model": "WallTech-anthropic/qwen3.6-plus",
+            "fallback_models": [
+                {
+                    "model": "WallTech-backup/kimi-k2.5",
+                    "reasoningEffort": "medium"
+                }
+            ]
+        },
+        // Oracle - 高智商咨询代理（EXPENSIVE，只读）
+        // 复杂架构设计、调试、多系统权衡，2+ 次修复失败时使用
+        "oracle": {
+            "model": "WallTech-backup/glm-5",
+            "fallback_models": [
+                {
+                    "model": "WallTech-anthropic/claude-sonnet-4-6",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "WallTech-anthropic/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "deepseek/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                }
+            ]
+        },
+        // Prometheus - 战略规划代理（EXPENSIVE）
+        // 面试式规划：询问、识别范围、构建详细计划后再执行
+        "prometheus": {
+            "model": "opencode-go/deepseek-v4-pro",
+            "fallback_models": [
+                {
+                    "model": "WallTech-anthropic/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "deepseek/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "WallTech-backup/kimi-k2.5",
+                    "reasoningEffort": "xhigh"
+                }
+            ]
+        },
+        // Sisyphus - 主编排代理（您的默认代理）
+        // 规划、委托给专家、并行执行，直到任务完成
+        "sisyphus": {
+            "model": "opencode-go/deepseek-v4-pro",
+            "fallback_models": [
+                {
+                    "model": "WallTech-anthropic/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "deepseek/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "WallTech-backup/kimi-k2.5",
+                    "reasoningEffort": "xhigh"
+                }
+            ]
+        },
+        // Sisyphus-Junior - 轻量编排代理
+        // notepad 注入，轻量任务处理
+        "sisyphus-junior": {
+            "model": "opencode/deepseek-v4-flash-free",
+            "fallback_models": [
+                {
+                    "model": "WallTech-anthropic/deepseek-v4-flash",
+                    "reasoningEffort": "low"
+                },
+                {
+                    "model": "deepseek/deepseek-v4-flash",
+                    "reasoningEffort": "low"
+                },
+                {
+                    "model": "WallTech-backup/kimi-k2.5",
+                    "reasoningEffort": "low"
+                }
+            ]
+        }
+    },
+    "categories": {
+        // visual-engineering - 前端、UI/UX、设计、样式、动画
+        "visual-engineering": {
+            "model": "WallTech-anthropic/qwen3.6-plus",
+            "fallback_models": [
+                {
+                    "model": "WallTech-backup/kimi-k2.5",
+                    "reasoningEffort": "medium"
+                }
+            ]
+        },
+        // ultrabrain - 高智商任务（仅限 genuinely hard，逻辑密集）
+        "ultrabrain": {
+            "model": "opencode-go/deepseek-v4-pro",
+            "fallback_models": [
+                {
+                    "model": "WallTech-anthropic/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "deepseek/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "WallTech-backup/kimi-k2.5",
+                    "reasoningEffort": "xhigh"
+                }
+            ]
+        },
+        // deep - 自主问题解决（彻底研究后再行动）
+        "deep": {
+            "model": "opencode-go/deepseek-v4-pro",
+            "fallback_models": [
+                {
+                    "model": "WallTech-anthropic/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "deepseek/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "WallTech-backup/kimi-k2.5",
+                    "reasoningEffort": "xhigh"
+                }
+            ]
+        },
+        // artistry - 复杂问题解决，超越标准模式的创造性方法
+        "artistry": {
+            "model": "opencode-go/deepseek-v4-pro",
+            "fallback_models": [
+                {
+                    "model": "WallTech-anthropic/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "deepseek/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "WallTech-backup/kimi-k2.5",
+                    "reasoningEffort": "xhigh"
+                }
+            ]
+        },
+        // quick - 简单任务（单文件修改、错别字修复）
+        "quick": {
+            "model": "opencode/deepseek-v4-flash-free",
+            "fallback_models": [
+                {
+                    "model": "WallTech-anthropic/deepseek-v4-flash",
+                    "reasoningEffort": "low"
+                },
+                {
+                    "model": "deepseek/deepseek-v4-flash",
+                    "reasoningEffort": "low"
+                },
+                {
+                    "model": "WallTech-backup/kimi-k2.5",
+                    "reasoningEffort": "low"
+                }
+            ]
+        },
+        // unspecified-low - 不适合其他类别，低工作量
+        "unspecified-low": {
+            "model": "opencode/deepseek-v4-flash-free",
+            "fallback_models": [
+                {
+                    "model": "WallTech-anthropic/deepseek-v4-flash",
+                    "reasoningEffort": "low"
+                },
+                {
+                    "model": "deepseek/deepseek-v4-flash",
+                    "reasoningEffort": "low"
+                },
+                {
+                    "model": "WallTech-backup/kimi-k2.5",
+                    "reasoningEffort": "low"
+                }
+            ]
+        },
+        // unspecified-high - 不适合其他类别，高工作量
+        "unspecified-high": {
+            "model": "opencode-go/deepseek-v4-pro",
+            "fallback_models": [
+                {
+                    "model": "WallTech-anthropic/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "deepseek/deepseek-v4-pro",
+                    "reasoningEffort": "xhigh"
+                },
+                {
+                    "model": "WallTech-backup/kimi-k2.5",
+                    "reasoningEffort": "xhigh"
+                }
+            ]
+        },
+        // writing - 文档、散文、技术写作
+        "writing": {
+            "model": "opencode-go/deepseek-v4-pro",
+            "fallback_models": [
+                {
+                    "model": "WallTech-anthropic/deepseek-v4-pro",
+                    "reasoningEffort": "medium"
+                },
+                {
+                    "model": "deepseek/deepseek-v4-pro",
+                    "reasoningEffort": "medium"
+                },
+                {
+                    "model": "WallTech-backup/kimi-k2.5",
+                    "reasoningEffort": "medium"
+                }
+            ]
+        }
+    }
+}

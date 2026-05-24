@@ -1174,13 +1174,13 @@ class TestUpstreamApiKeysCRUD(unittest.TestCase):
         self.assertEqual(keys[0]['upstream_id'], self.up_id)
         self.assertEqual(keys[0]['label'], 'primary')
         self.assertEqual(keys[0]['is_active'], 1)
-        self.assertEqual(keys[0]['masked_key'], '****4abc')
-        self.assertNotIn('api_key', keys[0])
+        self.assertEqual(keys[0]['api_key'], 'sk-test-key-1234abc')
+        self.assertNotIn('masked_key', keys[0])
 
     def test_masked_key_short(self):
         self.db.add_upstream_key(self.up_id, 'abc', 'short')
         keys = self.db.list_upstream_keys(self.up_id)
-        self.assertEqual(keys[0]['masked_key'], 'abc')
+        self.assertEqual(keys[0]['api_key'], 'abc')
 
     def test_duplicate_key_raises(self):
         self.db.add_upstream_key(self.up_id, 'sk-dup', 'first')
