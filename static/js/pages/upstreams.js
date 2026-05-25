@@ -34,7 +34,6 @@ async function loadUpstreamTable() {
 <td>
         <button class="btn btn-secondary btn-sm" data-action="showUpstreamModal" data-id="${u.id}">编辑</button>
         <button class="btn btn-secondary btn-sm" data-action="openKeysModal" data-id="${u.id}" data-name="${escHtml(u.name)}">🔑 Keys (<span i-id="key-count-${u.id}">0</span>)</button>
-<button class="btn btn-secondary btn-sm" data-action="testUpstream" data-id="${u.id}">测试</button>
 <button class="btn btn-danger btn-sm" data-action="showDeleteUpstreamModal" data-id="${u.id}">删除</button>
 </td>
     </tr>`
@@ -143,7 +142,7 @@ function loadAllModelConfigTables() {
 
 // ─── 上游模态框 ───
 async function showUpstreamModal(editId) {
-  let data = { name: '', base_url: '', api_key: '', timeout: 600, connect_timeout: 30, ssl_verify: 1, retry: 1, format: 'chat_completions' };
+  let data = { name: '', base_url: '', timeout: 600, connect_timeout: 30, ssl_verify: 1, retry: 1, format: 'chat_completions' };
   let title = '新增上游';
   if (editId) {
     const upstreams = await api('/api/upstreams');
@@ -154,7 +153,6 @@ async function showUpstreamModal(editId) {
   showModal(title,
     `<div class="form-group"><label class="form-label">名称</label><input type="text" class="form-input" id="up-name" value="${escHtml(data.name || data.id)}"></div>
      <div class="form-group"><label class="form-label">Base URL</label><input type="text" class="form-input" id="up-url" value="${escHtml(data.base_url)}"></div>
-     <div class="form-group"><label class="form-label">API Key</label><input type="text" class="form-input" id="up-key" value="${escHtml(data.api_key)}"></div>
      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
        <div class="form-group"><label class="form-label">响应超时 (s)</label><input type="number" class="form-input" id="up-timeout" value="${data.timeout}" min="1"></div>
        <div class="form-group"><label class="form-label">连接超时 (s)</label><input type="number" class="form-input" id="up-conn-timeout" value="${data.connect_timeout}" min="1"></div>
@@ -171,7 +169,6 @@ async function showUpstreamModal(editId) {
 async function saveUpstream(editId) {
   const data = {
     base_url: document.getElementById('up-url').value,
-    api_key: document.getElementById('up-key').value,
     timeout: parseInt(document.getElementById('up-timeout').value) || 600,
     connect_timeout: parseInt(document.getElementById('up-conn-timeout').value) || 30,
     ssl_verify: parseInt(document.getElementById('up-ssl').value),
@@ -189,15 +186,6 @@ async function saveUpstream(editId) {
   closeModal();
   bus.emit('config:upstream-changed', {});
   loadAllModelConfigTables();
-}
-
-async function testUpstream(id) {
-  const result = await api('/api/upstreams/' + id + '/test', { method: 'POST' });
-  if (result.reachable) {
-    alert('✅ 连通正常 (' + result.latency_ms + 'ms)' + (result.warning ? '\n⚠️ ' + result.warning : ''));
-  } else {
-    alert('❌ 不可达: ' + (result.error || '未知错误'));
-  }
 }
 
 // ===== Keys 管理 =====
@@ -242,18 +230,15 @@ async function openKeysModal(upstreamId, upstreamName) {
   const keysTableHtml = renderKeysRows(keys);
 
   const addFormHtml = `
-    <div class="keys-add-form">
-      <h4>+ 新增 Key</h4>
-      <div class="keys-add-fields">
-        <div class="keys-field">
-          <label>API Key *</label>
-          <input type="text" id="new-key-value" placeholder="sk-...">
-        </div>
-        <div class="keys-field">
-          <label>Label</label>
-          <input type="text" id="new-key-label" placeholder="账号A">
-        </div>
+    <div class="key-card keys-add-card">
+      <div class="key-card-header">
+        <span class="key-card-idx keys-add-idx">+</span>
+        <span class="key-card-label">新增 Key</span>
+        <input type="text" class="keys-add-label-input" id="new-key-label" placeholder="Label（可选）">
         <button class="btn btn-primary btn-sm" data-action="submitAddKey" data-id="${upstreamId}">添加</button>
+      </div>
+      <div class="key-card-value">
+        <input type="text" class="keys-add-key-input" id="new-key-value" placeholder="sk-...">
       </div>
     </div>`;
 
@@ -276,36 +261,29 @@ function closeKeysModal() {
 
 function renderKeysRows(keys) {
   if (!keys || keys.length === 0) {
-    return '<p class="keys-empty">暂无 Key</p>';
+    return '<p class="keys-empty">暂无 Key，在下方添加第一个</p>';
   }
   return `
-    <table class="keys-table">
-      <thead><tr>
-        <th class="keys-col-idx">#</th>
-        <th class="keys-col-label">Label</th>
-        <th class="keys-col-key">Key</th>
-        <th class="keys-col-status">状态</th>
-        <th class="keys-col-actions">操作</th>
-      </tr></thead>
-      <tbody>
-        ${keys.map((k, i) => `
-          <tr>
-            <td class="keys-col-idx">${i + 1}</td>
-            <td class="keys-col-label">${escHtml(k.label || '-')}</td>
-            <td class="keys-col-key" title="${escHtml(k.api_key)}">${escHtml(k.api_key)}</td>
-            <td class="keys-col-status" data-key-idx="${i}">
-              ${k.is_active ? '<span class="keys-status-active">✅ 正常</span>' : '<span class="keys-status-inactive">⛔ 已禁用</span>'}
-            </td>
-            <td class="keys-col-actions">
-              <button class="btn btn-secondary btn-sm" data-action="editKeyLabel" data-id="' + k.id + '" data-label="' + escHtml(k.label || '') + '">编辑</button>
+    <div class="keys-list">
+      ${keys.map((k, i) => `
+        <div class="key-card">
+          <div class="key-card-header">
+            <span class="key-card-idx">${i + 1}</span>
+            <span class="key-card-label">${escHtml(k.label || '未命名')}</span>
+            <div class="key-card-status" data-key-idx="${i}">
+              ${k.is_active ? '<span class="keys-status-active">● 正常</span>' : '<span class="keys-status-inactive">● 已禁用</span>'}
+            </div>
+            <div class="key-card-actions">
               ${k.is_active
                 ? '<button class="btn btn-secondary btn-sm" data-action="toggleKeyActive" data-id="' + k.id + '" data-active="0">禁用</button>'
                 : '<button class="btn btn-secondary btn-sm" data-action="toggleKeyActive" data-id="' + k.id + '" data-active="1">启用</button>'}
-              <button class="btn btn-danger btn-sm" data-action="deleteKey" data-id="' + k.id + '">删除</button>
-            </td>
-          </tr>`).join('')}
-      </tbody>
-    </table>`;
+              <button class="btn btn-secondary btn-sm" data-action="testKey" data-id="${k.id}">测试</button>
+              <button class="btn btn-danger btn-sm" data-action="deleteKey" data-id="${k.id}">删除</button>
+            </div>
+          </div>
+          <div class="key-card-value">${escHtml(k.api_key)}</div>
+        </div>`).join('')}
+    </div>`;
 }
 
 async function saveCooldown(upstreamId) {
@@ -318,8 +296,25 @@ async function saveCooldown(upstreamId) {
   showToast('冷却时长已保存');
 }
 
+async function testKey(keyId) {
+  const btn = document.querySelector(`[data-action="testKey"][data-id="${keyId}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = '测试中...'; }
+  try {
+    const result = await api('/api/upstreams/' + _currentKeysUpstreamId + '/keys/' + keyId + '/test', { method: 'POST' });
+    if (result.valid) {
+      showToast('✅ Key 有效 (' + result.latency_ms + 'ms)');
+    } else {
+      alert('❌ Key 无效: ' + (result.error || '未知错误'));
+    }
+  } catch (e) {
+    alert('❌ 测试失败: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '测试'; }
+  }
+}
+
 async function toggleKeyActive(keyId, isActive) {
-  await api('/api/upstreams/0/keys/' + keyId, {
+  await api('/api/upstreams/' + _currentKeysUpstreamId + '/keys/' + keyId, {
     method: 'PUT',
     body: JSON.stringify({ is_active: parseInt(isActive) })
   });
@@ -332,7 +327,7 @@ async function toggleKeyActive(keyId, isActive) {
 
 async function deleteKey(keyId) {
   if (!confirm('确定删除此 Key？此操作不可撤销。')) return;
-  await api('/api/upstreams/0/keys/' + keyId, { method: 'DELETE' });
+  await api('/api/upstreams/' + _currentKeysUpstreamId + '/keys/' + keyId, { method: 'DELETE' });
   showToast('Key 已删除');
   loadKeyCounts();
   if (_currentKeysUpstreamId) {
@@ -361,7 +356,7 @@ async function submitAddKey(upstreamId) {
 async function editKeyLabel(keyId, currentLabel) {
   const newLabel = prompt('编辑 Label:', currentLabel || '');
   if (newLabel === null) return;
-  await api('/api/upstreams/0/keys/' + keyId, {
+  await api('/api/upstreams/' + _currentKeysUpstreamId + '/keys/' + keyId, {
     method: 'PUT',
     body: JSON.stringify({ label: newLabel.trim() })
   });
@@ -672,7 +667,7 @@ async function bulkAddDetectedModels(upstreamId) {
 
 async function loadUpstreamPage() {
   await refreshConfigStatus();
-  loadUpstreamTable();
+  await loadUpstreamTable();
   loadKeyCounts();
 }
 
@@ -680,7 +675,6 @@ function initUpstreamPage() {
   on('toggleModelDrawer', (e, el) => toggleModelDrawer(el, el.dataset.id));
   on('showUpstreamModal', (e, el) => showUpstreamModal(el.dataset.id));
   on('openKeysModal', (e, el) => openKeysModal(parseInt(el.dataset.id), el.dataset.name));
-  on('testUpstream', (e, el) => testUpstream(el.dataset.id));
   on('showDeleteUpstreamModal', (e, el) => showDeleteUpstreamModal(el.dataset.id));
   on('saveUpstream', (e, el) => saveUpstream(el.dataset.editId));
   on('confirmDeleteUpstream', (e, el) => confirmDeleteUpstream(el.dataset.id));
@@ -699,6 +693,7 @@ function initUpstreamPage() {
   on('deleteKey', (e, el) => deleteKey(parseInt(el.dataset.id)));
   on('submitAddKey', (e, el) => submitAddKey(parseInt(el.dataset.id)));
   on('editKeyLabel', (e, el) => editKeyLabel(parseInt(el.dataset.id), el.dataset.label));
+  on('testKey', (e, el) => testKey(parseInt(el.dataset.id)));
 }
 
 export { loadUpstreamPage, initUpstreamPage, refreshConfigStatus };

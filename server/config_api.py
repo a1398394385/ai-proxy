@@ -58,6 +58,52 @@ def _test_upstream_connectivity(upstream: dict) -> dict:
     return result
 
 
+def _test_upstream_key(upstream: dict, api_key: str) -> dict:
+    """用指定的 API key 测试上游连通性。"""
+    base = upstream["base_url"].rstrip("/")
+    parsed = urlparse(base)
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    scheme = parsed.scheme
+
+    result = {"valid": False, "http_status": None, "latency_ms": 0}
+
+    base_path = parsed.path.rstrip("/")
+    candidate_paths = [base_path + "/v1/models", base_path + "/models"]
+
+    start = time.time()
+    for request_path in candidate_paths:
+        conn = None
+        try:
+            conn = http.client.HTTPSConnection(host, port, timeout=10) if scheme == "https" else http.client.HTTPConnection(host, port, timeout=10)
+            conn.request("GET", request_path,
+                         headers={"Authorization": "Bearer " + api_key})
+            resp = conn.getresponse()
+            result["latency_ms"] = int((time.time() - start) * 1000)
+            result["http_status"] = resp.status
+            if resp.status == 200:
+                result["valid"] = True
+                result["message"] = "Key 有效"
+                return result
+            elif resp.status in (401, 403):
+                result["error"] = "API Key 无效"
+                return result
+            elif resp.status not in (404, 405):
+                result["error"] = "返回 " + str(resp.status)
+                return result
+            # 404/405 继续尝试下一个路径
+        except Exception as e:
+            result["error"] = str(e)
+            return result
+        finally:
+            if conn:
+                conn.close()
+
+    if not result.get("error"):
+        result["error"] = "返回 404"
+    return result
+
+
 def _call_upstream_models(upstream: dict) -> dict:
     """调用上游 /v1/models 获取可用模型列表。"""
     parsed = urlparse(upstream["base_url"])
@@ -540,6 +586,23 @@ def handle_post(path, handler) -> bool:
             result["proxy"] = body
         except Exception as e:
             result["proxy"] = {"status": "error", "message": str(e)}
+        json_response(handler, result)
+        return True
+
+    # POST /api/upstreams/{id}/keys/{kid}/test
+    m = re.match(r"^/api/upstreams/(\d+)/keys/(\d+)/test$", path)
+    if m:
+        uid = int(m.group(1))
+        kid = int(m.group(2))
+        with config_db() as db:
+            u = db.get_upstream(uid)
+            key_rows = db._connect().execute(
+                "SELECT api_key FROM upstream_api_keys WHERE id = ?", (kid,)
+            ).fetchall()
+        if not u or not key_rows:
+            json_response(handler, {"error": "Not found"}, 404)
+            return True
+        result = _test_upstream_key(u, key_rows[0]["api_key"])
         json_response(handler, result)
         return True
 

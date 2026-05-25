@@ -2331,6 +2331,7 @@ class ConfigCache:
                             "ssl_verify": bool(u["ssl_verify"]),
                             "retry": u["retry"],
                             "format": u["format"],
+                            "key_cooldown_secs": u.get("key_cooldown_secs", 60),
                         }
                     all_models = [m for m in db.list_models()
                                   if m["upstream_id"] in new_config_map]

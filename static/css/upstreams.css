@@ -1,31 +1,37 @@
 /* ===== 上游管理页面 ===== */
 
-/* ─── Keys 弹窗 ─── */
+/* ─── Keys 冷却设置行 ─── */
 
 .keys-cooldown-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   margin-bottom: 16px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid hsl(var(--border));
+  padding: 10px 14px;
+  background: hsl(var(--secondary) / 0.4);
+  border-radius: 8px;
+  border: 1px solid hsl(var(--border) / 0.6);
 }
 
 .keys-cooldown-row label {
-  font-size: 13px;
+  font-size: 11px;
   white-space: nowrap;
-  color: hsl(var(--foreground));
+  color: hsl(var(--muted-foreground));
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .keys-cooldown-row input[type="number"] {
-  width: 80px;
+  width: 72px;
   padding: 4px 8px;
   border: 1px solid hsl(var(--border));
   border-radius: 6px;
   font-size: 13px;
-  background: hsl(var(--secondary));
+  background: hsl(var(--background) / 0.8);
   color: hsl(var(--foreground));
-  font-family: inherit;
+  font-family: monospace;
+  text-align: center;
 }
 
 .keys-unit {
@@ -33,69 +39,75 @@
   color: hsl(var(--muted-foreground));
 }
 
-/* ─── Keys 表格 ─── */
+/* ─── Keys 卡片列表 ─── */
 
-.keys-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-
-.keys-table thead tr {
-  border-bottom: 2px solid hsl(var(--border));
-}
-
-.keys-table th {
-  padding: 8px;
-  text-align: left;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: hsl(var(--muted-foreground));
-  font-weight: 600;
-}
-
-.keys-table tbody tr {
-  border-bottom: 1px solid hsl(var(--border) / 0.5);
-  transition: background 0.15s ease;
-}
-
-.keys-table tbody tr:hover {
-  background: hsl(var(--primary) / 0.03);
-}
-
-.keys-table td {
-  padding: 8px;
-  color: hsl(var(--foreground));
-  vertical-align: middle;
-}
-
-.keys-col-idx {
-  width: 40px;
-  text-align: center;
-}
-
-.keys-col-label {
-  width: 120px;
-}
-
-.keys-col-key {
-  font-family: monospace;
-  font-size: 12px;
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.keys-col-status {
-  width: 140px;
-}
-
-.keys-col-actions {
-  width: 160px;
+.keys-list {
   display: flex;
-  gap: 4px;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.key-card {
+  background: hsl(var(--secondary) / 0.35);
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  overflow: hidden;
+  transition: border-color 0.15s ease;
+}
+
+.key-card:hover {
+  border-color: hsl(var(--primary) / 0.4);
+}
+
+.key-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+}
+
+.key-card-idx {
+  font-size: 11px;
+  font-weight: 700;
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--muted));
+  border-radius: 4px;
+  padding: 2px 6px;
+  min-width: 22px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.key-card-label {
+  font-size: 13px;
+  color: hsl(var(--foreground));
+  font-weight: 500;
+  flex: 1;
+  min-width: 0;
+}
+
+.key-card-status {
+  flex-shrink: 0;
+}
+
+.key-card-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.key-card-value {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, 'Courier New', monospace;
+  font-size: 11.5px;
+  padding: 8px 14px 10px;
+  background: hsl(var(--background) / 0.5);
+  border-top: 1px solid hsl(var(--border) / 0.5);
+  color: hsl(var(--foreground) / 0.7);
+  word-break: break-all;
+  letter-spacing: 0.4px;
+  line-height: 1.6;
+  user-select: all;
 }
 
 /* ─── Keys 状态 ─── */
@@ -103,6 +115,7 @@
 .keys-status-active {
   color: hsl(var(--green));
   font-size: 12px;
+  font-weight: 500;
 }
 
 .keys-status-inactive {
@@ -121,56 +134,50 @@
 .keys-empty {
   text-align: center;
   color: hsl(var(--muted-foreground));
-  padding: 16px;
+  padding: 24px;
   font-size: 13px;
+  border: 1px dashed hsl(var(--border));
+  border-radius: 10px;
+  margin-bottom: 16px;
 }
 
-/* ─── Keys 新增表单 ─── */
+/* ─── Keys 新增表单（卡片式）─── */
 
-.keys-add-form {
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid hsl(var(--border));
+.keys-add-idx {
+  color: hsl(var(--primary)) !important;
+  background: hsl(var(--primary) / 0.12) !important;
 }
 
-.keys-add-form h4 {
-  font-size: 14px;
-  margin-bottom: 8px;
-  color: hsl(var(--foreground));
-}
-
-.keys-add-fields {
-  display: flex;
-  gap: 8px;
-  align-items: flex-end;
-  flex-wrap: wrap;
-}
-
-.keys-field {
+.keys-add-label-input {
   flex: 1;
-  min-width: 150px;
-}
-
-.keys-field label {
-  font-size: 12px;
-  display: block;
-  margin-bottom: 2px;
-  color: hsl(var(--muted-foreground));
-}
-
-.keys-field input {
-  width: 100%;
-  padding: 6px 8px;
+  padding: 4px 8px;
   border: 1px solid hsl(var(--border));
   border-radius: 6px;
   font-size: 13px;
-  background: hsl(var(--secondary));
+  background: hsl(var(--background) / 0.8);
   color: hsl(var(--foreground));
   font-family: inherit;
+  transition: border-color 0.15s ease;
 }
 
-.keys-field input:focus {
+.keys-add-label-input:focus {
   outline: none;
   border-color: hsl(var(--primary) / 0.5);
   box-shadow: 0 0 0 2px hsl(var(--primary) / 0.1);
+}
+
+.keys-add-key-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, 'Courier New', monospace;
+  font-size: 11.5px;
+  color: hsl(var(--foreground) / 0.85);
+  letter-spacing: 0.4px;
+  box-sizing: border-box;
+}
+
+.keys-add-key-input::placeholder {
+  color: hsl(var(--muted-foreground) / 0.5);
 }
