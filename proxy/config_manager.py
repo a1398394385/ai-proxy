@@ -1356,12 +1356,16 @@ class Migrations:
 
         version = s["version"]
 
-        # STEP 1: 备份现有数据库
+        # STEP 1: 备份现有数据库（非致命——Windows 上可能因文件锁定/权限失败）
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         backup_name = f"{self.db_path.stem}.bak.{timestamp}{self.db_path.suffix}"
         backup_path = self.db_path.parent / backup_name
-        shutil.copy2(self.db_path, backup_path)
-        logging.info(f"[Migrations] STEP 1: 备份完成 -> {backup_path}")
+        try:
+            shutil.copy2(self.db_path, backup_path)
+            logging.info(f"[Migrations] STEP 1: 备份完成 -> {backup_path}")
+        except Exception as e:
+            logging.warning(f"[Migrations] STEP 1: 备份失败，继续迁移: {e}")
+            backup_path = None
 
         if version == 0:
             self._migrate_v0_to_v1(backup_path)
@@ -2107,10 +2111,18 @@ class Migrations:
                 logging.info("[Migrations] v7->v8 迁移成功")
             except Exception:
                 conn.rollback()
-                import shutil
-                from pathlib import Path
-                shutil.copy2(backup_path, self.db_path)
-                logging.error("[Migrations] v7->v8 迁移失败，已从备份恢复", exc_info=True)
+                if backup_path:
+                    import shutil
+                    from pathlib import Path
+                    shutil.copy2(backup_path, self.db_path)
+                    logging.error(
+                        "[Migrations] v7->v8 迁移失败，已从备份恢复", exc_info=True
+                    )
+                else:
+                    logging.error(
+                        "[Migrations] v7->v8 迁移失败（无备份，仅事务回滚）",
+                        exc_info=True,
+                    )
                 raise
         finally:
             conn.execute("PRAGMA foreign_keys = ON")
