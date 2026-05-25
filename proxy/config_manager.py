@@ -1256,6 +1256,16 @@ class Migrations:
                     "details": "已迁移到 v9: target_models 新增 max_context/max_input/max_output/rpm 列",
                 }
             if version == 9:
+                # 额外校验：target_models 是否缺少 max_context（可能有数据库在迁移 v8→v9 之前就跳到了 v9）
+                has_max_context = conn.execute(
+                    "SELECT 1 FROM pragma_table_info('target_models') WHERE name = 'max_context'"
+                ).fetchone()
+                if not has_max_context:
+                    return {
+                        "migrated": False,
+                        "version": 8,
+                        "details": "需要执行迁移: target_models 表缺少 max_context/max_input/max_output/rpm 列",
+                    }
                 has_keys_table = conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='upstream_api_keys'"
                 ).fetchone()
@@ -1289,6 +1299,17 @@ class Migrations:
                     "migrated": True,
                     "version": 10,
                     "details": "已迁移到 v10: upstream_api_keys 表 + key_cooldown_secs 列",
+                }
+            # fallback：未知或更高版本的数据库
+            # 额外校验 target_models 是否缺少 max_context
+            has_max_context = conn.execute(
+                "SELECT 1 FROM pragma_table_info('target_models') WHERE name = 'max_context'"
+            ).fetchone()
+            if not has_max_context:
+                return {
+                    "migrated": False,
+                    "version": 8,
+                    "details": "需要执行迁移: target_models 表缺少 max_context/max_input/max_output/rpm 列",
                 }
             return {
                 "migrated": True,
