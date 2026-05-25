@@ -140,9 +140,10 @@ class TestConfigCacheKeyIntegration(unittest.TestCase):
         self.assertEqual(key, "sk-key2")
 
     def test_delete_key_then_reload(self):
-        """删除 key → reload → pick_key 返回空字符串"""
+        """删除 key → reload → pick_key 返回迁移自 upstreams.api_key 的初始 key"""
         kid = self.db.add_upstream_key(self.up_id, "sk-key1")
         self.db.delete_upstream_key(kid)
         self.cache.reload()
+        # fallback 迁移将 upstreams.api_key（"sk-test"）移到了 upstream_api_keys
         key = self.cache.pick_key(self.up_id)
-        self.assertEqual(key, "")
+        self.assertEqual(key, "sk-test")

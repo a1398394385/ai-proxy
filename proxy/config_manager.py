@@ -1301,7 +1301,7 @@ class Migrations:
                     "details": "已迁移到 v10: upstream_api_keys 表 + key_cooldown_secs 列",
                 }
             # fallback：未知或更高版本的数据库
-            # 额外校验 target_models 是否缺少 max_context
+            # 校验 target_models 是否缺少 max_context
             has_max_context = conn.execute(
                 "SELECT 1 FROM pragma_table_info('target_models') WHERE name = 'max_context'"
             ).fetchone()
@@ -1311,10 +1311,38 @@ class Migrations:
                     "version": 8,
                     "details": "需要执行迁移: target_models 表缺少 max_context/max_input/max_output/rpm 列",
                 }
+            # 额外校验 keys 迁移是否已完成（兼容数据库 version 被意外设为 >= 10 但 v9→v10 未实际执行的情况）
+            has_keys_table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='upstream_api_keys'"
+            ).fetchone()
+            if not has_keys_table:
+                return {
+                    "migrated": False,
+                    "version": 9,
+                    "details": "需要执行迁移: 新增 upstream_api_keys 表 + key_cooldown_secs 列",
+                }
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM upstreams WHERE api_key != ''"
+            ).fetchone()[0]
+            if remaining > 0:
+                return {
+                    "migrated": False,
+                    "version": 9,
+                    "details": f"需要执行迁移: {remaining} 个上游仍有 api_key 待迁移到 upstream_api_keys",
+                }
+            has_cooldown = conn.execute(
+                "SELECT 1 FROM pragma_table_info('upstreams') WHERE name = 'key_cooldown_secs'"
+            ).fetchone()
+            if not has_cooldown:
+                return {
+                    "migrated": False,
+                    "version": 9,
+                    "details": "需要执行迁移: upstreams 缺少 key_cooldown_secs 列",
+                }
             return {
                 "migrated": True,
                 "version": version,
-                "details": f"已迁移到 v{version}: request_type / format 约束 / upstreams INTEGER PK 已更新",
+                "details": f"已迁移到 v{version}: upstream_api_keys / max_context / format / PK 已更新",
             }
         finally:
             conn.close()
