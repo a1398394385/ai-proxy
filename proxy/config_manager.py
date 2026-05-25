@@ -1213,9 +1213,9 @@ class Migrations:
                         "details": "需要执行迁移: model_routes 外键修复",
                     }
                 return {
-                    "migrated": True,
+                    "migrated": False,
                     "version": 5,
-                    "details": "已迁移到 v5: model_routes 外键正确",
+                    "details": "需要执行迁移: 从 v5 继续迁移到最新版本",
                 }
             if version == 6:
                 return {
