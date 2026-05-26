@@ -250,11 +250,13 @@ async function saveRoute(editId, allowDefault = false) {
   };
   if (!data.source) { alert('源模型名不能为空'); return; }
   if (!editId && data.source === '*' && !allowDefault) { alert('不能通过此按钮添加默认路由，请使用「新增默认路由」按钮'); return; }
+  let result;
   if (editId) {
-    await api('/api/routes/' + editId, { method: 'PUT', body: JSON.stringify(data) });
+    result = await api('/api/routes/' + editId, { method: 'PUT', body: JSON.stringify(data) });
   } else {
-    await api('/api/routes', { method: 'POST', body: JSON.stringify(data) });
+    result = await api('/api/routes', { method: 'POST', body: JSON.stringify(data) });
   }
+  if (result.error) { alert(result.error); return; }
   closeModal();
   bus.emit('config:route-changed', {});
   templateDirty = true;
@@ -283,11 +285,13 @@ async function saveAgentRoute(editId) {
   if (!data.source) { alert('源模型名不能为空'); return; }
   if (data.source === '*') { alert('Agent 路由不支持默认路由'); return; }
   if (!data.target_model_id) { alert('请选择目标模型'); return; }
+  let resultA;
   if (editId) {
-    await api('/api/agent-routes/' + editId, { method: 'PUT', body: JSON.stringify(data) });
+    resultA = await api('/api/agent-routes/' + editId, { method: 'PUT', body: JSON.stringify(data) });
   } else {
-    await api('/api/agent-routes', { method: 'POST', body: JSON.stringify(data) });
+    resultA = await api('/api/agent-routes', { method: 'POST', body: JSON.stringify(data) });
   }
+  if (resultA.error) { alert(resultA.error); return; }
   closeModal();
   bus.emit('config:route-changed', {});
   templateDirty = true;

@@ -259,7 +259,7 @@ class ConfigDB:
         try:
             sql = """SELECT tm.id, tm.name, tm.upstream_id, tm.multimodal,
                             tm.max_context, tm.max_input, tm.max_output, tm.rpm, tm.created_at,
-                            u.name AS upstream_name
+                            u.is_active AS upstream_active, u.name AS upstream_name
                      FROM target_models tm
                      JOIN upstreams u ON tm.upstream_id = u.id"""
             params = []
@@ -277,7 +277,7 @@ class ConfigDB:
             row = conn.execute(
                 """SELECT tm.id, tm.name, tm.upstream_id, tm.multimodal,
                             tm.max_context, tm.max_input, tm.max_output, tm.rpm, tm.created_at,
-                            u.name AS upstream_name
+                            u.is_active AS upstream_active, u.name AS upstream_name
                    FROM target_models tm
                    JOIN upstreams u ON tm.upstream_id = u.id
                    WHERE tm.id = ?""",
