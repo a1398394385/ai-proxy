@@ -456,6 +456,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         request_id, model_name, target,
                         {"passthrough": True},
                         request_type=request_type,
+                        headers={
+                            "Content-Type": resp.getheader("Content-Type", "application/json"),
+                            "Content-Length": str(len(resp_body)),
+                        },
                     )
 
                 # Token 统计（透传路径）
@@ -667,6 +671,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         request_id, model_name, target,
                         {"passthrough": True, "streaming": True},
                         request_type=request_type,
+                        headers={
+                            "Content-Type": "text/event-stream",
+                            "Cache-Control": "no-cache",
+                            "X-Accel-Buffering": "no",
+                            "Transfer-Encoding": "chunked",
+                        },
                     )
 
                 if final_usage:
@@ -954,6 +964,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         logger.log_converted_response(
                             request_id, model, target, output,
                             request_type=client_format,
+                            headers={"Content-Type": "application/json"},
                         )
 
                     usage = chat_response.get("usage", {})
@@ -977,6 +988,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         logger.log_converted_response(
                             request_id, model, target,
                             {"error": str(e)}, request_type=client_format,
+                            headers={"Content-Type": "application/json"},
                         )
                     self._send_json(500, {"error": {"type": "internal_error", "message": str(e)}})
                     return
@@ -1172,6 +1184,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 request_id, model_name, target,
                 {"streaming": True, "data": full_sse},
                 request_type=client_format,
+                headers={
+                    "Content-Type": "text/event-stream",
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                },
             )
 
         if final_usage:
