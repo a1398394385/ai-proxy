@@ -278,9 +278,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
         # 阶段 1：记录原始请求（完整下游 URL）
         logger = get_logger()
         if logger:
+            client_headers = dict(self.headers)
             logger.log_raw_request(request_id, model_name, target, body,
                                    request_type=request_type, request_path=downstream_url,
-                                   session_id=session_id, is_agent=is_agent)
+                                   session_id=session_id, is_agent=is_agent,
+                                   headers=client_headers)
 
         # 透传/转换判定
         if request_type == upstream_format and upstream_format:
