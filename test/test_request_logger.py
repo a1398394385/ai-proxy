@@ -95,6 +95,8 @@ class TestDBInitialization(unittest.TestCase):
             "request_type": "TEXT",
             "request_path": "TEXT",
             "data": "TEXT",
+            "headers": "TEXT",
+            "session_id": "TEXT",
             "created_at": "TEXT",
         }
         for col, dtype in expected.items():

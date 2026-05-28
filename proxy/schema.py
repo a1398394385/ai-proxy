@@ -130,6 +130,7 @@ TABLES = {
             request_type TEXT,
             request_path TEXT,
             data         TEXT,
+            headers      TEXT,
             session_id   TEXT,
             created_at   TEXT NOT NULL
         )
