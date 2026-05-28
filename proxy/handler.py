@@ -218,6 +218,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     {"raw_error": str(e), "raw_body": body_raw.decode("utf-8", errors="replace")[:5000]},
                     request_type=request_type,
                     request_path=downstream_url,
+                    headers=dict(self.headers),
                 )
             self._send_json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
             return
