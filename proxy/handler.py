@@ -398,7 +398,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
             try:
                 conn = _create_upstream_conn(upstream_cfg, parsed, port)
 
-                headers = {"Content-Type": content_type}
+                headers = dict(self.headers)
+                # 清除 hop-by-hop 和可能冲突的 headers，其余客户端 headers 原样透传
+                for h in ("Host", "Content-Length", "Connection", "Transfer-Encoding", "Upgrade", "Proxy-Connection"):
+                    headers.pop(h, None)
+                headers["Content-Type"] = content_type
                 if api_key:
                     headers["Authorization"] = f"Bearer {api_key}"
                 logger = get_logger()
@@ -535,11 +539,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
             try:
                 conn = _create_upstream_conn(upstream_cfg, parsed, port)
 
-                headers = {
-                    "Content-Type": content_type,
-                    "Accept": "text/event-stream",
-                    "Connection": "close",
-                }
+                headers = dict(self.headers)
+                for h in ("Host", "Content-Length", "Transfer-Encoding", "Upgrade", "Proxy-Connection"):
+                    headers.pop(h, None)
+                headers["Content-Type"] = content_type
+                headers["Accept"] = "text/event-stream"
+                headers["Connection"] = "close"
                 if api_key:
                     headers["Authorization"] = f"Bearer {api_key}"
                 logger = get_logger()
