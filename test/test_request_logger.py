@@ -212,6 +212,25 @@ class TestLogRawRequest(unittest.TestCase):
         self.assertEqual(rows[0]["stage"], "raw_request")
         self.assertEqual(rows[0]["data"], "raw bytes")
 
+    def test_log_raw_request_with_headers(self):
+        """log_raw_request 带 headers 参数时正确写入。"""
+        rid = _generate_request_id()
+        headers = {"Content-Type": "application/json", "Authorization": "Bearer sk-test"}
+        self.logger.log_raw_request(rid, "gpt-4o", "qwen3.6-plus", {"model": "gpt-4o"},
+                                    headers=headers)
+        rows = _query_debug_log(self.db_path, rid)
+        self.assertEqual(len(rows), 1)
+        saved_headers = json.loads(rows[0]["headers"])
+        self.assertEqual(saved_headers["Content-Type"], "application/json")
+        self.assertEqual(saved_headers["Authorization"], "Bearer sk-test")
+
+    def test_log_raw_request_without_headers(self):
+        """log_raw_request 不带 headers 时，headers 列为 NULL。"""
+        rid = _generate_request_id()
+        self.logger.log_raw_request(rid, "gpt-4o", "qwen3.6-plus", {"model": "gpt-4o"})
+        rows = _query_debug_log(self.db_path, rid)
+        self.assertIsNone(rows[0]["headers"])
+
 
 class TestLogConvertedRequest(unittest.TestCase):
     """log_converted_request 写入验证。"""
@@ -235,6 +254,23 @@ class TestLogConvertedRequest(unittest.TestCase):
         self.assertEqual(rows[0]["target_model"], "qwen3.6-plus")
         data = json.loads(rows[0]["data"])
         self.assertEqual(data["model"], "qwen3.6-plus")
+
+    def test_log_converted_request_with_headers(self):
+        """log_converted_request 带 headers 参数时正确写入。"""
+        rid = _generate_request_id()
+        headers = {"Content-Type": "application/json", "Authorization": "Bearer sk-abc"}
+        self.logger.log_converted_request(rid, "gpt-4o", "qwen3.6-plus",
+                                          {"model": "qwen3.6-plus"}, headers=headers)
+        rows = _query_debug_log(self.db_path, rid)
+        saved_headers = json.loads(rows[0]["headers"])
+        self.assertEqual(saved_headers["Authorization"], "Bearer sk-abc")
+
+    def test_log_converted_request_without_headers(self):
+        """log_converted_request 不带 headers 时，headers 列为 NULL。"""
+        rid = _generate_request_id()
+        self.logger.log_converted_request(rid, "gpt-4o", "qwen3.6-plus", {"model": "qwen3.6-plus"})
+        rows = _query_debug_log(self.db_path, rid)
+        self.assertIsNone(rows[0]["headers"])
 
 
 class TestLogUpstreamResponse(unittest.TestCase):
@@ -284,6 +320,22 @@ class TestLogUpstreamResponse(unittest.TestCase):
         self.assertIsNone(rows[0]["model"])
         self.assertIsNone(rows[0]["target_model"])
 
+    def test_log_upstream_response_with_headers(self):
+        """log_upstream_response 带 headers 参数时正确写入。"""
+        rid = _generate_request_id()
+        headers = {"Content-Type": "application/json", "X-Request-Id": "req-123"}
+        self.logger.log_upstream_response(rid, 200, "ok", 100, headers=headers)
+        rows = _query_debug_log(self.db_path, rid)
+        saved_headers = json.loads(rows[0]["headers"])
+        self.assertEqual(saved_headers["X-Request-Id"], "req-123")
+
+    def test_log_upstream_response_without_headers(self):
+        """log_upstream_response 不带 headers 时，headers 列为 NULL。"""
+        rid = _generate_request_id()
+        self.logger.log_upstream_response(rid, 200, "ok", 100)
+        rows = _query_debug_log(self.db_path, rid)
+        self.assertIsNone(rows[0]["headers"])
+
 
 class TestLogConvertedResponse(unittest.TestCase):
     """log_converted_response 写入验证。"""
@@ -307,6 +359,23 @@ class TestLogConvertedResponse(unittest.TestCase):
         self.assertEqual(rows[0]["target_model"], "qwen3.6-plus")
         data = json.loads(rows[0]["data"])
         self.assertEqual(data["id"], "resp-abc123")
+
+    def test_log_converted_response_with_headers(self):
+        """log_converted_response 带 headers 参数时正确写入。"""
+        rid = _generate_request_id()
+        headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache"}
+        self.logger.log_converted_response(rid, "gpt-4o", "qwen3.6-plus",
+                                           {"id": "resp-abc"}, headers=headers)
+        rows = _query_debug_log(self.db_path, rid)
+        saved_headers = json.loads(rows[0]["headers"])
+        self.assertEqual(saved_headers["Content-Type"], "text/event-stream")
+
+    def test_log_converted_response_without_headers(self):
+        """log_converted_response 不带 headers 时，headers 列为 NULL。"""
+        rid = _generate_request_id()
+        self.logger.log_converted_response(rid, "gpt-4o", "qwen3.6-plus", {"id": "resp-abc"})
+        rows = _query_debug_log(self.db_path, rid)
+        self.assertIsNone(rows[0]["headers"])
 
 
 class TestLogTokenStats(unittest.TestCase):
