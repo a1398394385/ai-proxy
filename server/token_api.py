@@ -48,7 +48,8 @@ def handle_get(path, qs, handler) -> bool:
         if done:
             return True
         period, _ = _parse_period(qs)
-        json_response(handler, svc.fetch_summary(period))
+        model = qs.get("model", [None])[0]
+        json_response(handler, svc.fetch_summary(period, model=model))
         return True
 
     if path == "/api/token_stats/by_model":
@@ -65,7 +66,8 @@ def handle_get(path, qs, handler) -> bool:
         if done:
             return True
         period, _ = _parse_period(qs)
-        trends = svc.fetch_trend(period)
+        model = qs.get("model", [None])[0]
+        trends = svc.fetch_trend(period, model=model)
         json_response(handler, {"trends": trends, "count": len(trends)})
         return True
 

@@ -91,8 +91,8 @@ class _TokenStatsDao:
         params: list = []
 
         if model:
-            conditions.append("target_model = ?")
-            params.append(model)
+            conditions.append("target_model LIKE ?")
+            params.append(f"%{model}%")
 
         if request_type:
             conditions.append("request_type = ?")
@@ -470,8 +470,8 @@ class _OpenCodeDao:
             params: list = []
 
             if model:
-                conditions.append("json_extract(m.data, '$.modelID') = ?")
-                params.append(model)
+                conditions.append("json_extract(m.data, '$.modelID') LIKE ?")
+                params.append(f"%{model}%")
 
             where_clause = " AND ".join(conditions)
 
@@ -653,9 +653,9 @@ class StatsService:
 
     # ─── Provider 接口 ───
 
-    def fetch_summary(self, period: str) -> dict:
+    def fetch_summary(self, period: str, model: str | None = None) -> dict:
         """获取汇总统计数据，合并三源。"""
-        records = self._fetch_unified_records(period)
+        records = self._fetch_unified_records(period, model=model)
         if not records:
             return {
                 "period": period, "request_count": 0, "input_tokens": 0,
@@ -771,9 +771,9 @@ class StatsService:
         result.sort(key=lambda x: x["estimated_cost_cny"], reverse=True)
         return {"upstreams": result}
 
-    def fetch_trend(self, period: str) -> list:
+    def fetch_trend(self, period: str, model: str | None = None) -> list:
         """获取时间趋势数据，逐桶聚合。"""
-        records = self._fetch_unified_records(period)
+        records = self._fetch_unified_records(period, model=model)
 
         if period in ("day", "24h"):
             def bucket_key(ts):

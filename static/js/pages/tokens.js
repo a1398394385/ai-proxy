@@ -109,12 +109,17 @@ function typeBadge(upstreamId) {
 
 
 // ===== Token 统计 =====
-async function loadTokenStats() {
+async function loadTokenStats(modelFilter) {
   const period = window.currentPeriod || 'week';
+  // modelFilter 为 null/undefined 时从搜索框读取，确保 period 切换后过滤不丢
+  if (modelFilter === undefined || modelFilter === null) {
+    modelFilter = document.getElementById('model-search')?.value?.trim() || null;
+  }
+  const modelParam = modelFilter ? `&model=${encodeURIComponent(modelFilter)}` : '';
   const [stats, byModel, trend, pricingRes] = await Promise.all([
-    api(`/api/token_stats?period=${period}`),
+    api(`/api/token_stats?period=${period}${modelParam}`),
     api(`/api/token_stats/by_model?period=${period}`),
-    api(`/api/token_stats/trend?period=${period}`),
+    api(`/api/token_stats/trend?period=${period}${modelParam}`),
     api(`/api/pricing`).catch(() => ({ pricings: [] })),
   ]);
 
@@ -126,7 +131,7 @@ async function loadTokenStats() {
 
   renderKPI(stats);
   renderTrendChart(trend.trends);
-  renderModelTable(allModels);
+  renderModelTable(allModels, modelFilter || undefined);
 }
 
 function formatTokenDisplay(value) {
@@ -411,8 +416,8 @@ function calcCost(modelData, pricingEntry) {
   return { input: r(input), output: r(output), cacheRead: r(cacheRd), cacheWrite: r(cacheWr), total: r(input + output + cacheRd + cacheWr) };
 }
 
-function renderModelTable(models) {
-  const filter = document.getElementById('model-search').value.toLowerCase();
+function renderModelTable(models, filterOverride) {
+  const filter = filterOverride !== undefined ? filterOverride.toLowerCase() : document.getElementById('model-search').value.toLowerCase();
   const filtered = filter ? models.filter(m => m.model.toLowerCase().includes(filter)) : models;
 
   document.getElementById('model-count').textContent = `${filtered.length} 个模型`;
@@ -1034,11 +1039,15 @@ export function initTokenPage() {
   const refreshBtn = document.getElementById('refresh-token');
   if (refreshBtn) refreshBtn.addEventListener('click', loadTokenStats);
 
-  // Model search
+  // Model search — 带 debounce 的完整重载（含 KPI + 趋势图 + 模型表）
   const modelSearch = document.getElementById('model-search');
   if (modelSearch) {
+    let searchDebounce = null;
     modelSearch.addEventListener('input', () => {
-      renderModelTable(allModels);
+      clearTimeout(searchDebounce);
+      searchDebounce = setTimeout(() => {
+        loadTokenStats(modelSearch.value.trim() || null);
+      }, 300);
     });
   }
 

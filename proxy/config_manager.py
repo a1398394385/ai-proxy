@@ -678,7 +678,7 @@ class ConfigDB:
             row = conn.execute(
                 "SELECT tm.name as target_name, tm.multimodal, u.format,"
                 " u.id as upstream_id, u.name as upstream_name, u.base_url, u.api_key,"
-                " u.timeout, u.connect_timeout, u.ssl_verify, u.retry"
+                " u.timeout, u.connect_timeout, u.ssl_verify, u.retry, u.key_cooldown_secs"
                 " FROM agent_routes ar"
                 " JOIN target_models tm ON ar.target_model_id = tm.id"
                 " JOIN upstreams u ON tm.upstream_id = u.id"
@@ -703,6 +703,7 @@ class ConfigDB:
                     "ssl_verify": bool(d["ssl_verify"]),
                     "retry": d["retry"],
                     "format": d["format"],
+                    "key_cooldown_secs": d.get("key_cooldown_secs", 60),
                 },
             }
         finally:
@@ -753,7 +754,8 @@ class ConfigDB:
             row = conn.execute(
                 """SELECT tm.name as target_name, tm.multimodal, u.format,
                           u.id as upstream_id, u.name as upstream_name, u.base_url, u.api_key,
-                          u.timeout, u.connect_timeout, u.ssl_verify, u.retry
+                          u.timeout, u.connect_timeout, u.ssl_verify, u.retry,
+                          u.key_cooldown_secs
                    FROM model_routes mr
                    JOIN target_models tm ON mr.target_model_id = tm.id
                    JOIN upstreams u ON tm.upstream_id = u.id
@@ -778,6 +780,7 @@ class ConfigDB:
                     "ssl_verify": bool(d["ssl_verify"]),
                     "retry": d["retry"],
                     "format": d["format"],
+                    "key_cooldown_secs": d.get("key_cooldown_secs", 60),
                 },
             }
         finally:
