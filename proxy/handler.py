@@ -341,16 +341,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
         _parsed = urllib.parse.urlparse(upstream_cfg["base_url"])
         upstream_url = f"{_parsed.scheme}://{_parsed.netloc}{_build_passthrough_path(_parsed, forward_path)}"
 
-        logger = get_logger()
-        if logger:
-            logger.log_converted_request(
-                request_id, model_name, target,
-                {"passthrough": True, "format_match": True,
-                 "reason": f"request_type '{request_type}' 匹配上游 format"},
-                request_type=request_type,
-                request_path=upstream_url,
-            )
-
         # 替换 body 中的 model 名称为 target（如路由有映射）
         if target != model_name and body_raw:
             try:
@@ -374,17 +364,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if is_stream:
             self._forward_pass_through_streaming(
                 body_raw, request_id, model_name, target, request_ts,
-                upstream_cfg, forward_path, request_type, session_id
+                upstream_cfg, forward_path, request_type, session_id,
+                upstream_url=upstream_url,
             )
         else:
             self._forward_pass_through_non_streaming(
                 body_raw, request_id, model_name, target, request_ts,
-                upstream_cfg, forward_path, request_type, session_id
+                upstream_cfg, forward_path, request_type, session_id,
+                upstream_url=upstream_url,
             )
 
     def _forward_pass_through_non_streaming(self, body_raw, request_id, model_name,
                                              target, request_ts, upstream_cfg,
-                                             forward_path, request_type, session_id=None):
+                                             forward_path, request_type, session_id=None,
+                                             upstream_url=None):
         """非流式透传：原样转发请求到上游，原样返回响应。"""
         base_url = upstream_cfg["base_url"]
         api_key = config_cache.pick_key(upstream_cfg["id"])
@@ -403,13 +396,24 @@ class ProxyHandler(BaseHTTPRequestHandler):
             conn = None
             try:
                 conn = _create_upstream_conn(upstream_cfg, parsed, port)
-                # 用 connect_timeout 建立连接后，切换到完整 timeout
-                conn.connect()
-                conn.sock.settimeout(timeout)
 
                 headers = {"Content-Type": content_type}
                 if api_key:
                     headers["Authorization"] = f"Bearer {api_key}"
+                logger = get_logger()
+                if logger:
+                    logger.log_converted_request(
+                        request_id, model_name, target,
+                        {"passthrough": True, "format_match": True,
+                         "reason": f"request_type '{request_type}' 匹配上游 format"},
+                        request_type=request_type,
+                        request_path=upstream_url,
+                        headers=headers,
+                    )
+                # 用 connect_timeout 建立连接后，切换到完整 timeout
+                conn.connect()
+                conn.sock.settimeout(timeout)
+
                 conn.request(self.command, path, body=body_raw, headers=headers)
 
                 start = time.time()
@@ -499,7 +503,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
     def _forward_pass_through_streaming(self, body_raw, request_id, model_name,
                                          target, request_ts, upstream_cfg,
-                                         forward_path, request_type, session_id=None):
+                                         forward_path, request_type, session_id=None,
+                                         upstream_url=None):
         """流式 SSE 透传：逐 chunk 原样中继，不注入代理事件。"""
         base_url = upstream_cfg["base_url"]
         api_key = config_cache.pick_key(upstream_cfg["id"])
@@ -523,9 +528,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
             conn = None
             try:
                 conn = _create_upstream_conn(upstream_cfg, parsed, port)
-                # 用 connect_timeout 建立连接后，切换到完整 timeout
-                conn.connect()
-                conn.sock.settimeout(timeout)
 
                 headers = {
                     "Content-Type": content_type,
@@ -534,6 +536,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 }
                 if api_key:
                     headers["Authorization"] = f"Bearer {api_key}"
+                logger = get_logger()
+                if logger:
+                    logger.log_converted_request(
+                        request_id, model_name, target,
+                        {"passthrough": True, "format_match": True,
+                         "reason": f"request_type '{request_type}' 匹配上游 format"},
+                        request_type=request_type,
+                        request_path=upstream_url,
+                        headers=headers,
+                    )
+                # 用 connect_timeout 建立连接后，切换到完整 timeout
+                conn.connect()
+                conn.sock.settimeout(timeout)
+
                 conn.request(self.command, path, body=body_raw, headers=headers)
 
                 # 先读取上游响应状态，确认成功后再发送头部给客户端
@@ -770,13 +786,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if upstream_cfg.get("base_url"):
             _parsed = urllib.parse.urlparse(upstream_cfg["base_url"])
             upstream_url = f"{_parsed.scheme}://{_parsed.netloc}{_build_upstream_path(_parsed, upstream_format)}"
-        if logger:
-            logger.log_converted_request(
-                request_id, model_name, target, upstream_body,
-                request_type=client_format,
-                request_path=upstream_url,
-            )
-
         # previous_response_id：仅 responses 路径支持多轮对话
         if client_format == REQUEST_TYPE_RESPONSES:
             prev_id = body.get("previous_response_id")
@@ -822,6 +831,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 upstream_body, model_cfg, request_id, model_name, target, request_ts,
                 upstream_cfg, client_format, upstream_format,
                 store_enabled=store_enabled, session_id=session_id,
+                upstream_url=upstream_url,
             )
         else:
             self._forward_non_streaming(
@@ -829,6 +839,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 upstream_cfg, client_format, upstream_format,
                 store_enabled=store_enabled,
                 is_responses_api=is_responses_api, session_id=session_id,
+                upstream_url=upstream_url,
             )
 
     # ── 转换路径内部方法（v2 SDK 驱动） ──────────────────────────
@@ -836,7 +847,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def _forward_non_streaming(self, upstream_body, request_id, model, target,
                                  request_ts, upstream_cfg, client_format,
                                  upstream_format, store_enabled=True,
-                                 is_responses_api=False, session_id=None):
+                                 is_responses_api=False, session_id=None,
+                                 upstream_url=None):
         """非流式：http.client 连上游 → 响应转换。"""
         base_url = upstream_cfg["base_url"]
         api_key = config_cache.pick_key(upstream_cfg["id"])
@@ -854,13 +866,23 @@ class ProxyHandler(BaseHTTPRequestHandler):
             conn = None
             try:
                 conn = _create_upstream_conn(upstream_cfg, parsed, port)
+
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                }
+                logger = get_logger()
+                if logger:
+                    logger.log_converted_request(
+                        request_id, model, target, upstream_body,
+                        request_type=client_format,
+                        request_path=upstream_url,
+                        headers=headers,
+                    )
                 conn.connect()
                 conn.sock.settimeout(timeout)
 
-                conn.request("POST", path, body=json.dumps(upstream_body), headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                })
+                conn.request("POST", path, body=json.dumps(upstream_body), headers=headers)
 
                 start = time.time()
                 resp = conn.getresponse()
@@ -981,7 +1003,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
     def _forward_streaming(self, upstream_body, model_cfg, request_id, model_name,
                              target, request_ts, upstream_cfg, client_format,
-                             upstream_format, store_enabled=True, session_id=None):
+                             upstream_format, store_enabled=True, session_id=None,
+                             upstream_url=None):
         """流式：http.client 连上游 SSE → TransformRouter 逐事件转换。"""
         base_url = upstream_cfg["base_url"]
         api_key = config_cache.pick_key(upstream_cfg["id"])
@@ -995,14 +1018,24 @@ class ProxyHandler(BaseHTTPRequestHandler):
         port = parsed.port or (80 if parsed.scheme == "http" else 443)
 
         conn = _create_upstream_conn(upstream_cfg, parsed, port)
-        conn.connect()
-        conn.sock.settimeout(timeout)
 
-        conn.request("POST", path, body=json.dumps(upstream_body), headers={
+        headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
-        })
+        }
+        logger = get_logger()
+        if logger:
+            logger.log_converted_request(
+                request_id, model_name, target, upstream_body,
+                request_type=client_format,
+                request_path=upstream_url,
+                headers=headers,
+            )
+        conn.connect()
+        conn.sock.settimeout(timeout)
+
+        conn.request("POST", path, body=json.dumps(upstream_body), headers=headers)
 
         start = time.time()
         sse_buffer = []
