@@ -449,6 +449,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         request_id, resp.status, log_data, duration_ms,
                         model_name, target,
                         request_type=request_type,
+                        headers=dict(resp.getheaders()),
                     )
                 if logger:
                     logger.log_converted_response(
@@ -585,6 +586,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             error_body_str[:5000],
                             0, model_name, target,
                             request_type=request_type,
+                            headers=dict(resp.getheaders()),
                         )
                     return
 
@@ -656,6 +658,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         request_id, upstream_status, full_sse, duration_ms,
                         model_name, target,
                         request_type=request_type,
+                        headers=dict(resp.getheaders()),
                     )
 
                 # 阶段 4：记录"透传"标记
@@ -899,6 +902,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             resp_body_str,
                             duration_ms, model, target,
                             request_type=client_format,
+                            headers=dict(resp.getheaders()),
                         )
                     logging.warning(f"上游 {resp.status}，重试 {attempt + 1}/{retries}: {resp_body_str[:500]}")
                     continue
@@ -920,6 +924,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             resp_body_str,
                             duration_ms, model, target,
                             request_type=client_format,
+                            headers=dict(resp.getheaders()),
                         )
                     self.send_response(resp.status)
                     self.send_header("Content-Type", "application/json")
@@ -937,6 +942,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         request_id, resp.status, chat_response, duration_ms,
                         model, target,
                         request_type=client_format,
+                        headers=dict(resp.getheaders()),
                     )
 
                 try:
@@ -1091,6 +1097,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         request_id, resp.status, error_body, 0,
                         model_name, target,
                         request_type=client_format,
+                        headers=dict(resp.getheaders()),
                     )
                 return
 
@@ -1159,6 +1166,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 request_id, upstream_status, full_sse, duration_ms,
                 model_name, target,
                 request_type=client_format,
+                headers=dict(resp.getheaders()),
             )
             logger.log_converted_response(
                 request_id, model_name, target,
